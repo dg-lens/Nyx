@@ -23,6 +23,7 @@ export async function loadPlugins(
   pluginsDir: string,
   makeCtx: (name: string) => PluginContext,
   ev: LoaderEvents,
+  runtime: 'tick' | 'host' = 'tick',
 ): Promise<LoadedPlugin[]> {
   const loaded: LoadedPlugin[] = [];
   if (!existsSync(pluginsDir)) return loaded;
@@ -53,6 +54,9 @@ export async function loadPlugins(
       ev.skipped(manifest.name, `sdkVersion ${manifest.sdkVersion} incompatible with core SDK ${SDK_VERSION}`);
       continue;
     }
+
+    const pluginRuntime = manifest.runtime ?? 'tick';
+    if (pluginRuntime !== runtime && pluginRuntime !== 'both') continue;
 
     const entry = ['dist/index.js', 'index.js'].map((e) => resolve(dir, e)).find((p) => existsSync(p));
     if (!entry) {

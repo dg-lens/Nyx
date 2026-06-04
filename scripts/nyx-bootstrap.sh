@@ -45,6 +45,15 @@ sed -e "s#__NYX_REPO_ROOT__#${NYX_REPO_ROOT}#g" \
     "$TEMPLATE" > "$PLIST"
 echo "  launchd plist generated → $PLIST"
 
+HOST_TEMPLATE="$NYX_REPO_ROOT/config/launchd/com.nyx.host.plist.template"
+HOST_PLIST="$NYX_DATA_DIR/com.nyx.host.plist"
+sed -e "s#__NYX_REPO_ROOT__#${NYX_REPO_ROOT}#g" \
+    -e "s#__NYX_DATA_DIR__#${NYX_DATA_DIR}#g" \
+    -e "s#__NYX_PLUGINS_DIR__#${NYX_PLUGINS_DIR}#g" \
+    -e "s#__NYX_HOME__#${HOME}#g" \
+    "$HOST_TEMPLATE" > "$HOST_PLIST"
+echo "  host plist generated → $HOST_PLIST"
+
 echo "  building (pnpm install + build)…"
 (cd "$NYX_REPO_ROOT" && pnpm install --prefer-offline && pnpm -r build)
 

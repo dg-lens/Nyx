@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nyx.host</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__NYX_REPO_ROOT__/scripts/nyx-host.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__NYX_REPO_ROOT__</string>
+
+    <!-- Long-lived: holds connection-based plugin sources (Slack Socket Mode).
+         KeepAlive restarts it if it dies. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__NYX_DATA_DIR__/logs/host.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__NYX_DATA_DIR__/logs/host.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>__NYX_HOME__</string>
+        <key>NYX_REPO_ROOT</key>
+        <string>__NYX_REPO_ROOT__</string>
+        <key>NYX_DATA_DIR</key>
+        <string>__NYX_DATA_DIR__</string>
+        <key>NYX_PLUGINS_DIR</key>
+        <string>__NYX_PLUGINS_DIR__</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

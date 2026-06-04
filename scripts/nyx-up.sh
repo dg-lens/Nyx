@@ -28,6 +28,18 @@ else
   echo "  ✓ loaded"
 fi
 
+HOST_PLIST="$NYX_DATA_DIR/com.nyx.host.plist"
+if [[ -f "$HOST_PLIST" ]]; then
+  echo
+  echo "── plugin host (launchd) ──"
+  if launchctl list 2>/dev/null | grep -q nyx.host; then
+    echo "  ✓ already loaded"
+  else
+    launchctl load -w "$HOST_PLIST"
+    echo "  ✓ loaded"
+  fi
+fi
+
 echo
 echo "── status ──"
 bash "$NYX_ROOT/scripts/nyx-status.sh"

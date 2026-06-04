@@ -114,6 +114,19 @@ describe('loadPlugins', () => {
     rmSync(base, { recursive: true, force: true });
   });
 
+  test('runtime filter: a host plugin is skipped under tick, loaded under host', async () => {
+    const base = tmpPlugins();
+    writePlugin(base, 'sock', { name: 'sock', version: '0.1.0', sdkVersion: '1', tier: 'local', runtime: 'host' },
+      'export default { setup() {} };');
+    const tickLoaded: string[] = [];
+    await loadPlugins(base, makePluginContext, { loaded: (n) => tickLoaded.push(n), skipped: () => {} });
+    assert.deepEqual(tickLoaded, []);
+    const hostLoaded: string[] = [];
+    await loadPlugins(base, makePluginContext, { loaded: (n) => hostLoaded.push(n), skipped: () => {} }, 'host');
+    assert.deepEqual(hostLoaded, ['sock']);
+    rmSync(base, { recursive: true, force: true });
+  });
+
   test('returns empty when pluginsDir does not exist', async () => {
     const result = await loadPlugins(resolve(tmpdir(), 'nyx-absent-plugins-xyz'), makePluginContext, {
       loaded: () => {},

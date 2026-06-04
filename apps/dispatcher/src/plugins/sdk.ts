@@ -42,12 +42,20 @@ export interface NyxPlugin {
 
 export type PluginTier = 'approved' | 'local';
 
+/**
+ * Where a plugin runs. `tick` (default) loads in the per-tick dispatcher;
+ * `host` loads in the long-lived host (for connection-holding sources like
+ * Slack Socket Mode); `both` loads in either.
+ */
+export type PluginRuntime = 'tick' | 'host' | 'both';
+
 export interface PluginManifest {
   name: string;
   version: string;
   sdkVersion: string;
   tier: PluginTier;
   coreVersion?: string;
+  runtime?: PluginRuntime;
   capabilities?: {
     hooksAttached?: { name: string; kind: HookKind }[];
     hooksDefined?: string[];
