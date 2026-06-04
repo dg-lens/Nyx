@@ -344,10 +344,6 @@ export async function invokeWisdomCapture(task: ParsedTask, cwd: string): Promis
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
     ...extraEnv,
   };
-  if (spawnEnv.ANTHROPIC_API_KEY) {
-    spawnEnv.NYX_HOST_ANTHROPIC_KEY = spawnEnv.ANTHROPIC_API_KEY;
-    delete spawnEnv.ANTHROPIC_API_KEY;
-  }
   const result = await spawnWithTimeout(command, args, {
     cwd,
     env: spawnEnv,
@@ -378,23 +374,15 @@ export async function invokeClaude(
   const { command, args, extraEnv } = buildSpawnInvocation(task, claudeArgs);
 
   const start = Date.now();
-  // Build the spawn env, then strip ANTHROPIC_API_KEY before exec so the spawned
-  // `claude -p` falls back to OAuth/Max-plan credentials instead of pay-per-token
-  // API billing. Nyx itself never needs the API key — only the deployed
-  // runtime (on Fly) consumes it, and that env is independent. If a future task
-  // ever needs Anthropic at TASK-execution time (not just baked into code that
-  // runs later on Fly), have it read NYX_HOST_ANTHROPIC_KEY instead — that
-  // way the leak path stays closed by default.
-  // See .env's `# --- Claude Authentication ---` block for the design intent.
+  // Auth model: ANTHROPIC_API_KEY passes through to `claude -p` as-is. If it's
+  // set (BYO key), the spawn uses API billing; if absent, it falls back to the
+  // host's ~/.claude OAuth (Max-plan). The install chooses by whether the key is
+  // present in the spawn env (.env / launchd). See .env.example.
   const spawnEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
     ...extraEnv, // BWS_ACCESS_TOKEN if Bitwarden is in play. Never logged.
   };
-  if (spawnEnv.ANTHROPIC_API_KEY) {
-    spawnEnv.NYX_HOST_ANTHROPIC_KEY = spawnEnv.ANTHROPIC_API_KEY;
-    delete spawnEnv.ANTHROPIC_API_KEY;
-  }
   const result = await spawnWithTimeout(command, args, {
     cwd,
     env: spawnEnv,

@@ -26,14 +26,14 @@ If unsure: assume Engineering.
 
 Facts about how Nyx itself operates. They apply to any session touching this repo.
 
-### Spawn compute & auth — install-time choice
+### Spawn compute & auth
 
-Nyx spawns Claude Code subprocesses for every code/analysis/assistant task. How those subprocesses authenticate to Anthropic is chosen at install:
+Nyx spawns Claude Code subprocesses for every code/analysis/assistant task. They use `claude -p`'s native auth precedence — the spawn env passes through unmodified, so the install chooses by whether `ANTHROPIC_API_KEY` is present:
 
-- **Local Max-plan OAuth (default):** the dispatcher strips `ANTHROPIC_API_KEY` from the spawn env (renaming it to a host-key alias so task-execution-time SDK code can still read it) so the spawned Claude Code falls back to the host's `~/.claude` OAuth — billing the host's Claude subscription instead of pay-per-token API.
-- **BYO API key:** the spawn keeps `ANTHROPIC_API_KEY`; subprocesses bill per token.
+- **Local Max-plan OAuth:** leave `ANTHROPIC_API_KEY` unset in the spawn env (`.env` / launchd). `claude -p` falls back to the host's `~/.claude` OAuth — billing the host's Claude subscription, not pay-per-token API.
+- **BYO API key:** set `ANTHROPIC_API_KEY` in `.env`. Subprocesses inherit it and bill per token.
 
-All `claude -p` spawn sites must construct the spawn env the same way. If you change it in one, change it in all — see the spawn helper below. (The host-key alias env name is a legacy artifact; rename it consistently if you touch it.)
+There is no key-stripping — whatever is in the spawn env decides billing. To run on OAuth, keep `ANTHROPIC_API_KEY` out of `.env`/launchd/the ambient shell; a key that leaks into the env silently switches spawns to API billing.
 
 ### Spawn helper — process-group kill
 

@@ -153,16 +153,12 @@ export async function runPlanSpawn(task: ParsedTask, workingDir: string): Promis
   });
 
   const start = Date.now();
-  // Strip ANTHROPIC_API_KEY so the planning spawn uses Max-plan OAuth, matching
-  // task-runner.ts::invokeClaude. See [T2 §1] for design intent.
+  // Auth: ANTHROPIC_API_KEY passes through if set, else OAuth — matching
+  // task-runner.ts::invokeClaude.
   const spawnEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
   };
-  if (spawnEnv.ANTHROPIC_API_KEY) {
-    spawnEnv.NYX_HOST_ANTHROPIC_KEY = spawnEnv.ANTHROPIC_API_KEY;
-    delete spawnEnv.ANTHROPIC_API_KEY;
-  }
 
   const spawnResult = await spawnWithTimeout('claude', args, {
     cwd: workingDir,

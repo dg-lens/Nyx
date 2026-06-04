@@ -490,20 +490,14 @@ function spawnDiagnostic(
   cwd: string,
   extraEnv: Record<string, string>,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  // Same env-strip as task-runner.ts: rename ANTHROPIC_API_KEY before exec so
-  // the spawned diagnostic `claude -p` uses Max-plan OAuth, not pay-per-token
-  // API billing. Without this, every task-failure that escalates to audit
-  // burns API credits even though the main task already runs under Max.
-  // See task-runner.ts for the design intent.
+  // Auth pass-through: if ANTHROPIC_API_KEY is set the diagnostic `claude -p`
+  // uses API billing; if absent it falls back to the host's ~/.claude OAuth.
+  // See task-runner.ts::invokeClaude for the model.
   const spawnEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
     ...extraEnv,
   };
-  if (spawnEnv.ANTHROPIC_API_KEY) {
-    spawnEnv.NYX_HOST_ANTHROPIC_KEY = spawnEnv.ANTHROPIC_API_KEY;
-    delete spawnEnv.ANTHROPIC_API_KEY;
-  }
   return spawnWithTimeout(command, args, {
     cwd,
     env: spawnEnv,

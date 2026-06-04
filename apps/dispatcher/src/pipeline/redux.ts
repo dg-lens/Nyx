@@ -170,10 +170,6 @@ const realJudgeSpawn: JudgeSpawn = async (a) => {
     ...process.env,
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
   };
-  if (env.ANTHROPIC_API_KEY) {
-    env.NYX_HOST_ANTHROPIC_KEY = env.ANTHROPIC_API_KEY;
-    delete env.ANTHROPIC_API_KEY;
-  }
   const args = [
     '-p',
     a.prompt,

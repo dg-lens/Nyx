@@ -171,15 +171,11 @@ export async function runComposer(input: ComposerRunInput): Promise<ComposerRunR
   ];
 
   const start = Date.now();
-  // Same ANTHROPIC_API_KEY strip as other spawns. See task-runner.ts.
+  // Auth: ANTHROPIC_API_KEY passes through if set, else OAuth. See task-runner.ts::invokeClaude.
   const spawnEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
   };
-  if (spawnEnv.ANTHROPIC_API_KEY) {
-    spawnEnv.NYX_HOST_ANTHROPIC_KEY = spawnEnv.ANTHROPIC_API_KEY;
-    delete spawnEnv.ANTHROPIC_API_KEY;
-  }
 
   const { stdout, stderr, exitCode } = await spawnWithTimeout('claude', args, {
     cwd: tmpDir,
