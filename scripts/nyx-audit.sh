@@ -1,18 +1,4 @@
 #!/usr/bin/env bash
-# nyx-audit: tail the audit DB with readable formatting.
-#
-# Usage:  ./scripts/nyx-audit.sh [-n N] [-e event] [-t taskId] [--chain]
-#
-#   -n N        last N rows (default 30)
-#   -e EVENT    filter by event name (exact match, supports SQL LIKE wildcards: %)
-#   -t TASKID   filter by task id
-#   --chain     verify the hash chain and print summary
-#
-# Examples:
-#   ./scripts/nyx-audit.sh -n 50
-#   ./scripts/nyx-audit.sh -e task.failed
-#   ./scripts/nyx-audit.sh -e 'task.%' -t MORNING-BRIEF
-#   ./scripts/nyx-audit.sh --chain
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -40,8 +26,6 @@ if [[ ! -f "$DB" ]]; then
 fi
 
 if [[ $DO_CHAIN -eq 1 ]]; then
-  # Walk the chain in SQL — recompute each row's hash and bail on first break.
-  # Done in shell since sqlite3 has no SHA256 builtin. Reads the whole table.
   python3 - "$DB" <<'PY'
 import hashlib, sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
@@ -83,7 +67,6 @@ if [[ ${#WHERE_CLAUSES[@]} -gt 0 ]]; then
   WHERE="WHERE $(IFS=' AND '; echo "${WHERE_CLAUSES[*]}")"
 fi
 
-# Print most-recent-first, then awk-format the local time + key payload fields.
 sqlite3 -separator $'\t' "$DB" "
   SELECT id, at, event,
          coalesce(json_extract(payload, '\$.taskId'), '-') AS task,
@@ -94,7 +77,6 @@ sqlite3 -separator $'\t' "$DB" "
   LIMIT $N;
 " | awk -F'\t' '
 function fmt_time(iso,    t, hms) {
-  # Convert ISO8601 (UTC) to local HH:MM:SS via date(1).
   cmd = "date -j -u -f \"%Y-%m-%dT%H:%M:%S\" \"" substr(iso,1,19) "\" \"+%m-%d %H:%M:%S\" 2>/dev/null"
   cmd | getline t
   close(cmd)

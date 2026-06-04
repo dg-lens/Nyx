@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# nyx-resume: clear a task.halted_for_review state so the dispatcher will
-# pick the task up again on the next tick.
-#
-# Usage:
-#   ./scripts/nyx-resume.sh <TASK-ID> [--note "free text"] [--keep-worktree]
-#   ./scripts/nyx-resume.sh --help
-#
-# By default this rebuilds the dispatcher first (in case sources changed). Pass
-# --no-build if you've just built and want to skip the recompile.
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"

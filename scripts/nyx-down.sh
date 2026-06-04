@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# nyx-down: stop all three Nyx daemons.
-#
-# Disables the dispatcher launchd job (will not auto-fire), then stops the sync
-# daemon and dashboard server. Idempotent — safe to run when things are already down.
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"

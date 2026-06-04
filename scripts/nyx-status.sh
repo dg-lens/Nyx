@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# nyx-status: one-screen health summary.
-#
-# Reports: launchd state, last tick, last success, failure count (24h),
-# audit chain integrity, queue stats, lockfile state.
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -18,7 +14,6 @@ info() { printf "    %s\n" "$*"; }
 
 printf "\n\033[1mNyx Status\033[0m  (%s)\n\n" "$(date '+%Y-%m-%d %H:%M:%S')"
 
-# launchd
 printf "\033[1mlaunchd\033[0m\n"
 LAUNCHD_LINE=$(launchctl list 2>/dev/null | grep nyx.dispatcher || true)
 if [[ -n "$LAUNCHD_LINE" ]]; then
@@ -37,7 +32,6 @@ fi
 NEXT_TICK=$(date -v +15M "+%H:%M" | awk -F: '{ m = int($2/15) * 15; printf "%s:%02d\n", $1, m }')
 info "next quarter-hour mark: $NEXT_TICK (current slot: $(date "+%-H %-M" | awk '{ print $1*4 + int($2/15) }'))"
 
-# lockfile
 printf "\n\033[1mlockfile\033[0m\n"
 if [[ -f "$LOCKFILE" ]]; then
   LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null || echo "?")
@@ -51,7 +45,6 @@ else
 fi
 [[ -e "$SH_LOCK" ]] && warn "shell-lock dir still present: $SH_LOCK" || true
 
-# audit DB
 printf "\n\033[1maudit db\033[0m\n"
 if [[ -f "$DB" ]]; then
   TOTAL=$(sqlite3 "$DB" "SELECT COUNT(*) FROM system_audit;")
@@ -77,7 +70,6 @@ if [[ -f "$DB" ]]; then
     ok "0 failures in last 24h"
   fi
 
-  # Verify the hash chain quickly (Python — same logic as ./nyx-audit.sh --chain).
   if python3 - "$DB" <<'PY' >/dev/null 2>&1
 import hashlib, sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
@@ -99,7 +91,6 @@ else
   warn "audit db does not exist yet — first tick will create it"
 fi
 
-# queue
 printf "\n\033[1mqueue\033[0m\n"
 if [[ -f "$QUEUE" ]]; then
   STATS=$(awk '

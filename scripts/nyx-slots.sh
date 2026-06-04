@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# nyx-slots: 96-slot day visualization showing what's bound to each slot
-# and which tasks fired today.
-#
-# Usage:  ./scripts/nyx-slots.sh
-#
-# Slot N covers wall-clock [N*15 min, (N+1)*15 min). Current slot is highlighted.
-# Slot-bound tasks: shown at their fixed slot. Every-K tasks: shown at every slot
-# that's a multiple of K. Fired-today: marked with ⏺.
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -20,8 +12,6 @@ fi
 
 NOW_SLOT=$(date "+%-H %-M" | awk '{ print $1*4 + int($2/15) }')
 
-# Step 1: extract slot/every assignments from the queue.
-# Output one line per (slot, taskId, kind) where kind is "fixed" or "every".
 BINDINGS=$(awk '
 function get_tag(text, name,    re, val) {
   re = "\\[" name ": *[^]]+\\]"
@@ -34,7 +24,6 @@ function get_tag(text, name,    re, val) {
   return ""
 }
 function every_to_slots(every_str,    n, unit, step) {
-  # Returns step in slot units (15-min). Returns 0 if unparseable.
   if (match(every_str, /^[0-9]+(m|h|d)$/)) {
     s = substr(every_str, RSTART, RLENGTH)
     if (match(s, /m$/)) {
@@ -90,7 +79,6 @@ BEGIN { section = "none"; in_comment = 0 }
 END { flush() }
 ' "$QUEUE")
 
-# Step 2: which task ids fired today (completed or failed in [today 00:00, now])?
 FIRED_TODAY=""
 if [[ -f "$DB" ]]; then
   TODAY_UTC_START=$(date -j -v0H -v0M -v0S "+%Y-%m-%dT%H:%M:%S")

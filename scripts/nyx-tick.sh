@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# nyx-tick: force a manual dispatcher tick now.
-#
-# Usage:  ./scripts/nyx-tick.sh [--no-build]
-#
-# By default this rebuilds the dispatcher first (in case sources changed), then
-# runs one tick. The lockfile prevents collisions with a launchd-driven tick.
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"

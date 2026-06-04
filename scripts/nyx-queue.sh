@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# nyx-queue: render the current queue as a grouped table.
-#
-# Usage:  ./scripts/nyx-queue.sh [--all]
-#
-# Default shows Active tasks grouped by scheduling (slot / every / standing).
-# Pass --all to also list the Completed section.
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -45,7 +39,6 @@ function flush() {
   desc_short = pending_desc
   if (length(desc_short) > 56) desc_short = substr(desc_short, 1, 53) "..."
 
-  # bucket | section | row
   row = sprintf("  [%s] %-22s  %-10s  %-7s  %-7s  %-14s  %s", \
                 marker, pending_id, type, prio, model, sched, desc_short)
   printf "%s|%s|%s\n", bucket, pending_section, row
@@ -77,8 +70,6 @@ BEGIN { in_comment = 0; section = "none" }
     sub(/^- \[[ xX]\] /, "", rest)
     pending_id = rest
     sub(/[ ]+[—-].*$/, "", pending_id)
-    # POSIX awk char classes do not handle multi-byte em/en-dash reliably,
-    # so use byte-indexed substr instead. " — " is 5 bytes (space + 3-byte em-dash + space).
     em_idx = index(rest, " — ")
     en_idx = index(rest, " – ")
     hy_idx = index(rest, " - ")

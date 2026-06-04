@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# nyx-logs: tail dispatch logs.
-#
-# Usage:  ./scripts/nyx-logs.sh [N]  — tail last N lines (default 50)
-#         ./scripts/nyx-logs.sh -f   — follow today's log (Ctrl-C to stop)
-#         ./scripts/nyx-logs.sh --launchd  — tail launchd's stdout/stderr instead
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
