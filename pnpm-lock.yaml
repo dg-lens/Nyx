@@ -36,22 +36,6 @@ importers:
         specifier: ^5.5.4
         version: 5.9.3
 
-  apps/dashboard:
-    dependencies:
-      '@nyx/dispatcher':
-        specifier: workspace:*
-        version: link:../dispatcher
-    devDependencies:
-      '@types/node':
-        specifier: ^22.7.0
-        version: 22.19.19
-      tsx:
-        specifier: ^4.19.2
-        version: 4.22.1
-      typescript:
-        specifier: ^5.5.4
-        version: 5.9.3
-
   apps/dispatcher:
     dependencies:
       '@nyx/assistant':
@@ -60,25 +44,6 @@ importers:
       '@slack/web-api':
         specifier: ^7.6.0
         version: 7.16.0
-      dotenv:
-        specifier: ^16.4.5
-        version: 16.6.1
-    devDependencies:
-      '@types/node':
-        specifier: ^22.7.0
-        version: 22.19.19
-      tsx:
-        specifier: ^4.19.2
-        version: 4.22.1
-      typescript:
-        specifier: ^5.5.4
-        version: 5.9.3
-
-  apps/sync:
-    dependencies:
-      '@nyx/dispatcher':
-        specifier: workspace:*
-        version: link:../dispatcher
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
