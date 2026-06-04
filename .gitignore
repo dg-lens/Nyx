@@ -6,6 +6,9 @@ dist/
 .env.local
 .env.*.local
 
+nyx.md
+config/launchd/com.nyx.dispatcher.plist
+
 data/nyx.db
 data/nyx.db-shm
 data/nyx.db-wal

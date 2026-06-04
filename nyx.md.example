@@ -1,0 +1,26 @@
+# Nyx Task Queue
+
+Describe work to the Dispatch prompt and it appends tasks here. The dispatcher
+reads tasks under `## Active Tasks` and runs them on the 96-slot grid. Keep the
+section empty until you queue something.
+
+## Active Tasks
+
+## Completed
+
+---
+
+## Task format (reference — only lines under `## Active Tasks` are parsed)
+
+```
+- [ ] TASK-ID — Short description
+      [type: code|content|analysis|assistant|pipeline]
+      [model: sonnet|opus|haiku]
+      [gate: typecheck,tests|none]
+      [slot: N]            daily at slot N (0–95)
+      [every: 3h]          cadence anchored at slot 0
+      [repo: org/name]     for code/analysis/pipeline against an external repo
+```
+
+A task has at most one of `[slot:]` or `[every:]`; with neither it joins the
+standing list. See `CLAUDE.md` (Dispatch mode) for the full tag reference.
