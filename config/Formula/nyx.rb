@@ -1,23 +1,23 @@
 # Nyx private Homebrew tap formula.
 #
 # Setup (first time):
-#   brew tap OWNER/nyx ~/Nyx
-#   brew install --HEAD OWNER/nyx/nyx
+#   brew tap dg-lens/nyx ~/Nyx
+#   brew install --HEAD dg-lens/nyx/nyx
 #
 # Daemon management:
-#   brew services start OWNER/nyx/nyx
-#   brew services stop  OWNER/nyx/nyx
+#   brew services start dg-lens/nyx/nyx
+#   brew services stop  dg-lens/nyx/nyx
 #
 # NYX_DATA_DIR (default ~/Nyx) holds nyx.md, data/, logs/, .env.
 # NYX_REPO_ROOT (#{opt_libexec}) holds compiled code; set by generated wrappers.
 class Nyx < Formula
   desc "Autonomous task dispatcher with hash-chained audit and MCP integrations"
-  homepage "https://github.com/OWNER/nyx"
+  homepage "https://github.com/dg-lens/Nyx"
   license "MIT"
 
   # HEAD-only formula: installed from the local git repo.
-  # Install with: brew install --HEAD OWNER/nyx/nyx
-  head "https://github.com/OWNER/nyx.git", using: :git
+  # Install with: brew install --HEAD dg-lens/nyx/nyx
+  head "https://github.com/dg-lens/Nyx.git", using: :git
 
   depends_on "node"
   depends_on "pnpm"
@@ -125,8 +125,8 @@ class Nyx < Formula
         #{opt_libexec}
 
       Manage the dispatcher daemon:
-        brew services start OWNER/nyx/nyx
-        brew services stop  OWNER/nyx/nyx
+        brew services start dg-lens/nyx/nyx
+        brew services stop  dg-lens/nyx/nyx
         brew services list
 
       Or use the nyx CLI:
@@ -138,7 +138,7 @@ class Nyx < Formula
         nyx up
 
       Update to latest HEAD:
-        brew reinstall --HEAD OWNER/nyx/nyx
+        brew reinstall --HEAD dg-lens/nyx/nyx
     EOS
   end
 end
