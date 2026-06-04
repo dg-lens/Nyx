@@ -1,0 +1,14 @@
+{
+  "name": "slack",
+  "version": "0.1.0",
+  "sdkVersion": "1",
+  "tier": "approved",
+  "runtime": "both",
+  "coreVersion": ">=1.2.0",
+  "capabilities": {
+    "hooksAttached": [{ "name": "pipeline.gateReached", "kind": "observe" }],
+    "ioSources": ["slack"],
+    "ioSinks": ["slack"],
+    "env": ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_CHANNEL"]
+  }
+}

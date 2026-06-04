@@ -30,6 +30,8 @@ export interface IoRegistry {
 }
 
 export interface PluginContext {
+  /** Which runtime this plugin instance is loaded in (see PluginRuntime). */
+  runtime: 'tick' | 'host';
   hooks: HookRegistry;
   io: IoRegistry;
   config: Record<string, string | undefined>;

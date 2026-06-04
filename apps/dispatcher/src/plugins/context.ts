@@ -3,8 +3,9 @@ import type { PluginContext } from './sdk.js';
 import { hookRegistryFor } from './hooks.js';
 import { ioRegistryFor } from './io.js';
 
-export function makePluginContext(name: string): PluginContext {
+export function makePluginContext(name: string, runtime: 'tick' | 'host'): PluginContext {
   return {
+    runtime,
     hooks: hookRegistryFor(name),
     io: ioRegistryFor(name),
     config: process.env,

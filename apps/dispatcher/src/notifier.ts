@@ -1,6 +1,7 @@
 import { WebClient } from '@slack/web-api';
 
 import { config } from './config.js';
+import { emitHook } from './plugins/hooks.js';
 
 let cached: WebClient | null = null;
 
@@ -138,6 +139,7 @@ export async function pipelineAwaitingGate(
   gate: 'preview' | 'review',
   summary: string,
 ): Promise<void> {
+  await emitHook('pipeline.gateReached', { runId, taskId, gate, summary });
   const icon = gate === 'preview' ? '◧' : '◨';
   // Concrete, runnable commands — one per decision, not a `<a|b|c>` placeholder.
   const cmds =

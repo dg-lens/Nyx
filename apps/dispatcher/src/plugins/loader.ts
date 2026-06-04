@@ -21,7 +21,7 @@ export interface LoaderEvents {
 
 export async function loadPlugins(
   pluginsDir: string,
-  makeCtx: (name: string) => PluginContext,
+  makeCtx: (name: string, runtime: 'tick' | 'host') => PluginContext,
   ev: LoaderEvents,
   runtime: 'tick' | 'host' = 'tick',
 ): Promise<LoadedPlugin[]> {
@@ -71,7 +71,7 @@ export async function loadPlugins(
         ev.skipped(manifest.name, 'entry has no default NyxPlugin export');
         continue;
       }
-      await plugin.setup(makeCtx(manifest.name));
+      await plugin.setup(makeCtx(manifest.name, runtime));
       ev.loaded(manifest.name, manifest);
       loaded.push({ name: manifest.name, manifest });
     } catch (err) {
