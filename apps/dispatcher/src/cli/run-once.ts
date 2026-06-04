@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
 import {
@@ -26,10 +26,12 @@ import {
   getRunByTaskId,
   resumeDecidedRuns,
 } from '../pipeline/orchestrator.js';
-import { isAwaiting, isTerminal, type PipelineStatus } from '../pipeline/types.js';
+import { isAwaiting, isTerminal, type DecisionKind, type PipelineStatus } from '../pipeline/types.js';
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
 import { config } from '../config.js';
 import { emitHook, initPlugins } from '../plugins/index.js';
+import { drainPendingActions, insertUnderActiveTasks } from '../control/actions.js';
+import { submitDecision } from '../pipeline/decide.js';
 import { acquire } from '../lockfile.js';
 import * as notify from '../notifier.js';
 import {
@@ -567,6 +569,35 @@ async function main(): Promise<void> {
 
   await initPlugins();
   await emitHook('tick.before', { slot: slotOf(), pid: process.pid });
+
+  const controlApplied = drainPendingActions(
+    {
+      queueTask: (p) => {
+        const raw = String(p.raw ?? '');
+        if (!raw.trim()) throw new Error('queue_task missing raw');
+        const cur = existsSync(config.queuePath) ? readFileSync(config.queuePath, 'utf8') : '## Active Tasks\n';
+        writeFileSync(config.queuePath, insertUnderActiveTasks(cur, raw));
+        return 'queued';
+      },
+      resumeTask: (p) => {
+        const taskId = String(p.taskId ?? '');
+        if (!taskId) throw new Error('resume_task missing taskId');
+        audit('task.resumed', 'control', { taskId });
+        return `resumed ${taskId}`;
+      },
+      pipelineDecision: (p) => {
+        const runId = String(p.runId ?? '');
+        if (!runId) throw new Error('pipeline_decision missing runId');
+        submitDecision(runId, p.decision as DecisionKind, {
+          note: p.note ? String(p.note) : undefined,
+          source: 'control',
+        });
+        return `pipeline ${String(p.decision)} on ${runId}`;
+      },
+    },
+    () => Date.now(),
+  );
+  if (controlApplied > 0) console.log(`[nyx] control actions applied: ${controlApplied}`);
 
   if (hasLiveClaude()) {
     audit('task.skipped.concurrent_claude', 'dispatcher', {});

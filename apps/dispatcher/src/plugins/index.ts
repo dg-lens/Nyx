@@ -9,6 +9,7 @@ import { makePluginContext } from './context.js';
 import { defineBuiltinHooks, _setHookErrorHandler } from './hooks.js';
 import { _setIoErrorHandler, _setIoRoute } from './io.js';
 import { loadPlugins, type LoadedPlugin } from './loader.js';
+import { enqueueAction, type ActionKind } from '../control/db.js';
 
 export { emitHook } from './hooks.js';
 export { sendSignal } from './io.js';
@@ -26,8 +27,13 @@ export async function initPlugins(): Promise<LoadedPlugin[]> {
   _setIoErrorHandler((where, err) =>
     audit('plugin.io.error', 'plugins', { where, error: (err as Error).message }),
   );
-  // Step 2 routes inbound action-intent signals into the pending_actions table.
-  _setIoRoute(() => {});
+  // Inbound action-intent signals (Slack source, desktop) land in pending_actions.
+  _setIoRoute((signal) => {
+    if (signal.kind === 'action') {
+      const p = signal.payload as { action: ActionKind; params?: Record<string, unknown> };
+      enqueueAction(p.action, p.params ?? {}, signal.source, Date.now());
+    }
+  });
 
   return loadPlugins(config.pluginsDir, makePluginContext, {
     loaded: (name, m) => audit('plugin.loaded', 'plugins', { name, version: m.version, tier: m.tier }),
