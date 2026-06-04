@@ -103,7 +103,11 @@ export type AuditEvent =
   | 'pipeline.short_circuit'
   | 'pipeline.aborted'
   | 'pipeline.delivered'
-  | 'pipeline.failed';
+  | 'pipeline.failed'
+  | 'plugin.loaded'
+  | 'plugin.skipped'
+  | 'plugin.hook.error'
+  | 'plugin.io.error';
 
 export interface AuditRow {
   id: number;

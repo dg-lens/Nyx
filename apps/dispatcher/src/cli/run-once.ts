@@ -29,6 +29,7 @@ import {
 import { isAwaiting, isTerminal, type PipelineStatus } from '../pipeline/types.js';
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
 import { config } from '../config.js';
+import { emitHook, initPlugins } from '../plugins/index.js';
 import { acquire } from '../lockfile.js';
 import * as notify from '../notifier.js';
 import {
@@ -564,6 +565,9 @@ async function main(): Promise<void> {
   }
   audit('dispatch.chain_verified', 'dispatcher', { rows: chain.totalRows });
 
+  await initPlugins();
+  await emitHook('tick.before', { slot: slotOf(), pid: process.pid });
+
   if (hasLiveClaude()) {
     audit('task.skipped.concurrent_claude', 'dispatcher', {});
     console.log('[nyx] concurrent claude detected. exit 0.');
@@ -770,6 +774,7 @@ async function main(): Promise<void> {
     audit('dispatch.chain_limit_reached', 'dispatcher', { depth: chainDepth });
   }
 
+  await emitHook('tick.after', { slot: slotOf(), pid: process.pid });
   lock.release();
 }
 

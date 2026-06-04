@@ -6,6 +6,7 @@ import { findTemplate } from '@nyx/assistant';
 import { audit } from './audit.js';
 import type { FlightPlan } from './composer/types.js';
 import { config } from './config.js';
+import { emitHook } from './plugins/hooks.js';
 import { listMcpServers } from './mcp-discovery.js';
 import { buildRequiredContextBlock, parseReadingRefs, resolveReadingRefs } from './reading-resolver.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
@@ -363,7 +364,8 @@ export async function invokeClaude(
   cwd: string,
   opts: BuildPromptOpts = {},
 ): Promise<ClaudeResult> {
-  const prompt = buildPrompt(task, opts);
+  let prompt = buildPrompt(task, opts);
+  prompt = (await emitHook('task.promptBuild', { task, prompt })).prompt;
   const claudeArgs = [
     '-p',
     prompt,
