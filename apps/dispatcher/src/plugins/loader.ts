@@ -54,9 +54,9 @@ export async function loadPlugins(
       continue;
     }
 
-    const entry = resolve(dir, 'dist', 'index.js');
-    if (!existsSync(entry)) {
-      ev.skipped(manifest.name, 'no dist/index.js (build the plugin first)');
+    const entry = ['dist/index.js', 'index.js'].map((e) => resolve(dir, e)).find((p) => existsSync(p));
+    if (!entry) {
+      ev.skipped(manifest.name, 'no dist/index.js or index.js entry');
       continue;
     }
 

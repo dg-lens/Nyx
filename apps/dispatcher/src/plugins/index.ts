@@ -35,8 +35,13 @@ export async function initPlugins(): Promise<LoadedPlugin[]> {
     }
   });
 
-  return loadPlugins(config.pluginsDir, makePluginContext, {
+  const stock = await loadPlugins(config.stockPluginsDir, makePluginContext, {
     loaded: (name, m) => audit('plugin.loaded', 'plugins', { name, version: m.version, tier: m.tier }),
     skipped: (name, reason) => audit('plugin.skipped', 'plugins', { name, reason }),
   });
+  const local = await loadPlugins(config.pluginsDir, makePluginContext, {
+    loaded: (name, m) => audit('plugin.loaded', 'plugins', { name, version: m.version, tier: m.tier }),
+    skipped: (name, reason) => audit('plugin.skipped', 'plugins', { name, reason }),
+  });
+  return [...stock, ...local];
 }

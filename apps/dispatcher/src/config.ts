@@ -44,6 +44,7 @@ export const config = {
   repoRoot: REPO_ROOT,
   dataDir: DATA_DIR,
   pluginsDir: PLUGINS_DIR,
+  stockPluginsDir: resolve(REPO_ROOT, 'plugins'),
   queuePath: resolve(DATA_DIR, 'nyx.md'),
   dbPath: resolve(DATA_DIR, 'data', 'nyx.db'),
   logsDir: resolve(DATA_DIR, 'logs'),

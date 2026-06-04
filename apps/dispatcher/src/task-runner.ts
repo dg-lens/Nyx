@@ -32,20 +32,6 @@ export interface BuildPromptOpts {
   flightPlan?: FlightPlan;
 }
 
-/**
- * Maps a task to its memory-graph entry coordinates: the agent-class (audience)
- * and a scope hint for the seed call. The agent calls `memory_entry` itself with
- * these — the dispatcher doesn't pull node content, it just points the way.
- */
-function memoryHints(task: ParsedTask): { agentClass: string; scopeHint: string } {
-  const agentClass =
-    task.type === 'analysis' ? 'analysis' : task.type === 'assistant' ? 'assistant' : 'coder';
-  const scopeHint = task.repo
-    ? 'omit scope (you will get the root map; lean on memory_search)'
-    : '"nyx"';
-  return { agentClass, scopeHint };
-}
-
 export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): string {
   if (task.type === 'assistant') {
     const tpl = findTemplate(task.id);
@@ -80,18 +66,6 @@ export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): strin
   sections.push(`Task type: ${task.type}`);
   if (task.repo) sections.push(`Repo: ${task.repo}`);
   if (task.gates !== 'none') sections.push(`Gate stages (run by Nyx after you finish): ${task.gates.join(', ')}`);
-
-  if (task.type === 'code' || task.type === 'analysis') {
-    const { agentClass, scopeHint } = memoryHints(task);
-    sections.push('');
-    sections.push('## MEMORY — use the knowledge graph, do not guess');
-    sections.push('');
-    sections.push('You have a `memory` knowledge graph via the `memory_*` MCP tools — the stack\'s invariants, lessons, decisions, and conventions as atomic nodes. Consult it before reinventing or repeating a known mistake:');
-    sections.push(`- **Start** with \`memory_entry({ agentClass: "${agentClass}", scope: ${scopeHint} })\` — it returns your context map (relevant nodes + one-line summaries). Open nodes on demand; do NOT bulk-load.`);
-    sections.push('- `memory_open({ id })` for a node\'s full body + its neighbors (follow the links).');
-    sections.push('- `memory_search({ query })` when you hit a failure or unfamiliar area and no link leads there (semantic — no literal keyword overlap needed).');
-    sections.push('- If a `memory_*` call errors (server unavailable), proceed without it — the graph is an aid, not a gate.');
-  }
 
   if (task.type === 'code') {
     sections.push('');

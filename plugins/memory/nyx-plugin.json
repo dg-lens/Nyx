@@ -1,0 +1,11 @@
+{
+  "name": "memory",
+  "version": "0.1.0",
+  "sdkVersion": "1",
+  "tier": "approved",
+  "coreVersion": ">=1.2.0",
+  "capabilities": {
+    "hooksAttached": [{ "name": "task.promptBuild", "kind": "filter" }],
+    "env": ["NYX_MEMORY_BACKEND"]
+  }
+}
