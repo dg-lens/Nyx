@@ -98,19 +98,6 @@ export const config = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
   githubToken: process.env.GITHUB_TOKEN ?? '',
 
-  /**
-   * v0.8: Supabase access for the remote-actions poller. The dispatcher reads
-   * `nyx_pending_actions` (written by the portal) and writes back the
-   * applied/failed status + result. Same project the sync daemon uses.
-   * Defaults to empty strings — the poller no-ops cleanly when unset.
-   */
-  // Strip trailing slash AND any /rest/v1[/] suffix the user may have pasted
-  // from the Supabase dashboard (matches apps/sync config). fetchPending appends
-  // /rest/v1 itself — without this strip the path doubles to /rest/v1/rest/v1/…
-  // and Supabase returns 404 → circuit breaker trips after 3 failures.
-  supabaseUrl: (process.env.SUPABASE_URL ?? '').replace(/\/+$/, '').replace(/\/rest\/v\d+$/, ''),
-  supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY ?? '',
-
   autoChain: bool('AUTO_CHAIN', true),
   maxChainDepth: int('MAX_CHAIN_DEPTH', 2),
   // Pipeline (`[type: pipeline]`) — max coders running concurrently in the

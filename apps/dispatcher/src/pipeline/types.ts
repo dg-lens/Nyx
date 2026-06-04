@@ -51,7 +51,7 @@ export interface OperatorDecision {
 }
 
 /**
- * Mutable run state. Mirrored to Supabase for the portal. The audit chain holds
+ * Mutable run state. The audit chain holds
  * the append-only `pipeline.*` event record; this row holds current state.
  */
 export interface PipelineRun {

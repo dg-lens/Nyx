@@ -36,3 +36,7 @@ context/
 # Held out of v1.0 — the legacy memory MCP carries stack-specific scopes; a
 # clean memory layer lands in the Phase-2 (Obsidian) build. Untracked for now.
 config/memory/memory-mcp/
+
+# Deferred remote plugin (Supabase mirror, remote-action control, web dashboard).
+# Retained on disk for a future plugin; NOT part of the local-only v1.0 download.
+_deferred/

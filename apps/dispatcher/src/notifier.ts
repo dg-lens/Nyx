@@ -176,11 +176,3 @@ export async function queueIdle(): Promise<void> {
 export async function queueStale(hours: number): Promise<void> {
   await dm(`🟡 No successful task in ${hours} hours.`);
 }
-
-export async function remoteActionsCircuitOpen(consecutive404s: number): Promise<void> {
-  await dm(
-    `⚠️ remote-actions circuit breaker tripped: ${consecutive404s} consecutive 404s from Supabase.\n` +
-      `The remote-actions poller is now paused for 1 hour. Check that the \`nyx_pending_actions\` table exists and that SUPABASE_URL / SUPABASE_SERVICE_KEY are correct.\n` +
-      `The poller will auto-probe after 1 hour and reset automatically on success.`,
-  );
-}

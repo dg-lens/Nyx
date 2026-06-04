@@ -75,12 +75,11 @@ the integration branch in the base clone and does not clean up.
 | `shipping.ts` | Final smoke only (per-phase recovery now lives in executing). `runShipping` runs `defaultSmoke` once → green / review. **`defaultSmoke` is HERMETIC**: pristine `checkout/reset/clean` + verify-only prompt + post-run `git status` dirty-guard (`interpretSmoke`) — a verifier that mutates the tree fails the run. **`runDiagnosticRound`** (exported, used by the executing phase loop) re-implements held tasks from a clean integration baseline + only ADOPTS a fix that landed in-scope (`classifyDiagnosticFix`). `buildReviewBrief` pure. `MAX_AUTONOMOUS_DIAGNOSTIC_ROUNDS=2`. |
 | `delivery.ts` | Stage ⑨ (terminal A). `runDelivery`: push the integration branch + open a PR WITHOUT auto-merge (`openDeliveryPR`, injected), `detectPipelineDeploy` (changedFiles × repo `deployPatterns` → reuse `task.production.deploy_required`), `buildDeliveryBrief` (pure), `cleanupRunArtifacts` (remove base + worktrees). The orchestrator emits the `pipeline.delivered` marker with the PR result. |
 | `orchestrator.ts` | The state-machine driver. `advancePipeline` (segment loop), `createPipelineRun`, `resumeDecidedRuns` (tick priority 1), the stage segments + gate handlers. Planning is injected (`AdvanceDeps.plan`) so the orchestration is unit-testable with a canned `PlanningResult`. `_setBriefsDir` test seam. |
-| `decide.ts` | `submitDecision` — the single chokepoint both the CLI and the portal call. Validates the decision against the run's current gate, records it, emits `pipeline.decision.submitted`. |
+| `decide.ts` | `submitDecision` — the single chokepoint the CLI calls (a future remote plugin reuses it). Validates the decision against the run's current gate, records it, emits `pipeline.decision.submitted`. |
 
 Wiring outside this dir:
 - `cli/run-once.ts` — `handlePipelineInTick` (find-or-create + advance, bypasses inFlight/3-strike) + the `resumeDecidedRuns` pre-pass at tick top.
 - `cli/pipeline.ts` + `scripts/nyx-pipeline.sh` — `nyx pipeline list|status|go|revise|proceed|fix|rollback|abort`.
-- `remote-actions.ts` — `pipeline_decision` action (portal path) → `submitDecision`.
 - `notifier.ts` — `pipelineAwaitingGate` (alert-only Slack ping).
 
 ---

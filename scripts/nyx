@@ -14,7 +14,6 @@ USAGE
 
 SUBCOMMANDS
   audit       Verify audit chain or inspect events  (e.g. 'nyx audit --chain')
-  dashboard   Manage local dashboard (decommissioned, script retained)
   dispatch    Run one dispatch tick via the wrapper script
   down        Stop Nyx via launchctl
   logs        Tail Nyx logs
@@ -23,7 +22,6 @@ SUBCOMMANDS
   resume      Resume a halted task                   (e.g. 'nyx resume <TASK-ID>')
   slots       Show slot grid state
   status      Show launchd + dispatcher status
-  sync        Run a Supabase sync pass
   tick        Force one dispatch tick
   up          Start Nyx via launchctl
 

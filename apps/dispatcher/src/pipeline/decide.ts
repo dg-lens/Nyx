@@ -1,12 +1,13 @@
 /**
- * Operator-decision intake for pipeline gates — the single chokepoint both the
- * CLI (`nyx pipeline …`) and the portal (remote-actions `pipeline_decision`)
- * call. It validates the decision against the run's current gate, records it on
- * the run, and emits `pipeline.decision.submitted`. The NEXT tick's resume scan
+ * Operator-decision intake for pipeline gates — the single chokepoint for
+ * pipeline gate decisions (today the `nyx pipeline …` CLI; a future remote
+ * plugin reuses the same entry point). It validates the decision against the
+ * run's current gate, records it on the run, and emits
+ * `pipeline.decision.submitted`. The NEXT tick's resume scan
  * (`resumeDecidedRuns`) is what actually advances the run — this only arms it.
  *
- * Keeping validation here (not in the CLI / not in remote-actions) means both
- * surfaces reject the same illegal decisions identically.
+ * Keeping validation here (not in the caller) means every surface rejects the
+ * same illegal decisions identically.
  */
 
 import { audit } from '../audit.js';

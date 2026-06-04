@@ -28,7 +28,6 @@ import {
 } from '../pipeline/orchestrator.js';
 import { isAwaiting, isTerminal, type PipelineStatus } from '../pipeline/types.js';
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
-import { processRemoteActions } from '../remote-actions.js';
 import { config } from '../config.js';
 import { acquire } from '../lockfile.js';
 import * as notify from '../notifier.js';
@@ -470,10 +469,10 @@ function haltTask(
   });
   // Fire-and-forget: don't block the dispatcher on Slack latency.
   void notify.taskHalted(task.id, info.pattern, info.operatorReport);
-  // The portal's /nyx view reads from Supabase (via sync mirror of
-  // system_audit). The task.halted_for_review row is automatically picked up;
-  // the portal renders a red-alert banner when any row with that event remains
-  // un-cleared by task.resumed. No additional Nyx-side dashboard work needed.
+  // The halt is recorded in the audit chain (task.halted_for_review) and the
+  // operator is notified above. A future remote plugin can surface it (e.g. a
+  // dashboard banner) by reading that event until a task.resumed clears it;
+  // the local core needs no extra work here.
   return {
     taskId: task.id,
     status: 'failed',
@@ -582,21 +581,6 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     console.error('[nyx] inbox ingest threw (unexpected):', (err as Error).message);
-  }
-
-  // v0.8 Tier-1 remote dispatch: drain any pending portal-driven actions
-  // before picking a task. queue_task appends to nyx.md so the picker
-  // sees the new row in this same tick. resume_task / cancel_task emit
-  // audit rows so halt-filter logic clears immediately. Failures don't
-  // block the dispatch loop — each action's success/failure is logged
-  // back to the nyx_pending_actions row.
-  try {
-    const applied = await processRemoteActions();
-    if (applied > 0) {
-      console.log(`[nyx] remote actions applied: ${applied}`);
-    }
-  } catch (err) {
-    console.error('[nyx] processRemoteActions threw (unexpected):', (err as Error).message);
   }
 
   // Pipeline tick priority 1: resume any run parked at a gate whose operator

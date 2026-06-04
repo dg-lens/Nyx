@@ -4,10 +4,6 @@
 # Idempotent. Safe to run when things are already up — each subcommand is itself idempotent.
 #
 #   1. dispatcher (launchd, fires every 15 min)
-#   2. sync daemon (local→Supabase mirror; only starts if Supabase creds set)
-#
-# The operator dashboard is at http://127.0.0.1:8767 (local; set your own host) (the portal).
-# The local HTTP dashboard on port 8767 has been decommissioned (EMP-008).
 #
 # Use scripts/nyx-down.sh to stop everything.
 set -euo pipefail
@@ -34,15 +30,6 @@ if launchctl list 2>/dev/null | grep -q nyx.dispatcher; then
 else
   launchctl load -w "$DISPATCHER_PLIST"
   echo "  ✓ loaded"
-fi
-
-echo
-echo "── 2. sync daemon ───────────────────────────────────────"
-if [[ -z "${SUPABASE_URL:-}" || -z "${SUPABASE_SERVICE_KEY:-}" ]]; then
-  echo "  ⊘ skipped (SUPABASE_URL / SUPABASE_SERVICE_KEY not set in .env)"
-  echo "    see DEPLOY.md to wire up Supabase, then re-run this command"
-else
-  bash "$NYX_ROOT/scripts/nyx-sync.sh" start
 fi
 
 echo

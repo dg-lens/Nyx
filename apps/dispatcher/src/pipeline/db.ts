@@ -3,8 +3,7 @@
  *
  * Mutable state (not hash-chained), same posture as composer/db.ts. The audit
  * chain records the append-only `pipeline.*` lifecycle events; this row holds
- * the current state a tick reads to decide what to do next. Mirrored to
- * Supabase for the portal (sync daemon).
+ * the current state a tick reads to decide what to do next.
  *
  * Schema is idempotent — safe to call on every dispatcher startup. The DB
  * connection is reused; node:sqlite is process-local.

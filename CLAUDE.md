@@ -55,10 +55,6 @@ The local gate runs `pytest` + `pnpm test` but NOT `ruff` / `eslint` — lint fa
 
 After a code task pushes, the dispatcher compares the committed diff against `deployPatterns` configured in `config.gitTargets` for that repo. Any match emits **`task.production.deploy_required`** into the audit chain — observational only, does not block completion. Payload: `{ taskId, repo, matchedFiles, deployTargets }`, where `deployTargets` names the surfaces needing a manual deploy. `gitTargets` is empty by default; populate it per install for repos with sub-apps that need a manual deploy step. Implementation: `apps/dispatcher/src/deploy-detector.ts`, emitted from `apps/dispatcher/src/cli/finalize.ts`.
 
-### SUPABASE_URL must not include the /rest/v1 suffix
-
-`config.ts` appends `/rest/v1/<table>` itself. If `SUPABASE_URL` is the dashboard clipboard value (`https://<ref>.supabase.co/rest/v1/`), the path doubles to `/rest/v1/rest/v1/<table>` → 404, and after 3 consecutive 404s the remote-actions circuit breaker opens. Config strips the suffix at parse time (`.replace(/\/rest\/v\d+$/, '')`); the correct value is `https://<ref>.supabase.co` with no path.
-
 ### Halt-check ordering invariant (dispatch loop)
 
 In `apps/dispatcher/src/cli/run-once.ts` `main()`, `isTaskHalted(next.id)` **must** be called BEFORE `git.inFlight(next.id)`. Otherwise: when a task halts the process exits; on the next tick `inFlight` sees the working dir present but its sentinel PID dead, treats it as a crashed run, and wipes it (`stale_cleared`) — destroying the dir the operator needs to salvage the halt. Checking halt first `continue`s before `inFlight` runs, leaving the dir intact. Regression test: `apps/dispatcher/__tests__/halt-working-dir-preservation.test.ts`.
@@ -67,7 +63,7 @@ In `apps/dispatcher/src/cli/run-once.ts` `main()`, `isTaskHalted(next.id)` **mus
 
 Code tasks with no `[repo:]` tag run in a `git worktree add` subdirectory of the Nyx repo. Two things to know:
 
-- **Root typecheck must be `pnpm -r build`, not `pnpm -r typecheck`:** `apps/dashboard` and `apps/sync` import from `@nyx/dispatcher/dist/<file>.js` (compiled output), so `tsc --noEmit` alone fails in a fresh worktree where `dist/` doesn't exist. `pnpm -r build` runs in topological order — builds `dispatcher/dist/` first, then the others resolve.
+- **Root typecheck must be `pnpm -r build`, not `pnpm -r typecheck`:** any workspace that imports another's compiled output (`@nyx/dispatcher/dist/<file>.js`) fails `tsc --noEmit` in a fresh worktree where `dist/` doesn't exist. `pnpm -r build` runs in topological order — builds `dispatcher/dist/` first, then dependents resolve.
 - **Local-only repos have no `origin`:** `detectMainBranch()` falls back to `process.env['NYX_MAIN_BRANCH']` when `git symbolic-ref refs/remotes/origin/HEAD` fails. Set `NYX_MAIN_BRANCH=main` in `.env` for a local-only install, or the merge step throws.
 - **A dirty working tree blocks merge:** `finalizeCodeLocal` runs `git merge` against the repo, which the operator may be editing. The audit-pass agent must `git stash push --include-untracked`, merge, then pop — never auto-commit the operator's pending edits.
 
@@ -248,7 +244,8 @@ BWS_ACCESS_TOKEN=$(cat ~/.config/bitwarden/<project>.token) \
 
 You are working on Nyx's source code.
 
-- **Workspaces:** `dispatcher` (engine), `sync` (Supabase mirror), `assistant` (prompt templates), `analyzer` (scan library), `dashboard` (local web UI, decommissioned).
+- **Workspaces:** `dispatcher` (engine), `assistant` (prompt templates), `analyzer` (scan library).
+- **Local-only by design (v1.0):** the Supabase mirror, remote-action control, and web monitoring are a *deferred remote plugin* (not in this download). Nyx runs entirely on the local machine.
 - **Hash-chained audit DB** — never modify past rows.
 - **Slot-grid scheduling** (96 slots/day), not arbitrary timestamps.
 - **Allowlist-with-MCP-discovery** permission model at spawn.
