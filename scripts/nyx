@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "$0")/_layout.sh"
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$HOME/Nyx}"
@@ -25,6 +26,7 @@ SUBCOMMANDS
   status      Show launchd + dispatcher status
   tick        Force one dispatch tick
   up          Start Nyx via launchctl
+  update      Update Core to stock origin/main + rebuild (Data/Plugins untouched)
 
   Run 'nyx <sub> --help' for subcommand-specific help where supported.
 

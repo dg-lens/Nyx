@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+source "$(dirname "$0")/_layout.sh"
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-QUEUE="$NYX_ROOT/nyx.md"
-DB="$NYX_ROOT/data/nyx.db"
+QUEUE="$NYX_DATA_DIR/nyx.md"
+DB="$NYX_DATA_DIR/data/nyx.db"
 LOCKFILE="/tmp/nyx-dispatch.lock"
 SH_LOCK="/tmp/nyx-dispatch.sh.lock"
 
@@ -27,7 +28,7 @@ if [[ -n "$LAUNCHD_LINE" ]]; then
     warn "loaded — last exit $EXIT_CODE"
   fi
 else
-  warn "not loaded — run: launchctl load -w $NYX_ROOT/config/launchd/com.nyx.dispatcher.plist"
+  warn "not loaded — run: launchctl load -w $NYX_DATA_DIR/com.nyx.dispatcher.plist"
 fi
 NEXT_TICK=$(date -v +15M "+%H:%M" | awk -F: '{ m = int($2/15) * 15; printf "%s:%02d\n", $1, m }')
 info "next quarter-hour mark: $NEXT_TICK (current slot: $(date "+%-H %-M" | awk '{ print $1*4 + int($2/15) }'))"

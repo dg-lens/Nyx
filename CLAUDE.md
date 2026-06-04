@@ -259,16 +259,17 @@ Operator commands:
 bash scripts/nyx-up.sh / down.sh / status.sh
 bash scripts/nyx-tick.sh                  # force one dispatch
 bash scripts/nyx-audit.sh --chain         # verify the hash chain
+bash scripts/nyx-update.sh                # revert Core to stock origin/main + rebuild
 pnpm -r build                             # all workspaces (topological)
 pnpm --filter @nyx/dispatcher test
 
 # Homebrew install (see config/Formula/nyx.rb)
-brew tap OWNER/nyx
-brew install --HEAD OWNER/nyx/nyx
-brew services start OWNER/nyx/nyx
-brew reinstall --HEAD OWNER/nyx/nyx       # update
+brew tap dg-lens/nyx
+brew install --HEAD dg-lens/nyx/nyx
+brew services start dg-lens/nyx/nyx
+brew reinstall --HEAD dg-lens/nyx/nyx     # update
 ```
 
-**`NYX_DATA_DIR` / `NYX_REPO_ROOT` separation:** brew installs separate the code location (`NYX_REPO_ROOT` = libexec) from operator data (`NYX_DATA_DIR`: `nyx.md`, `data/`, `logs/`, `.env`). Source installs default both to the repo root.
+**Core / Plugins / Data layout:** an install is three siblings under `~/Nyx` — `Core/` (this repo; `NYX_REPO_ROOT`), `Data/` (`NYX_DATA_DIR`: `.env`, `nyx.md`, `data/`, `logs/`, `outputs/`, `memory/`, `documents/`), and `Plugins/` (`NYX_PLUGINS_DIR`). `config.ts` resolves all personal paths from `NYX_DATA_DIR`, which is set by the launchd plist, the `nyx` wrapper, and `scripts/_layout.sh` (sibling auto-detection). If all three vars are unset (a flat clone), they collapse to the repo root — backward-compatible. `nyx update` hard-resets Core to stock `origin/main` without touching Data or Plugins.
 
 Anything destructive (`launchctl unload`, `git reset`, schema drop): pause and confirm with the operator first.

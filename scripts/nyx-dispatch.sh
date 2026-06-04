@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "$0")/_layout.sh"
 
 set -u
 

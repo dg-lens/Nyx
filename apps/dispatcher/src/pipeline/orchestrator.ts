@@ -48,7 +48,7 @@ function now(): number {
 
 // ─── Brief output (test seam) ─────────────────────────────────────────────────
 
-let briefsDir = resolve(config.root, 'data', 'pipeline-briefs');
+let briefsDir = resolve(config.dataDir, 'data', 'pipeline-briefs');
 /** Test seam — redirect gate briefs away from the real data dir. */
 export function _setBriefsDir(dir: string): void {
   briefsDir = dir;

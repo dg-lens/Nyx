@@ -7,7 +7,7 @@ dist/
 .env.*.local
 
 nyx.md
-config/launchd/com.nyx.dispatcher.plist
+com.nyx.dispatcher.plist
 
 data/nyx.db
 data/nyx.db-shm

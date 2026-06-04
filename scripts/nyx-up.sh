@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+source "$(dirname "$0")/_layout.sh"
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 NYX_DATA_DIR="${NYX_DATA_DIR:-$NYX_ROOT}"
-DISPATCHER_PLIST="$NYX_ROOT/config/launchd/com.nyx.dispatcher.plist"
+DISPATCHER_PLIST="$NYX_DATA_DIR/com.nyx.dispatcher.plist"
 
 if [[ ! -f "$DISPATCHER_PLIST" ]]; then
   echo "✗ launchd plist not found at $DISPATCHER_PLIST" >&2

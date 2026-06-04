@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+source "$(dirname "$0")/_layout.sh"
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-QUEUE="$NYX_ROOT/nyx.md"
+QUEUE="$NYX_DATA_DIR/nyx.md"
 SHOW_COMPLETED=0
 [[ "${1:-}" == "--all" ]] && SHOW_COMPLETED=1
 

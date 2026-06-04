@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+source "$(dirname "$0")/_layout.sh"
 set -euo pipefail
 
 NYX_ROOT="${NYX_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-QUEUE="$NYX_ROOT/nyx.md"
-DB="$NYX_ROOT/data/nyx.db"
+QUEUE="$NYX_DATA_DIR/nyx.md"
+DB="$NYX_DATA_DIR/data/nyx.db"
 
 if [[ ! -f "$QUEUE" ]]; then
   echo "queue not found: $QUEUE" >&2

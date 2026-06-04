@@ -9,9 +9,19 @@ function expandUser(p: string): string {
   return p;
 }
 
-const ROOT = resolve(import.meta.dirname, '..', '..', '..');
-const ENV_FILE = resolve(ROOT, '.env');
+const REPO_ROOT = process.env['NYX_REPO_ROOT']
+  ? expandUser(process.env['NYX_REPO_ROOT'])
+  : resolve(import.meta.dirname, '..', '..', '..');
+const DATA_DIR = process.env['NYX_DATA_DIR']
+  ? expandUser(process.env['NYX_DATA_DIR'])
+  : existsSync(resolve(REPO_ROOT, '..', 'Data'))
+    ? resolve(REPO_ROOT, '..', 'Data')
+    : REPO_ROOT;
+const PLUGINS_DIR = process.env['NYX_PLUGINS_DIR']
+  ? expandUser(process.env['NYX_PLUGINS_DIR'])
+  : resolve(REPO_ROOT, '..', 'Plugins');
 
+const ENV_FILE = resolve(DATA_DIR, '.env');
 if (existsSync(ENV_FILE)) {
   loadEnv({ path: ENV_FILE });
 }
@@ -30,13 +40,16 @@ function bool(name: string, fallback: boolean): boolean {
 }
 
 export const config = {
-  root: ROOT,
-  queuePath: resolve(ROOT, 'nyx.md'),
-  dbPath: resolve(ROOT, 'data', 'nyx.db'),
-  logsDir: resolve(ROOT, 'logs'),
-  outputsDir: resolve(ROOT, 'outputs'),
-  worktreesDir: resolve(ROOT, 'worktrees'),
-  contextDir: resolve(ROOT, 'context'),
+  root: REPO_ROOT,
+  repoRoot: REPO_ROOT,
+  dataDir: DATA_DIR,
+  pluginsDir: PLUGINS_DIR,
+  queuePath: resolve(DATA_DIR, 'nyx.md'),
+  dbPath: resolve(DATA_DIR, 'data', 'nyx.db'),
+  logsDir: resolve(DATA_DIR, 'logs'),
+  outputsDir: resolve(DATA_DIR, 'outputs'),
+  worktreesDir: resolve(DATA_DIR, 'worktrees'),
+  contextDir: resolve(DATA_DIR, 'context'),
 
   lockfilePath: '/tmp/nyx-dispatch.lock',
   finalizeSentinelPath: '/tmp/nyx-finalize-in-progress.json',
@@ -125,7 +138,7 @@ export const config = {
   bitwardenDefaultRotationDays: int('BITWARDEN_DEFAULT_ROTATION_DAYS', 90),
   bitwardenOrganizationId: process.env['BITWARDEN_ORGANIZATION_ID'] ?? '',
   bitwardenApiBase: (process.env['BITWARDEN_API_BASE'] ?? 'https://api.bitwarden.com').replace(/\/+$/, ''),
-  bitwardenInboxDir: resolve(ROOT, 'inbox', 'rotation-events'),
+  bitwardenInboxDir: resolve(DATA_DIR, 'inbox', 'rotation-events'),
 } as const;
 
 export type Config = typeof config;

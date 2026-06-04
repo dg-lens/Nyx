@@ -285,7 +285,7 @@ export async function finalizeAnalysis(ctx: FinalizeContext): Promise<RunOutcome
     };
   }
   const outBase = task.output
-    ? resolve(config.root, task.output.replace(/\/$/, ''))
+    ? resolve(config.dataDir, task.output.replace(/\/$/, ''))
     : resolve(config.outputsDir, 'reports');
   mkdirSync(outBase, { recursive: true });
   const outFile = resolve(outBase, `${task.id}-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
@@ -309,7 +309,7 @@ export async function finalizeContent(ctx: FinalizeContext): Promise<RunOutcome>
     };
   }
   const outBase = task.output
-    ? resolve(config.root, task.output.replace(/\/$/, ''), task.id)
+    ? resolve(config.dataDir, task.output.replace(/\/$/, ''), task.id)
     : resolve(config.outputsDir, 'content', task.id);
   mkdirSync(outBase, { recursive: true });
   for (const name of artifacts) {

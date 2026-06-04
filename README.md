@@ -17,10 +17,10 @@ A drop-in autonomous agent-management framework. Nyx drains a scheduled task que
 ## Quickstart
 
 ```
-git clone https://github.com/dg-lens/Nyx.git ~/Nyx
-cd ~/Nyx
-bash scripts/nyx-bootstrap.sh     # runtime dirs, .env, nyx.md, launchd plist, build
-$EDITOR .env                      # set GIT_AUTHOR_*, choose auth (key or OAuth)
+git clone https://github.com/dg-lens/Nyx.git ~/Nyx/Core
+cd ~/Nyx/Core
+bash scripts/nyx-bootstrap.sh     # creates ~/Nyx/{Data,Plugins}, seeds config, builds
+$EDITOR ../Data/.env              # set GIT_AUTHOR_*, choose auth (key or OAuth)
 bash scripts/nyx-up.sh            # load the dispatcher into launchd
 bash scripts/nyx-status.sh        # confirm it is running
 ```
@@ -48,11 +48,23 @@ Both are per-install and gitignored.
 
 ## Layout
 
+A Nyx install is three sibling directories under `~/Nyx`:
+
+- **`Core/`** — this repo (stock framework code). `nyx update` reverts it to `origin/main`; it holds no personal data.
+- **`Plugins/`** — plugins that extend the core; kept across Core updates.
+- **`Data/`** — your `.env`, `nyx.md`, task DBs, `logs/`, `outputs/`, `memory/`, and `documents/`. **Never touched by a Core update.**
+
+Inside `Core/`:
+
 - `apps/dispatcher` — the engine: scheduler, spawner, audit chain, composer, pipeline, secrets
 - `apps/assistant` — assistant-task prompt templates
 - `apps/analyzer` — repo-scan library
 - `scripts/` — the `nyx` CLI wrapper + `launchd` helpers
 - `config/` — Homebrew formula + `launchd` plist template
+
+## Updating
+
+`nyx update` fetches and hard-resets `Core/` to `origin/main`, then rebuilds. `Data/` and `Plugins/` are siblings of `Core/` and are never touched, so a core update reverts to stock without disturbing your data or plugins.
 
 ## Homebrew (optional)
 
