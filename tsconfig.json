@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    { "path": "./apps/dispatcher" },
+    { "path": "./apps/assistant" },
+    { "path": "./apps/analyzer" }
+  ]
+}

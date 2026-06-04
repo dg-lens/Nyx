@@ -1,0 +1,21 @@
+{
+  "name": "nyx",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Nyx — a drop-in autonomous agent-management framework. Dispatch decomposes, the dispatcher executes.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r build",
+    "test": "pnpm -r --if-present test",
+    "dispatch": "node apps/dispatcher/dist/cli/run-once.js",
+    "dispatch:dev": "tsx apps/dispatcher/src/cli/run-once.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.4"
+  }
+}

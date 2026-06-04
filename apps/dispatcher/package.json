@@ -1,0 +1,24 @@
+{
+  "name": "@nyx/dispatcher",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/cli/run-once.js",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/cli/run-once.js",
+    "dev": "tsx src/cli/run-once.ts",
+    "test": "node --import tsx --test ./__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "@nyx/assistant": "workspace:*",
+    "@slack/web-api": "^7.6.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.4"
+  }
+}

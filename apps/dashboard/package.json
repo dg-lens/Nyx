@@ -1,0 +1,21 @@
+{
+  "name": "@nyx/dashboard",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/cli/serve.js",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/cli/serve.js",
+    "dev": "tsx src/cli/serve.ts"
+  },
+  "dependencies": {
+    "@nyx/dispatcher": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.4"
+  }
+}

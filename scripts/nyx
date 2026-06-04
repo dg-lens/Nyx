@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+NYX_ROOT="${NYX_REPO_ROOT:-$HOME/Nyx}"
+SCRIPTS_DIR="$NYX_ROOT/scripts"
+
+usage() {
+  cat <<EOF
+nyx — Nyx CLI wrapper
+
+USAGE
+  nyx <subcommand> [args...]
+  nyx --help
+
+SUBCOMMANDS
+  audit       Verify audit chain or inspect events  (e.g. 'nyx audit --chain')
+  dashboard   Manage local dashboard (decommissioned, script retained)
+  dispatch    Run one dispatch tick via the wrapper script
+  down        Stop Nyx via launchctl
+  logs        Tail Nyx logs
+  pipeline    Control pipeline runs at their gates   (e.g. 'nyx pipeline list')
+  queue       Inspect the task queue
+  resume      Resume a halted task                   (e.g. 'nyx resume <TASK-ID>')
+  slots       Show slot grid state
+  status      Show launchd + dispatcher status
+  sync        Run a Supabase sync pass
+  tick        Force one dispatch tick
+  up          Start Nyx via launchctl
+
+  Run 'nyx <sub> --help' for subcommand-specific help where supported.
+
+PATHS
+  Nyx root:  $NYX_ROOT
+  Scripts dir:   $SCRIPTS_DIR
+  This wrapper:  ${BASH_SOURCE[0]}
+
+  Override NYX_REPO_ROOT to point at a different Nyx code install.
+  Override NYX_DATA_DIR to point at a different data directory
+  (nyx.md, data/, logs/, .env). Defaults to NYX_REPO_ROOT.
+  When installed via brew these are separated automatically.
+EOF
+}
+
+case "${1:-}" in
+  ""|help|-h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+SUB="$1"; shift
+TARGET="$SCRIPTS_DIR/nyx-$SUB.sh"
+
+if [[ ! -f "$TARGET" ]]; then
+  echo "nyx: unknown subcommand '$SUB'" >&2
+  echo "Run 'nyx --help' for available subcommands." >&2
+  exit 64
+fi
+
+exec bash "$TARGET" "$@"

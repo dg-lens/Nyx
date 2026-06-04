@@ -1,0 +1,38 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+
+data/nyx.db
+data/nyx.db-shm
+data/nyx.db-wal
+data/*.cursor
+data/remote-actions-circuit.json
+
+logs/
+outputs/
+worktrees/
+context/
+
+# Per-operator Claude Code session config — never version-controlled
+.claude/
+
+# macOS
+.DS_Store
+
+# transient
+/tmp/nyx-*
+*.tmp
+
+# v0.9 — sentinel files written into working dirs by createLocalWorktree /
+# cloneExternalRepo so inFlight() can verify PID liveness. They live INSIDE
+# worktrees/ and /tmp/nyx-clone-* which are already ignored above; this
+# line is defense-in-depth in case a sentinel ever lands at repo root.
+.nyx-task.pid
+
+# Held out of v1.0 — the legacy memory MCP carries stack-specific scopes; a
+# clean memory layer lands in the Phase-2 (Obsidian) build. Untracked for now.
+config/memory/memory-mcp/

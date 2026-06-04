@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nyx.dashboard</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NYX_ROOT__/scripts/nyx-dashboard.sh</string>
+    <string>fg</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__NYX_ROOT__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>NYX_REPO_ROOT</key>
+    <string>__NYX_ROOT__</string>
+    <!-- HOST/PORT default to whatever's in .env (loaded by nyx-dashboard.sh).
+         Leave these unset to inherit from .env, or set them here to override. -->
+    <key>CLI_INVOCATION</key>
+    <string>plist</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__NYX_ROOT__/logs/dashboard.launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__NYX_ROOT__/logs/dashboard.launchd.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>Nice</key>
+  <integer>5</integer>
+</dict>
+</plist>

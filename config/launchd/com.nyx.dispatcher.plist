@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nyx.dispatcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__NYX_ROOT__/scripts/nyx-dispatch.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__NYX_ROOT__</string>
+
+    <!-- 5-minute cadence (v0.18, for pipeline responsiveness — a [type: pipeline]
+         run resumes within one tick of a gate decision). The 96-slot grid is
+         still 15 min: slotted/every tasks fire once per 15-min slot window via
+         the tasksFiredInWindow dedup, so the 3 ticks inside each slot are no-ops
+         for them — the extra ticks only advance pipeline runs + standing tasks.
+         A long segment that holds `claude` past a tick is skipped by the
+         hasLiveClaude guard, same as before. Replaces the prior 00/15/30/45
+         slot-aligned schedule.
+         ACTIVATE: copy this plist to ~/Library/LaunchAgents and
+         `launchctl unload && launchctl load` it (or re-run the install). -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Minute</key><integer>35</integer></dict>
+        <dict><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Minute</key><integer>55</integer></dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__NYX_ROOT__/logs/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__NYX_ROOT__/logs/launchd.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>__NYX_HOME__</string>
+        <!-- Source-install: both point at the repo root. Brew install: override via wrapper. -->
+        <key>NYX_REPO_ROOT</key>
+        <string>__NYX_ROOT__</string>
+        <key>NYX_DATA_DIR</key>
+        <string>__NYX_ROOT__</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>5</integer>
+</dict>
+</plist>
