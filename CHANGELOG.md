@@ -2,6 +2,22 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.2.0 — 2026-06-04
+
+### Plugin system
+- A **plugin loader**: drop a plugin in `Plugins/` (a manifest + a built entry) and it is discovered, validated against the SDK version, and loaded at dispatcher startup — isolated so a plugin error never breaks a tick.
+- A stable **plugin SDK** (`NyxPlugin`, `Signal`, manifest types + `definePlugin`) — the public contract plugins build against, independent of Core internals.
+- **Hook plane** — a runtime registry plugins use to affect Core: `observe` / `filter` (chained transforms) / `gate` handlers, plus plugin-defined hooks. Core ships built-in emit points at `tick.before`/`tick.after`, `task.promptBuild`, and more.
+- **I/O plane** — plugin-registered sources (external → normalized signal) and sinks (signal → external).
+- **Local control surface** — a `pending_actions` table any producer (CLI, desktop, a plugin source) writes to and the dispatcher drains each tick: `queue_task`, `resume_task`, `pipeline_decision`, `force_tick`.
+
+## v1.1.0 — 2026-06-04
+
+### Core / Plugins / Data layout
+- An install is three sibling directories: `Core/` (stock code), `Plugins/` (extensions, kept across updates), and `Data/` (`.env`, the task queue, task DBs, logs, outputs, memory, documents).
+- The dispatcher reads every personal path from `Data/` — set by the launchd plist, the `nyx` wrapper, or sibling auto-detection — cleanly separating code from data.
+- **`nyx update`** hard-resets `Core/` to stock `origin/main` and rebuilds, leaving `Data/` and `Plugins/` untouched.
+
 ## v1.0.0 — 2026-06-04
 
 First release.
