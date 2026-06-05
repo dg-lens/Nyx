@@ -16,7 +16,7 @@ struct SettingsView: View {
             pluginsSection
             pipelineSection
             dispatcherSection
-            integrationsSection
+            environmentSection
             daemonSection
             dataSection
         }
@@ -150,14 +150,29 @@ struct SettingsView: View {
     }
 
     // MARK: Integrations
-    private var integrationsSection: some View {
-        Section("Integrations") {
-            LabeledContent("Anthropic auth", value: s.hasApiKey ? "API key (billed)" : "OAuth / Max")
-            TextField("Slack channel", text: $s.slackChannel)
-            TextField("Memory backend", text: $s.memoryBackend)
-            Button("Save integrations") { s.saveIntegrations() }
-            Text("Tokens (Slack, RemoteActions) live in Data/.env and are never shown here.")
+    private var environmentSection: some View {
+        Section("Environment & Secrets") {
+            Text("Manage every variable here — no need to open Data/.env. Secrets are write-only: a set value is never displayed, only replaced.")
                 .font(.caption).foregroundStyle(.secondary)
+            ForEach($s.envFields) { $field in
+                if field.secret {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(field.label)
+                            Spacer()
+                            Text(field.isSet ? "✓ set" : "— not set")
+                                .font(.caption2)
+                                .foregroundStyle(field.isSet ? Color.green : Color.secondary)
+                        }
+                        SecureField(field.isSet ? "enter a new value to replace" : "paste value", text: $field.value)
+                    }
+                } else {
+                    LabeledContent(field.label) {
+                        TextField(field.key, text: $field.value).frame(maxWidth: 260)
+                    }
+                }
+            }
+            Button("Save environment") { s.saveEnvFields() }.buttonStyle(.borderedProminent)
         }
     }
 

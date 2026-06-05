@@ -38,17 +38,38 @@ struct PluginInfo: Identifiable {
     let env: [String]      // declared env var names
 }
 
+struct EnvField: Identifiable {
+    var id: String { key }
+    let key: String
+    let label: String
+    let secret: Bool
+    var value: String      // plain: current value (editable). secret: write-only input.
+    var isSet: Bool        // whether .env currently holds a value
+}
+
 @MainActor
 final class SettingsStore: ObservableObject {
     @Published var settings = NyxSettings()
     @Published var instanceName = ""
     @Published var operatorName = ""
-    @Published var slackChannel = ""
-    @Published var memoryBackend = ""
+    @Published var envFields: [EnvField] = []
     @Published var plugins: [PluginInfo] = []
     @Published var daemonRunning = false
-    @Published var hasApiKey = false
     @Published var status = ""
+
+    // Known env vars surfaced as managed fields. Anything else found in .env is
+    // appended automatically (secret if the name looks like a credential).
+    static let envRegistry: [EnvField] = [
+        EnvField(key: "ANTHROPIC_API_KEY", label: "Anthropic API key (blank = OAuth / Max plan)", secret: true, value: "", isSet: false),
+        EnvField(key: "GITHUB_TOKEN", label: "GitHub token", secret: true, value: "", isSet: false),
+        EnvField(key: "SLACK_BOT_TOKEN", label: "Slack bot token", secret: true, value: "", isSet: false),
+        EnvField(key: "SLACK_APP_TOKEN", label: "Slack app token (Socket Mode)", secret: true, value: "", isSet: false),
+        EnvField(key: "SLACK_CHANNEL", label: "Slack channel", secret: false, value: "", isSet: false),
+        EnvField(key: "SLACK_USER_ID", label: "Slack user ID (for DMs)", secret: false, value: "", isSet: false),
+        EnvField(key: "REMOTEACTIONS_ENDPOINT", label: "RemoteActions endpoint", secret: false, value: "", isSet: false),
+        EnvField(key: "REMOTEACTIONS_TOKEN", label: "RemoteActions token", secret: true, value: "", isSet: false),
+        EnvField(key: "NYX_MEMORY_BACKEND", label: "Memory backend", secret: false, value: "", isSet: false),
+    ]
 
     private var env: [String: String] = [:]
 
@@ -56,9 +77,7 @@ final class SettingsStore: ObservableObject {
         env = Self.readEnv()
         instanceName = env["NAME"] ?? env["NYX_NAME"] ?? "Nyx"
         operatorName = env["OPERATOR_NAME"] ?? ""
-        slackChannel = env["SLACK_CHANNEL"] ?? ""
-        memoryBackend = env["NYX_MEMORY_BACKEND"] ?? "local-obsidian"
-        hasApiKey = !(env["ANTHROPIC_API_KEY"] ?? "").isEmpty
+        loadEnvFields()
         settings = Self.loadSettings()
         scanPlugins()
         refreshDaemonStatus()
@@ -123,8 +142,44 @@ final class SettingsStore: ObservableObject {
         ])
     }
 
-    func saveIntegrations() {
-        saveEnv(["SLACK_CHANNEL": slackChannel, "NYX_MEMORY_BACKEND": memoryBackend])
+    // MARK: env fields — view + store every variable through the app
+
+    func loadEnvFields() {
+        let current = Self.readEnv()
+        var fields: [EnvField] = []
+        var seen: Set<String> = ["NAME", "NYX_NAME", "OPERATOR_NAME"]
+        for var f in Self.envRegistry {
+            seen.insert(f.key)
+            let v = current[f.key] ?? ""
+            f.isSet = !v.isEmpty
+            f.value = f.secret ? "" : v
+            fields.append(f)
+        }
+        for key in current.keys.sorted() where !seen.contains(key) {
+            let v = current[key] ?? ""
+            let secret = Self.looksSecret(key)
+            fields.append(EnvField(key: key, label: key, secret: secret, value: secret ? "" : v, isSet: !v.isEmpty))
+        }
+        envFields = fields
+    }
+
+    func saveEnvFields() {
+        var updates: [String: String] = [:]
+        for f in envFields {
+            if f.secret {
+                // write-only: only update when a new value was typed; never clear.
+                if !f.value.isEmpty { updates[f.key] = f.value }
+            } else {
+                updates[f.key] = f.value
+            }
+        }
+        saveEnv(updates)
+        loadEnvFields()
+        flash("Saved environment")
+    }
+
+    static func looksSecret(_ key: String) -> Bool {
+        return key.range(of: "TOKEN|KEY|SECRET|PASSWORD|PASS|CRED", options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     // MARK: plugins
