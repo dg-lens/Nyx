@@ -1,54 +1,58 @@
 # Nyx private Homebrew tap formula.
 #
 # Setup (first time):
-#   brew tap dg-lens/nyx ~/Nyx
+#   brew tap dg-lens/nyx ~/Nyx/Core
 #   brew install --HEAD dg-lens/nyx/nyx
 #
 # Daemon management:
 #   brew services start dg-lens/nyx/nyx
 #   brew services stop  dg-lens/nyx/nyx
 #
-# NYX_DATA_DIR (default ~/Nyx) holds nyx.md, data/, logs/, .env.
-# NYX_REPO_ROOT (#{opt_libexec}) holds compiled code; set by generated wrappers.
+# NYX_DATA_DIR    (default ~/Nyx/Data)    holds nyx.md, data/, logs/, .env.
+# NYX_PLUGINS_DIR (default ~/Nyx/Plugins) holds local (private) plugins.
+# NYX_REPO_ROOT   (#{opt_libexec})        holds compiled Core code; set by wrappers.
 class Nyx < Formula
   desc "Autonomous task dispatcher with hash-chained audit and MCP integrations"
   homepage "https://github.com/dg-lens/Nyx"
   license "MIT"
 
-  # HEAD-only formula: installed from the local git repo.
-  # Install with: brew install --HEAD dg-lens/nyx/nyx
-  head "https://github.com/dg-lens/Nyx.git", using: :git
+  # HEAD-only formula installed from the local Core git repo (the three-sibling
+  # layout: ~/Nyx/Core is the git repo; ~/Nyx/Data and ~/Nyx/Plugins are siblings).
+  head "file://#{Dir.home}/Nyx/Core", using: :git
 
   depends_on "node"
   depends_on "pnpm"
 
   def install
-    # Install all source to libexec (excludes git-ignored files: dist/, node_modules/)
+    # Install Core source to libexec (git-ignored dist/, node_modules/ excluded).
     libexec.install Dir["*"]
 
-    # Install deps and compile all TypeScript workspaces inside libexec
+    # Install deps and compile all TypeScript workspaces inside libexec.
     cd libexec do
       system "pnpm", "install"
       system "pnpm", "-r", "build"
     end
 
-    data_dir = "#{Dir.home}/Nyx"
+    data_dir = "#{Dir.home}/Nyx/Data"
+    plugins_dir = "#{Dir.home}/Nyx/Plugins"
     home_dir = Dir.home
 
-    # Wrapper: nyx CLI — sets NYX_REPO_ROOT so scripts/ find compiled code
+    # Wrapper: nyx CLI — points at the libexec code + the sibling Data/Plugins.
     (bin/"nyx").write <<~SH
       #!/bin/bash
       export NYX_REPO_ROOT="#{opt_libexec}"
       export NYX_DATA_DIR="${NYX_DATA_DIR:-#{data_dir}}"
+      export NYX_PLUGINS_DIR="${NYX_PLUGINS_DIR:-#{plugins_dir}}"
       exec "#{opt_libexec}/scripts/nyx" "$@"
     SH
     chmod 0755, bin/"nyx"
 
-    # Wrapper: dispatch entry point — invoked by launchd plist ProgramArguments
+    # Wrapper: dispatch entry point — invoked by the launchd plist.
     (bin/"nyx-dispatch.sh").write <<~SH
       #!/bin/bash
       export NYX_REPO_ROOT="#{opt_libexec}"
       export NYX_DATA_DIR="${NYX_DATA_DIR:-#{data_dir}}"
+      export NYX_PLUGINS_DIR="${NYX_PLUGINS_DIR:-#{plugins_dir}}"
       exec "#{opt_libexec}/scripts/nyx-dispatch.sh" "$@"
     SH
     chmod 0755, bin/"nyx-dispatch.sh"
@@ -71,7 +75,6 @@ class Nyx < Formula
           <key>WorkingDirectory</key>
           <string>#{data_dir}</string>
 
-          <!-- Wall-clock-aligned to the 96-slot grid (00:00, 00:15, 00:30, 00:45 each hour) -->
           <key>StartCalendarInterval</key>
           <array>
               <dict><key>Minute</key><integer>0</integer></dict>
@@ -99,6 +102,8 @@ class Nyx < Formula
               <string>#{opt_libexec}</string>
               <key>NYX_DATA_DIR</key>
               <string>#{data_dir}</string>
+              <key>NYX_PLUGINS_DIR</key>
+              <string>#{plugins_dir}</string>
           </dict>
 
           <key>ProcessType</key>
@@ -116,10 +121,14 @@ class Nyx < Formula
   end
 
   def caveats
-    data_dir = "#{Dir.home}/Nyx"
+    data_dir = "#{Dir.home}/Nyx/Data"
+    plugins_dir = "#{Dir.home}/Nyx/Plugins"
     <<~EOS
       Nyx data directory (nyx.md, database, .env, logs):
         #{data_dir}
+
+      Nyx local plugins:
+        #{plugins_dir}
 
       Nyx code installed to:
         #{opt_libexec}
@@ -137,7 +146,7 @@ class Nyx < Formula
         export NYX_DATA_DIR=/path/to/data
         nyx up
 
-      Update to latest HEAD:
+      Update to latest HEAD (after committing to ~/Nyx/Core):
         brew reinstall --HEAD dg-lens/nyx/nyx
     EOS
   end
