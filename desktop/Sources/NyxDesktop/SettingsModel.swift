@@ -258,5 +258,5 @@ final class SettingsStore: ObservableObject {
 // .icns until relaunch/Dock restart.
 @MainActor
 func applyDockIcon() {
-    NSApplication.shared.applicationIconImage = NSImage(contentsOf: Layout.logoPath)
+    NSApplication.shared.applicationIconImage = Layout.effectiveLogoURL.flatMap { NSImage(contentsOf: $0) }
 }

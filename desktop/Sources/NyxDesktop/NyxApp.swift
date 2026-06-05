@@ -27,7 +27,7 @@ struct NyxApp: App {
     // Custom logo (Data/logo.png) as the menu-bar icon if set, else the default
     // template symbol. Re-read each render so a logo change shows on next refresh.
     private static func menuBarIcon(gates: Int) -> NSImage {
-        if let logo = NSImage(contentsOf: Layout.logoPath) {
+        if let url = Layout.effectiveLogoURL, let logo = NSImage(contentsOf: url) {
             logo.size = NSSize(width: 18, height: 18)
             return logo
         }

@@ -26,6 +26,17 @@ enum Layout {
     static var envPath: URL { dataDir.appendingPathComponent(".env") }
     static var settingsPath: URL { dataDir.appendingPathComponent("settings.json") }
     static var logoPath: URL { dataDir.appendingPathComponent("logo.png") }
+    static var repoDefaultLogo: URL { repoRoot.appendingPathComponent("desktop/Resources/default-logo.png") }
+    static var bundledDefaultLogo: URL? { Bundle.main.url(forResource: "default-logo", withExtension: "png") }
+
+    // Effective logo: per-instance override (Data/logo.png) -> shipped preset
+    // (bundled, or the Core source asset) -> nil (caller falls back to a symbol).
+    static var effectiveLogoURL: URL? {
+        if FileManager.default.fileExists(atPath: logoPath.path) { return logoPath }
+        if let bundled = bundledDefaultLogo { return bundled }
+        if FileManager.default.fileExists(atPath: repoDefaultLogo.path) { return repoDefaultLogo }
+        return nil
+    }
 
     static var systemName: String {
         let envPath = dataDir.appendingPathComponent(".env")

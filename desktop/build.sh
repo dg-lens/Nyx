@@ -24,12 +24,24 @@ swiftc -O -parse-as-library -swift-version 5 \
   $(find "$HERE/Sources" -name '*.swift') \
   -o "$BIN"
 
+mkdir -p "$APP/Contents/Resources"
+DEFAULT_LOGO="$HERE/Resources/default-logo.png"
+if [ -f "$DEFAULT_LOGO" ]; then
+  cp "$DEFAULT_LOGO" "$APP/Contents/Resources/default-logo.png"
+fi
+
 LOGO="$DATA_DIR/logo.png"
+SRC=""
 if [ -f "$LOGO" ]; then
-  mkdir -p "$APP/Contents/Resources"
+  SRC="$LOGO"
+elif [ -f "$DEFAULT_LOGO" ]; then
+  SRC="$DEFAULT_LOGO"
+fi
+
+if [ -n "$SRC" ]; then
   WORK="$(mktemp -d)"
   CLEAN="$WORK/clean.png"
-  sips -s format png "$LOGO" --out "$CLEAN" >/dev/null 2>&1 || cp "$LOGO" "$CLEAN"
+  sips -s format png "$SRC" --out "$CLEAN" >/dev/null 2>&1 || cp "$SRC" "$CLEAN"
   ICONSET="$WORK/AppIcon.iconset"
   mkdir -p "$ICONSET"
   for sz in 16 32 128 256 512; do

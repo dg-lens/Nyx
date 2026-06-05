@@ -19,7 +19,7 @@ struct RootView: View {
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 HStack(spacing: 6) {
-                    if let logo = NSImage(contentsOf: Layout.logoPath) {
+                    if let url = Layout.effectiveLogoURL, let logo = NSImage(contentsOf: url) {
                         Image(nsImage: logo).resizable().scaledToFit().frame(width: 16, height: 16)
                             .clipShape(RoundedRectangle(cornerRadius: 3))
                     }

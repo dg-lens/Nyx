@@ -48,6 +48,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Button("Choose logo…") { chooseLogo() }
                     if FileManager.default.fileExists(atPath: Layout.logoPath.path) {
+                        Button("Set as default preset") { setLogoAsDefault() }.controlSize(.small)
                         Button("Reset to default") { try? FileManager.default.removeItem(at: Layout.logoPath); logoVersion += 1; applyDockIcon() }
                             .controlSize(.small)
                     }
@@ -64,7 +65,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var logoView: some View {
-        if let img = NSImage(contentsOf: Layout.logoPath) {
+        if let url = Layout.effectiveLogoURL, let img = NSImage(contentsOf: url) {
             Image(nsImage: img).resizable().scaledToFit()
                 .clipShape(RoundedRectangle(cornerRadius: 8)).id(logoVersion)
         } else {
@@ -90,6 +91,15 @@ struct SettingsView: View {
         logoVersion += 1
         applyDockIcon()
         s.status = "Logo updated"
+    }
+
+    private func setLogoAsDefault() {
+        let dest = Layout.repoDefaultLogo
+        try? FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: dest)
+        if (try? FileManager.default.copyItem(at: Layout.logoPath, to: dest)) != nil {
+            s.status = "Set as default — commit Core/desktop/Resources/default-logo.png + rebuild"
+        }
     }
 
     // MARK: Plugins
