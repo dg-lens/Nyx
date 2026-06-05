@@ -97,13 +97,31 @@ enum Database {
         return s
     }
 
+    private static let isoParser: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let isoParserNoFrac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+    private static let localHM: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    // Audit timestamps are stored UTC (new Date().toISOString()); render in the
+    // system's local timezone.
     private static func shortTime(_ iso: String) -> String {
-        // "2026-06-04T12:04:33.000Z" -> "12:04"
-        if let tRange = iso.range(of: "T") {
-            let after = iso[tRange.upperBound...]
-            return String(after.prefix(5))
+        guard let date = isoParser.date(from: iso) ?? isoParserNoFrac.date(from: iso) else {
+            return iso
         }
-        return iso
+        return localHM.string(from: date)
     }
 
     private static func subject(_ payload: String) -> String {

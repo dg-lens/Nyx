@@ -51,6 +51,16 @@ final class Store: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [script.path, "--no-build"]
+        // A Finder-launched .app inherits a minimal PATH (no Homebrew), so the
+        // tick script can't find node/claude. Prepend the common brew bin dirs.
+        var env = ProcessInfo.processInfo.environment
+        let brewBins = "/opt/homebrew/bin:/usr/local/bin"
+        if let path = env["PATH"], !path.isEmpty {
+            env["PATH"] = "\(brewBins):\(path)"
+        } else {
+            env["PATH"] = "\(brewBins):/usr/bin:/bin"
+        }
+        p.environment = env
         p.terminationHandler = { _ in
             DispatchQueue.main.async { [weak self] in
                 self?.ticking = false
