@@ -6,6 +6,13 @@
 > The composer layer is **stage 0 — observation only**. It logs conflicts to a
 > queryable table and never blocks task execution. This doc explains why, what
 > it does, and how to move it through stages 1-3.
+>
+> **⚠️ As of the desktop-settings release, the stage-0 composer RUN is no longer
+> invoked for non-pipeline (`[type: code]`) tasks** — the plan-only +
+> composer-check spawns before code-task execution were a proof-of-concept and
+> were removed (`run-once.ts` no longer calls `runComposerLayer`; code tasks run
+> a single execution spawn). This module is retained for the pipeline's
+> composer-redux stage and as the basis for any future staged promotion.
 
 ---
 
