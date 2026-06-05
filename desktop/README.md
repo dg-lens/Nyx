@@ -17,7 +17,7 @@ It never writes the audit chain (single-writer = the tick). All control flows th
 | Action | Written when |
 |---|---|
 | `pipeline_decision` `{runId, decision, note?}` | a gate button is pressed |
-| `queue_task` `{text, type, repo?}` | Dispatch → Queue |
+| `decompose_task` `{text, type, model, priority, repo?}` | Dispatch → Decompose & Queue (a sonnet pass expands it into tagged tasks) |
 
 Paths resolve from `NYX_DATA_DIR` / `NYX_REPO_ROOT` (falling back to `~/Nyx/Data` and `~/Nyx/Core`), so it follows the Core/Plugins/Data layout automatically.
 
@@ -31,10 +31,12 @@ Two paths, depending on your toolchain:
 sudo rm /Library/Developer/CommandLineTools/usr/include/swift/module.modulemap
 cd Core/desktop
 ./build.sh
-open NyxDesktop.app
+open *.app
 ```
 
 (The removed file is a stale Aug-2023 leftover Apple's package ships alongside the current `bridging.modulemap`; a CLT update may restore it — re-run the `rm` if the SwiftBridging error returns.)
+
+The bundle is named after your instance name (`NAME` in `Data/.env`) — `Nyx.app`, `Iris.app`, etc. Change the name in the Settings tab, then re-run `./build.sh` to rebrand the app.
 
 **Full Xcode** — the bundled toolchain is consistent, so SwiftPM works normally:
 
