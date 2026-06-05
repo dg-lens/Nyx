@@ -15,8 +15,9 @@ const VALID_PRIORITIES: Priority[] = ['high', 'normal', 'low'];
 
 const PRIORITY_RANK: Record<Priority, number> = { high: 0, normal: 1, low: 2 };
 
-export const SLOTS_PER_DAY = 96;
-export const MINUTES_PER_SLOT = 15;
+export const MINUTES_PER_SLOT = 5;
+export const SLOTS_PER_HOUR = 60 / MINUTES_PER_SLOT;
+export const SLOTS_PER_DAY = 24 * SLOTS_PER_HOUR;
 
 export interface QueueFile {
   raw: string;
@@ -27,16 +28,23 @@ export interface QueueFile {
 
 // ─── Slot math ───────────────────────────────────────────────────────────────
 
-/** Slot index for a given Date, in local time. 0 = 00:00, 95 = 23:45. */
+/** Slot index for a given Date, in local time. 0 = 00:00, 287 = 23:55. */
 export function slotOf(d: Date = new Date()): number {
-  return d.getHours() * 4 + Math.floor(d.getMinutes() / MINUTES_PER_SLOT);
+  return d.getHours() * SLOTS_PER_HOUR + Math.floor(d.getMinutes() / MINUTES_PER_SLOT);
+}
+
+/** Wall-clock "HH:MM" for a slot index. */
+export function slotToTime(slot: number): string {
+  const h = Math.floor(slot / SLOTS_PER_HOUR);
+  const m = (slot % SLOTS_PER_HOUR) * MINUTES_PER_SLOT;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 /** Wall-clock window [start, end) for the slot containing `d`. */
 export function slotWindow(d: Date = new Date()): { slot: number; start: Date; end: Date } {
   const slot = slotOf(d);
   const start = new Date(d);
-  start.setHours(Math.floor(slot / 4), (slot % 4) * MINUTES_PER_SLOT, 0, 0);
+  start.setHours(Math.floor(slot / SLOTS_PER_HOUR), (slot % SLOTS_PER_HOUR) * MINUTES_PER_SLOT, 0, 0);
   const end = new Date(start.getTime() + MINUTES_PER_SLOT * 60_000);
   return { slot, start, end };
 }
@@ -51,9 +59,9 @@ function parseSlot(raw: string): { value: number; valid: true } | { valid: false
 
 /**
  * Parse `[every: …]`. Accepts:
- *   - "15m" / "30m" / "45m" — minute-based, must be a positive multiple of 15
+ *   - "5m" / "15m" / "30m" — minute-based, must be a positive multiple of 5
  *   - "1h" / "2h" / "3h" / "6h" / "12h" / … — hour-based
- *   - "1d" / "Xd" — day-based (Xd = X * 96 slots)
+ *   - "1d" / "Xd" — day-based (Xd = X * 288 slots)
  * Returns a step expressed in slots, or null for any malformed input.
  */
 export function parseEveryStep(raw: string): number | null {
@@ -66,7 +74,7 @@ export function parseEveryStep(raw: string): number | null {
     if (n % MINUTES_PER_SLOT !== 0) return null;
     return n / MINUTES_PER_SLOT;
   }
-  if (unit === 'h') return n * 4;
+  if (unit === 'h') return n * SLOTS_PER_HOUR;
   if (unit === 'd') return n * SLOTS_PER_DAY;
   return null;
 }

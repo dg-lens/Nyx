@@ -120,32 +120,33 @@ describe('markTaskCompleted', () => {
 // ─── Slot math ──────────────────────────────────────────────────────────────
 
 describe('slotOf', () => {
-  test('00:00 → 0, 00:15 → 1, 23:45 → 95', () => {
+  test('00:00 → 0, 00:05 → 1, 23:55 → 287', () => {
     const make = (h: number, m: number) => {
       const d = new Date();
       d.setHours(h, m, 0, 0);
       return d;
     };
     assert.equal(slotOf(make(0, 0)), 0);
-    assert.equal(slotOf(make(0, 14)), 0);
-    assert.equal(slotOf(make(0, 15)), 1);
-    assert.equal(slotOf(make(6, 0)), 24);
-    assert.equal(slotOf(make(12, 0)), 48);
-    assert.equal(slotOf(make(23, 45)), 95);
-    assert.equal(slotOf(make(23, 59)), 95);
+    assert.equal(slotOf(make(0, 4)), 0);
+    assert.equal(slotOf(make(0, 5)), 1);
+    assert.equal(slotOf(make(0, 15)), 3);
+    assert.equal(slotOf(make(6, 0)), 72);
+    assert.equal(slotOf(make(12, 0)), 144);
+    assert.equal(slotOf(make(23, 55)), 287);
+    assert.equal(slotOf(make(23, 59)), 287);
   });
 });
 
 describe('slotWindow', () => {
-  test('returns 15-minute window for the current slot', () => {
+  test('returns 5-minute window for the current slot', () => {
     const d = new Date();
-    d.setHours(7, 23, 0, 0); // slot 29 = 07:15
+    d.setHours(7, 23, 0, 0); // slot 88 = 07:20
     const w = slotWindow(d);
-    assert.equal(w.slot, 29);
+    assert.equal(w.slot, 88);
     assert.equal(w.start.getHours(), 7);
-    assert.equal(w.start.getMinutes(), 15);
+    assert.equal(w.start.getMinutes(), 20);
     assert.equal(w.end.getHours(), 7);
-    assert.equal(w.end.getMinutes(), 30);
+    assert.equal(w.end.getMinutes(), 25);
   });
 });
 
@@ -153,20 +154,19 @@ describe('slotWindow', () => {
 
 describe('parseEveryStep', () => {
   test('accepts valid forms', () => {
-    assert.equal(parseEveryStep('15m'), 1);
-    assert.equal(parseEveryStep('30m'), 2);
-    assert.equal(parseEveryStep('45m'), 3);
-    assert.equal(parseEveryStep('1h'), 4);
-    assert.equal(parseEveryStep('3h'), 12);
-    assert.equal(parseEveryStep('12h'), 48);
-    assert.equal(parseEveryStep('1d'), 96);
-    assert.equal(parseEveryStep('2d'), 192);
+    assert.equal(parseEveryStep('5m'), 1);
+    assert.equal(parseEveryStep('15m'), 3);
+    assert.equal(parseEveryStep('30m'), 6);
+    assert.equal(parseEveryStep('1h'), 12);
+    assert.equal(parseEveryStep('3h'), 36);
+    assert.equal(parseEveryStep('12h'), 144);
+    assert.equal(parseEveryStep('1d'), 288);
+    assert.equal(parseEveryStep('2d'), 576);
   });
 
-  test('rejects sub-15m and non-multiples-of-15', () => {
-    assert.equal(parseEveryStep('5m'), null);
+  test('rejects sub-5m and non-multiples-of-5', () => {
+    assert.equal(parseEveryStep('3m'), null);
     assert.equal(parseEveryStep('7m'), null);
-    assert.equal(parseEveryStep('25m'), null);
     assert.equal(parseEveryStep('0h'), null);
     assert.equal(parseEveryStep('foo'), null);
     assert.equal(parseEveryStep(''), null);
@@ -177,7 +177,7 @@ describe('parseEveryStep', () => {
 
 function atSlot(slot: number): Date {
   const d = new Date();
-  d.setHours(Math.floor(slot / 4), (slot % 4) * 15, 0, 0);
+  d.setHours(Math.floor(slot / 12), (slot % 12) * 5, 0, 0);
   return d;
 }
 
@@ -192,15 +192,15 @@ describe('pickNextTask (slot model)', () => {
     assert.equal(pickNextTask(q, { now: atSlot(25) }), null, 'no slotted task bound to slot 25');
   });
 
-  test('picks every:3h tasks at slots 0, 12, 24, …', () => {
+  test('picks every:3h tasks at slots 0, 36, 72, …', () => {
     write(
       `## Active Tasks\n\n- [ ] CADENCE — every 3h\n      [type: assistant] [gate: none] [every: 3h]\n`,
     );
     const q = readQueue(queuePath);
-    for (const slot of [0, 12, 24, 36, 48, 60, 72, 84]) {
+    for (const slot of [0, 36, 72, 108, 144, 180, 216, 252]) {
       assert.equal(pickNextTask(q, { now: atSlot(slot) })?.id, 'CADENCE', `expected fire at slot ${slot}`);
     }
-    for (const slot of [1, 6, 13, 25, 47, 95]) {
+    for (const slot of [1, 18, 35, 37, 100, 287]) {
       assert.equal(pickNextTask(q, { now: atSlot(slot) }), null, `must not fire at slot ${slot}`);
     }
   });

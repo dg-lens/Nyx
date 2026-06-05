@@ -40,6 +40,7 @@ import {
   pickNextTask,
   readQueue,
   slotOf,
+  slotToTime,
   slotWindow,
   tasksWithInvalidTags,
 } from '../task-reader.js';
@@ -779,7 +780,7 @@ async function main(): Promise<void> {
         ? `output: ${outcome.outputPath}`
         : isStanding
         ? 'merged to main'
-        : `slot ${slotOf()} fired`;
+        : `slot ${slotOf()} (${slotToTime(slotOf())}) fired`;
       audit('task.completed', 'dispatcher', { taskId: next.id, durationMs: outcome.durationMs });
       await notify.taskCompleted(next.id, mins, gateSum, fin);
     } else {
