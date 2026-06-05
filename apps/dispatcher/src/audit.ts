@@ -109,7 +109,9 @@ export type AuditEvent =
   | 'plugin.hook.error'
   | 'plugin.io.error'
   | 'control.action.applied'
-  | 'control.action.failed';
+  | 'control.action.failed'
+  | 'control.decompose.applied'
+  | 'control.decompose.failed';
 
 export interface AuditRow {
   id: number;

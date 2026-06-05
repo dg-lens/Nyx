@@ -30,6 +30,8 @@ import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-preva
 import { config } from '../config.js';
 import { emitHook, initPlugins } from '../plugins/index.js';
 import { drainPendingActions, insertUnderActiveTasks } from '../control/actions.js';
+import { listPending, markApplied, markFailed } from '../control/db.js';
+import { invokeDecomposer, type DecomposeIntent } from '../decomposer.js';
 import { submitDecision } from '../pipeline/decide.js';
 import { acquire } from '../lockfile.js';
 import * as notify from '../notifier.js';
@@ -527,6 +529,31 @@ async function auditInvalidTagged(queuePath: string): Promise<void> {
   }
 }
 
+async function processDecomposeActions(): Promise<number> {
+  const pending = listPending().filter((a) => a.action === 'decompose_task');
+  let decomposed = 0;
+  for (const a of pending) {
+    try {
+      const { tasks, error } = await invokeDecomposer(a.params as unknown as DecomposeIntent);
+      if (!tasks) {
+        markFailed(a.id, error ?? 'no tasks produced', Date.now());
+        audit('control.decompose.failed', 'control', { id: a.id, source: a.source, error: error ?? 'no tasks' });
+        continue;
+      }
+      const cur = existsSync(config.queuePath) ? readFileSync(config.queuePath, 'utf8') : '## Active Tasks\n';
+      writeFileSync(config.queuePath, insertUnderActiveTasks(cur, tasks));
+      markApplied(a.id, 'decomposed', Date.now());
+      audit('control.decompose.applied', 'control', { id: a.id, source: a.source });
+      decomposed++;
+      console.log(`[nyx] decomposed action ${a.id} -> tasks queued`);
+    } catch (err) {
+      markFailed(a.id, (err as Error).message, Date.now());
+      audit('control.decompose.failed', 'control', { id: a.id, source: a.source, error: (err as Error).message });
+    }
+  }
+  return decomposed;
+}
+
 async function main(): Promise<void> {
   const lock = acquire(config.lockfilePath);
   if (!lock) {
@@ -548,6 +575,13 @@ async function main(): Promise<void> {
 
   await initPlugins();
   await emitHook('tick.before', { slot: slotOf(), pid: process.pid });
+
+  // Decompose any pending decompose_task actions (a natural-language request ->
+  // fully-tagged tasks via a sonnet claude -p call) before the generic drain,
+  // so the resulting tasks land under ## Active Tasks this same tick. Each is
+  // marked applied/failed here, so drainPendingActions (status='pending') skips
+  // them.
+  const decomposedThisTick = await processDecomposeActions();
 
   const controlApplied = drainPendingActions(
     {
@@ -635,7 +669,14 @@ async function main(): Promise<void> {
   let chainDepth = 0;
   let producedWork = false;
 
-  while (chainDepth < config.maxChainDepth) {
+  // A tick that decomposed an NL request does NOT also execute the resulting
+  // tasks — decompose means "queue for review". They run on a later tick (the
+  // 5-min daemon, or a manual `nyx tick` / the desktop Tick button).
+  if (decomposedThisTick > 0) {
+    console.log(`[nyx] decomposed ${decomposedThisTick} request(s); tasks queued — they run on the next tick.`);
+  }
+
+  while (decomposedThisTick === 0 && chainDepth < config.maxChainDepth) {
     const queue = readQueue(config.queuePath);
     const next = pickNextTask(queue, { firedInSlot, skipThisTick: skippedThisTick });
     if (!next) {

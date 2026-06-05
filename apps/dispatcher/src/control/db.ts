@@ -10,7 +10,7 @@ import { dirname } from 'node:path';
 
 import { config } from '../config.js';
 
-export type ActionKind = 'queue_task' | 'resume_task' | 'pipeline_decision' | 'force_tick';
+export type ActionKind = 'queue_task' | 'resume_task' | 'pipeline_decision' | 'force_tick' | 'decompose_task';
 export type ActionStatus = 'pending' | 'applied' | 'failed';
 
 export interface PendingAction {
