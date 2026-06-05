@@ -30,7 +30,7 @@ Put `scripts/` on your `PATH` (or symlink `scripts/nyx`) to use the wrapper:
 
 ## How it works
 
-- **Queue + schedule.** Tasks live in `nyx.md` under `## Active Tasks`. The day is a 96-slot grid; a task fires by `[slot: N]` or `[every: K]`, or joins a standing list. A `launchd` job ticks the dispatcher.
+- **Queue + schedule.** Tasks live in `nyx.md` under `## Active Tasks`. The day is a 288-slot (5-minute) grid; a task fires by `[slot: N]` or `[every: K]`, or joins a standing list. A `launchd` job ticks the dispatcher.
 - **Task types.** `code`, `analysis`, `assistant`, `content`, and `pipeline` — each spawned with a scoped tool set and working directory.
 - **Pipeline.** `[type: pipeline]` turns one prompt into a PR-ready feature via parallel coders + self-reconciliation between two human gates (preview always; review only if unresolved).
 - **Composer.** A pre-dispatch spec normalizer that tightens task specs before execution.

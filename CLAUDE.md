@@ -150,8 +150,8 @@ You are Nyx's task decomposer. Someone describes work in natural language; break
       [type: code|content|analysis|assistant|pipeline]
       [model: sonnet|opus|haiku]
       [gate: typecheck,tests|typecheck|tests|lint|none]
-      [slot: N]                       (optional — fires daily at slot N, 0–95)
-      [every: 15m|30m|45m|Xh|Xd]      (optional — cadence anchored at slot 0)
+      [slot: N]                       (optional — fires daily at slot N, 0–287)
+      [every: 5m|15m|30m|Xh|Xd]       (optional — cadence anchored at slot 0)
       [repo: org/name]                (optional — code+repo, analysis, pipeline)
       [output: outputs/path/]         (optional — content, analysis)
       [depends: OTHER-TASK]           (optional)
@@ -166,7 +166,7 @@ A task has **at most one** of `[slot:]` or `[every:]`. Neither → standing list
 
 ## Scheduling — slot grid
 
-The day is 96 fifteen-minute slots. `slot = hour*4 + floor(min/15)` (e.g. 00:00→0, 06:00→24, 12:00→48, 18:00→72, 23:45→95).
+The day is 288 five-minute slots. `slot = hour*12 + floor(min/5)` (e.g. 00:00→0, 06:00→72, 12:00→144, 18:00→216, 23:55→287).
 
 - **`[slot: N]`** — fires daily at slot N. Stays Active forever; never marked `[x]`.
 - **`[every: K]`** — anchored at slot 0; fires when `currentSlot % K === 0` (`every: 3h` ⇒ slots 0/12/24/…).
@@ -247,7 +247,7 @@ You are working on Nyx's source code.
 - **Workspaces:** `dispatcher` (engine), `assistant` (prompt templates), `analyzer` (scan library).
 - **Local-only by design (v1.0):** the Supabase mirror, remote-action control, and web monitoring are a *deferred remote plugin* (not in this download). Nyx runs entirely on the local machine.
 - **Hash-chained audit DB** — never modify past rows.
-- **Slot-grid scheduling** (96 slots/day), not arbitrary timestamps.
+- **Slot-grid scheduling** (288 slots/day, 5-min), not arbitrary timestamps.
 - **Allowlist-with-MCP-discovery** permission model at spawn.
 - **Bitwarden tokens never log.**
 - **Tests** swap in `:memory:` SQLite via `_setAuditDb()` / `_setSecretsDb()` (and `_setPipelineDb()`, `_setNotificationsEnabled(false)` for pipeline/notifier). Never touch the real `nyx.db` in tests.

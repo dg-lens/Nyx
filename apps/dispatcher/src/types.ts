@@ -46,7 +46,7 @@ export interface ParsedTask {
   invalidTags: Array<{ tag: string; raw: string }>;
   /**
    * Scheduling: a task is in exactly one bucket.
-   *   - `slot`: fires daily at slot N (0..95). Stays in Active forever.
+   *   - `slot`: fires daily at slot N (0..287). Stays in Active forever.
    *   - `everyStepSlots`: fires whenever current_slot % step === 0. Stays in Active forever.
    *   - neither: task is on the standing list — one-shot, eligible only when no
    *     slot-bound tasks fire this tick. Marked `[x]` and moved to Completed when done.

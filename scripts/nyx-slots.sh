@@ -95,16 +95,16 @@ fi
 printf "\n\033[1mSlot grid — current slot: %d  (now %s)\033[0m\n" "$NOW_SLOT" "$(date '+%H:%M')"
 printf "\n"
 
-for slot in $(seq 0 95); do
-  hour=$((slot / 4))
-  min=$(((slot % 4) * 15))
+for slot in $(seq 0 287); do
+  hour=$((slot / 12))
+  min=$(((slot % 12) * 5))
   wall=$(printf "%02d:%02d" "$hour" "$min")
 
   bindings=$(echo "$BINDINGS" | awk -F'|' -v s="$slot" '$1 == s { print $2 " (" $3 ") " $4 }')
 
   if [[ -z "$bindings" ]]; then
     if [[ "$slot" -eq "$NOW_SLOT" ]]; then
-      printf "  \033[33m▶\033[0m %s  slot %2d   \033[2m(empty — would pull from standing list)\033[0m\n" "$wall" "$slot"
+      printf "  \033[33m▶\033[0m %s  slot %3d   \033[2m(empty — would pull from standing list)\033[0m\n" "$wall" "$slot"
     fi
     continue
   fi
@@ -118,7 +118,7 @@ for slot in $(seq 0 95); do
     fired=""
     if [[ "$FIRED_TODAY" == *"$task_id"* ]]; then fired=" \033[32m⏺\033[0m"; fi
     if [[ $first -eq 1 ]]; then
-      printf "%b%s  slot %2d   %s%b\n" "$marker" "$wall" "$slot" "$b" "$fired"
+      printf "%b%s  slot %3d   %s%b\n" "$marker" "$wall" "$slot" "$b" "$fired"
       first=0
     else
       printf "             %s%b\n" "$b" "$fired"
