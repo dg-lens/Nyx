@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @main
 struct NyxApp: App {
@@ -17,10 +18,22 @@ struct NyxApp: App {
             MenuBarView()
                 .environmentObject(store)
         } label: {
-            let n = store.state.gates.count
-            Image(systemName: n > 0 ? "circle.hexagongrid.fill" : "circle.hexagongrid")
-            if n > 0 { Text("\(n)") }
+            Image(nsImage: Self.menuBarIcon(gates: store.state.gates.count))
+            if store.state.gates.count > 0 { Text("\(store.state.gates.count)") }
         }
         .menuBarExtraStyle(.window)
+    }
+
+    // Custom logo (Data/logo.png) as the menu-bar icon if set, else the default
+    // template symbol. Re-read each render so a logo change shows on next refresh.
+    private static func menuBarIcon(gates: Int) -> NSImage {
+        if let logo = NSImage(contentsOf: Layout.logoPath) {
+            logo.size = NSSize(width: 18, height: 18)
+            return logo
+        }
+        let symbol = gates > 0 ? "circle.hexagongrid.fill" : "circle.hexagongrid"
+        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: "Nyx menu bar") ?? NSImage()
+        img.isTemplate = true
+        return img
     }
 }
