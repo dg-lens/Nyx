@@ -416,6 +416,31 @@ export async function runPlanning(
   target: PlanTarget,
   opts: Partial<PlanningDeps> & { revisionNote?: string | null } = {},
 ): Promise<PlanningResult> {
+  // Debug short-circuit: a "DEBUG-GATE" prompt skips the planning agents + clone
+  // and returns a canned plan with a FAKE env requirement + FAKE decision, so the
+  // preview gate UI (inline secret global/custom + Y/N decision) can be exercised
+  // without a real run. Executing then no-ops to done (0 phases -> shipping ->
+  // debug deliver/done).
+  if (target.description.trim().startsWith('DEBUG-GATE')) {
+    return {
+      dag: { nodes: [] },
+      plans: [],
+      alignment: {
+        conflicts: [],
+        preflight: [
+          {
+            item: 'Debug fake API key',
+            status: 'missing',
+            note: 'A fake requirement so you can test the inline secret input (global vs custom).',
+            env: 'DEBUG_FAKE_KEY',
+          },
+        ],
+        decisions: [
+          { question: 'Should the debug widget use the blue theme? (fake decision to test the gate)', default: 'yes' },
+        ],
+      },
+    };
+  }
   const deps: PlanningDeps = { spawn: opts.spawn ?? defaultDeps().spawn, ...(opts.workingDir ? { workingDir: opts.workingDir } : {}) };
   const injected = !!deps.workingDir;
   let wd: git.WorkingDir | null = null;

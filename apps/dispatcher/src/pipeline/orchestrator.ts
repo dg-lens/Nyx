@@ -260,6 +260,12 @@ function escalateToReview(run: PipelineRun, reason: 'catastrophic' | 'unresolved
  * the redux catastrophic short-circuit). Green → done (delivery PR is step 6).
  */
 async function stageShipping(run: PipelineRun, deps: ResolvedDeps): Promise<PipelineRun> {
+  // Debug run (DEBUG-GATE): skip the real smoke spawn and finish cleanly so the
+  // gate is safe to approve.
+  if (run.prompt.startsWith('DEBUG-GATE')) {
+    audit('pipeline.smoke.completed', 'pipeline.shipping', { runId: run.id, round: 'debug', passed: true });
+    return deliverAndFinish(run, deps, 'debug');
+  }
   const outcome = await deps.ship(run);
   if (outcome.kind === 'green') {
     // Strict review (Settings -> pipeline.reviewStrictness) pauses even a fully
