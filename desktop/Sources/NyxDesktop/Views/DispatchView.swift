@@ -7,9 +7,25 @@ struct DispatchView: View {
     @State private var model = "auto"
     @State private var priority = "normal"
     @State private var repo = ""
+    @State private var schedule = "standing"
+    @State private var atTime = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
+    @State private var recurEvery = "6h"
 
     private let types = ["code", "analysis", "assistant", "content", "pipeline"]
     private let priorities = ["high", "normal", "low"]
+
+    private var scheduleString: String {
+        switch schedule {
+        case "atTime":
+            let c = Calendar.current.dateComponents([.hour, .minute], from: atTime)
+            let slot = (c.hour ?? 0) * 12 + (c.minute ?? 0) / 5
+            return "slot:\(slot)"
+        case "recurring":
+            return "every:\(recurEvery)"
+        default:
+            return ""
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -42,6 +58,33 @@ struct DispatchView: View {
                 Spacer()
             }
 
+            HStack(alignment: .bottom, spacing: 14) {
+                labeled("Schedule") {
+                    Picker("", selection: $schedule) {
+                        Text("Standing").tag("standing")
+                        Text("Daily at time").tag("atTime")
+                        Text("Recurring").tag("recurring")
+                    }.labelsHidden().fixedSize()
+                }
+                if schedule == "atTime" {
+                    labeled("Time of day") {
+                        DatePicker("", selection: $atTime, displayedComponents: .hourAndMinute)
+                            .labelsHidden()
+                    }
+                } else if schedule == "recurring" {
+                    labeled("Every") {
+                        Picker("", selection: $recurEvery) {
+                            Text("3 hours").tag("3h")
+                            Text("6 hours").tag("6h")
+                            Text("12 hours").tag("12h")
+                            Text("Daily").tag("24h")
+                            Text("Weekly").tag("7d")
+                        }.labelsHidden().fixedSize()
+                    }
+                }
+                Spacer()
+            }
+
             HStack(alignment: .bottom) {
                 labeled("Repo (optional)") {
                     TextField("org/name", text: $repo)
@@ -50,7 +93,7 @@ struct DispatchView: View {
                 Spacer()
                 Button {
                     store.dispatch(text: text, type: type, model: model, priority: priority,
-                                   repo: repo.isEmpty ? nil : repo)
+                                   repo: repo.isEmpty ? nil : repo, schedule: scheduleString)
                     text = ""
                 } label: {
                     if store.ticking {

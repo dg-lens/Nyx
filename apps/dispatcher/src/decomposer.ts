@@ -13,6 +13,7 @@ export interface DecomposeIntent {
   model?: string; // haiku | sonnet | opus | auto
   priority?: string; // high | normal | low
   repo?: string;
+  schedule?: string; // "slot:<0-287>" (daily at time) | "every:<Xh|Xd>" (recurring) | undefined (standing)
 }
 
 const TASK_FORMAT = `Queue task format — a checkbox line plus indented tag lines:
@@ -51,6 +52,11 @@ export function buildDecomposerPrompt(intent: DecomposeIntent): string {
   if (intent.type) lines.push(`Default [type:] is ${intent.type} unless the work clearly calls for another.`);
   if (intent.repo) lines.push(`Put [repo: ${intent.repo}] on code/analysis/pipeline tasks.`);
   if (intent.priority && intent.priority !== 'normal') lines.push(`Put [priority: ${intent.priority}] on the tasks.`);
+  if (intent.schedule?.startsWith('slot:')) {
+    lines.push(`Schedule it with [slot: ${intent.schedule.slice(5)}] — runs once daily at that 5-minute slot. Prefer emitting a single task.`);
+  } else if (intent.schedule?.startsWith('every:')) {
+    lines.push(`Schedule it with [every: ${intent.schedule.slice(6)}] — a recurring cadence. Prefer emitting a single task.`);
+  }
   lines.push(``, `Operator request:`, intent.text, ``);
   lines.push(
     `Output ONLY the task block(s), wrapped exactly between a line "<<<TASKS" and a line "TASKS>>>". No preamble, no explanation, nothing else.`,
