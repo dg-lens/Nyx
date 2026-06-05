@@ -573,8 +573,20 @@ async function main(): Promise<void> {
   const controlApplied = drainPendingActions(
     {
       queueTask: (p) => {
-        const raw = String(p.raw ?? '');
-        if (!raw.trim()) throw new Error('queue_task missing raw');
+        // Accept either a pre-built `raw` task block, or a simple intent
+        // ({ text, type, repo }) from UI producers (desktop, Slack,
+        // remoteactions) — canonicalize the latter into a task block here so
+        // every control-surface producer can send the same simple shape.
+        let raw = String(p.raw ?? '').trim();
+        if (!raw) {
+          const text = String(p.text ?? '').trim();
+          if (!text) throw new Error('queue_task missing raw or text');
+          const type = String(p.type ?? 'assistant').trim();
+          const id = `UI-${Date.now().toString(36).slice(-6).toUpperCase()}`;
+          const tags = [`[type: ${type}]`];
+          if (p.repo) tags.push(`[repo: ${String(p.repo)}]`);
+          raw = `- [ ] ${id} — ${text}\n      ${tags.join(' ')}`;
+        }
         const cur = existsSync(config.queuePath) ? readFileSync(config.queuePath, 'utf8') : '## Active Tasks\n';
         writeFileSync(config.queuePath, insertUnderActiveTasks(cur, raw));
         return 'queued';
