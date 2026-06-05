@@ -16,12 +16,14 @@ export function _setNotificationsEnabled(enabled: boolean): void {
 }
 
 function client(): WebClient | null {
+  if (!config.settings.pipeline.slackNotifications) return null;
   if (!config.slackBotToken) return null;
   if (!cached) cached = new WebClient(config.slackBotToken);
   return cached;
 }
 
 async function postViaWebhook(text: string): Promise<boolean> {
+  if (!config.settings.pipeline.slackNotifications) return false;
   if (!config.slackWebhookUrl) return false;
   try {
     const res = await fetch(config.slackWebhookUrl, {

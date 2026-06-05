@@ -1,6 +1,7 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 
 import type { GateStage, Model, ParsedTask, Priority, TaskType } from './types.js';
+import { config } from './config.js';
 
 const TAG_RE = /\[([a-z]+):\s*([^\]]+)\]/g;
 const HEADER_ACTIVE = /^##\s+Active Tasks\s*$/i;
@@ -83,14 +84,17 @@ function parseTags(blob: string): Record<string, string> {
 }
 
 function defaultsForType(type: TaskType): { gates: GateStage[] | 'none'; model: Model } {
-  if (type === 'code') return { gates: ['typecheck', 'tests'], model: 'sonnet' };
-  if (type === 'analysis') return { gates: 'none', model: 'opus' };
-  if (type === 'content') return { gates: 'none', model: 'sonnet' };
+  // Operator-overridable default model per type (Settings tab -> settings.json).
+  const pref = config.settings.dispatcher.defaultModels[type];
+  const m: Model | undefined = (VALID_MODELS as string[]).includes(pref ?? '') ? (pref as Model) : undefined;
+  if (type === 'code') return { gates: ['typecheck', 'tests'], model: m ?? 'sonnet' };
+  if (type === 'analysis') return { gates: 'none', model: m ?? 'opus' };
+  if (type === 'content') return { gates: 'none', model: m ?? 'sonnet' };
   // pipeline: the orchestrator runs its own per-stage gates internally and picks
   // per-stage models (planning/composer opus-class, coders sonnet), so the
   // task-level gate is 'none' and the model is a nominal default.
-  if (type === 'pipeline') return { gates: 'none', model: 'opus' };
-  return { gates: 'none', model: 'haiku' };
+  if (type === 'pipeline') return { gates: 'none', model: m ?? 'opus' };
+  return { gates: 'none', model: m ?? 'haiku' };
 }
 
 interface ParseResult<T> { value: T; valid: boolean }

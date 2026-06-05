@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { NyxPlugin, PluginContext, PluginManifest } from './sdk.js';
 import { SDK_VERSION } from './sdk.js';
+import { config } from '../config.js';
 
 export interface LoadedPlugin {
   name: string;
@@ -52,6 +53,10 @@ export async function loadPlugins(
     }
     if (manifest.sdkVersion.split('.')[0] !== SDK_VERSION) {
       ev.skipped(manifest.name, `sdkVersion ${manifest.sdkVersion} incompatible with core SDK ${SDK_VERSION}`);
+      continue;
+    }
+    if (config.settings.plugins.disabled.includes(manifest.name)) {
+      ev.skipped(manifest.name, 'disabled in settings');
       continue;
     }
 

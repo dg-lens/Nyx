@@ -2,6 +2,7 @@ import { config as loadEnv } from 'dotenv';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { loadSettings } from './settings.js';
 
 function expandUser(p: string): string {
   if (p.startsWith('~/')) return resolve(homedir(), p.slice(2));
@@ -25,6 +26,8 @@ const ENV_FILE = resolve(DATA_DIR, '.env');
 if (existsSync(ENV_FILE)) {
   loadEnv({ path: ENV_FILE });
 }
+
+const SETTINGS = loadSettings(DATA_DIR);
 
 function int(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -112,17 +115,22 @@ export const config = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
   githubToken: process.env.GITHUB_TOKEN ?? '',
 
+  // Operator settings (Data/settings.json, written by the desktop Settings tab).
+  // Exposed whole so consumers can read pipeline/dispatcher/plugin prefs; the
+  // numeric ones below also fold into the existing config fields as defaults.
+  settings: SETTINGS,
+
   autoChain: bool('AUTO_CHAIN', true),
-  maxChainDepth: int('MAX_CHAIN_DEPTH', 2),
+  maxChainDepth: int('MAX_CHAIN_DEPTH', SETTINGS.dispatcher.maxChainDepth),
   // Pipeline (`[type: pipeline]`) — max coders running concurrently in the
   // executing stage. Start at 4; raising it as rate-limit behavior is observed
   // is essential (see scaffold/prompt-to-product-pipeline.md). Each coder runs
   // in its own git worktree off the integration base.
-  pipelineCoderConcurrency: int('PIPELINE_CODER_CONCURRENCY', 4),
+  pipelineCoderConcurrency: int('PIPELINE_CODER_CONCURRENCY', SETTINGS.pipeline.concurrentCap),
   dispatchIntervalMinutes: int('DISPATCH_INTERVAL_MINUTES', 15),
   logRetentionDays: int('LOG_RETENTION_DAYS', 7),
   gateStageTimeoutMs: int('GATE_STAGE_TIMEOUT_MS', 5 * 60_000),
-  claudeTaskTimeoutMs: int('CLAUDE_TASK_TIMEOUT_MS', 30 * 60_000),
+  claudeTaskTimeoutMs: int('CLAUDE_TASK_TIMEOUT_MS', SETTINGS.dispatcher.taskTimeoutMs),
   claudePermissionMode: process.env.CLAUDE_PERMISSION_MODE ?? 'acceptEdits',
   auditFailureLogMinBytes: int('AUDIT_FAILURE_LOG_MIN_BYTES', 8192),
 

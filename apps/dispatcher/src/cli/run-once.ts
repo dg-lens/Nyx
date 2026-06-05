@@ -624,7 +624,7 @@ async function main(): Promise<void> {
   );
   if (controlApplied > 0) console.log(`[nyx] control actions applied: ${controlApplied}`);
 
-  if (hasLiveClaude()) {
+  if (config.settings.dispatcher.concurrencyGuard && hasLiveClaude()) {
     audit('task.skipped.concurrent_claude', 'dispatcher', {});
     console.log('[nyx] concurrent claude detected. exit 0.');
     process.exit(0);
