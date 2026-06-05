@@ -27,12 +27,15 @@ swiftc -O -parse-as-library -swift-version 5 \
 LOGO="$DATA_DIR/logo.png"
 if [ -f "$LOGO" ]; then
   mkdir -p "$APP/Contents/Resources"
-  ICONSET="$(mktemp -d)/AppIcon.iconset"
+  WORK="$(mktemp -d)"
+  CLEAN="$WORK/clean.png"
+  sips -s format png "$LOGO" --out "$CLEAN" >/dev/null 2>&1 || cp "$LOGO" "$CLEAN"
+  ICONSET="$WORK/AppIcon.iconset"
   mkdir -p "$ICONSET"
   for sz in 16 32 128 256 512; do
-    sips -z "$sz" "$sz" "$LOGO" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null 2>&1 || true
+    sips -z "$sz" "$sz" "$CLEAN" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null 2>&1 || true
     dbl=$((sz * 2))
-    sips -z "$dbl" "$dbl" "$LOGO" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null 2>&1 || true
+    sips -z "$dbl" "$dbl" "$CLEAN" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null 2>&1 || true
   done
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns" >/dev/null 2>&1 || true
 fi

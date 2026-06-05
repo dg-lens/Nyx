@@ -197,3 +197,11 @@ final class SettingsStore: ObservableObject {
         status = msg
     }
 }
+
+// Set the running app's dock icon from the logo at runtime (nil logo restores
+// the bundle icon). Avoids the macOS dock-icon cache that ignores a rebuilt
+// .icns until relaunch/Dock restart.
+@MainActor
+func applyDockIcon() {
+    NSApplication.shared.applicationIconImage = NSImage(contentsOf: Layout.logoPath)
+}

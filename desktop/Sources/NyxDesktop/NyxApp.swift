@@ -10,7 +10,7 @@ struct NyxApp: App {
             RootView()
                 .environmentObject(store)
                 .frame(minWidth: 660, minHeight: 480)
-                .onAppear { store.start() }
+                .onAppear { store.start(); applyDockIcon() }
         }
         .windowResizability(.contentMinSize)
 

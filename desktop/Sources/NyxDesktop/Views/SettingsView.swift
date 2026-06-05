@@ -48,7 +48,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Button("Choose logo…") { chooseLogo() }
                     if FileManager.default.fileExists(atPath: Layout.logoPath.path) {
-                        Button("Reset to default") { try? FileManager.default.removeItem(at: Layout.logoPath); logoVersion += 1 }
+                        Button("Reset to default") { try? FileManager.default.removeItem(at: Layout.logoPath); logoVersion += 1; applyDockIcon() }
                             .controlSize(.small)
                     }
                 }
@@ -77,12 +77,19 @@ struct SettingsView: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.png, .jpeg, .image]
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            try? FileManager.default.removeItem(at: Layout.logoPath)
+        guard panel.runModal() == .OK, let url = panel.url, let img = NSImage(contentsOf: url) else { return }
+        try? FileManager.default.removeItem(at: Layout.logoPath)
+        // Normalize to a clean PNG (the picker may hand us a JPEG); iconutil and
+        // the menu-bar/dock all want a real PNG at logo.png.
+        if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: Layout.logoPath)
+        } else {
             try? FileManager.default.copyItem(at: url, to: Layout.logoPath)
-            logoVersion += 1
-            s.status = "Logo updated"
         }
+        logoVersion += 1
+        applyDockIcon()
+        s.status = "Logo updated"
     }
 
     // MARK: Plugins
