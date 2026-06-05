@@ -21,7 +21,7 @@ final class Store: ObservableObject {
     func refresh() {
         var s = NyxState()
         s.gates = Database.loadGates()
-        s.queue = QueueFile.load()
+        s.queue = Database.loadPendingQueue() + QueueFile.load()
         s.audit = Database.loadAudit()
         if let t = Database.lastTick() { s.lastTick = t; s.healthy = true }
         state = s

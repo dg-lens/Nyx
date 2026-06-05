@@ -4,10 +4,21 @@ enum QueueFile {
     static func load() -> [QueueItem] {
         guard let text = try? String(contentsOf: Layout.queuePath, encoding: .utf8) else { return [] }
         let lines = text.components(separatedBy: .newlines)
-        var items: [QueueItem] = []
+        // Only parse between `## Active Tasks` and the next `## ` header — not the
+        // whole file (the doc-reference section also contains a `- [ ]` example).
+        guard let start = lines.firstIndex(where: {
+            $0.range(of: #"^##\s+Active Tasks\s*$"#, options: .regularExpression) != nil
+        }) else { return [] }
 
-        for (i, line) in lines.enumerated() {
-            guard let range = line.range(of: #"^\s*-\s*\[ \]\s*"#, options: .regularExpression) else { continue }
+        var items: [QueueItem] = []
+        var i = start + 1
+        while i < lines.count {
+            let line = lines[i]
+            if line.range(of: #"^##\s+"#, options: .regularExpression) != nil { break }
+            guard let range = line.range(of: #"^\s*-\s*\[ \]\s*"#, options: .regularExpression) else {
+                i += 1
+                continue
+            }
             let rest = String(line[range.upperBound...])
             let parts = rest.components(separatedBy: "—")
             let id = parts.first?.trimmingCharacters(in: .whitespaces) ?? rest
@@ -15,10 +26,11 @@ enum QueueFile {
                 ? parts[1...].joined(separator: "—").trimmingCharacters(in: .whitespaces)
                 : ""
 
-            let window = ([line] + lines[(i + 1)..<min(i + 4, lines.count)]).joined(separator: "\n")
+            let window = lines[i..<min(i + 4, lines.count)].joined(separator: "\n")
             let type = firstMatch(#"\[type:\s*([a-zA-Z]+)\]"#, in: window) ?? "—"
 
             items.append(QueueItem(id: id, title: title, type: type))
+            i += 1
         }
         return items
     }

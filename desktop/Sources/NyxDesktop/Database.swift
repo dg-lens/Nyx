@@ -8,7 +8,10 @@ enum Database {
 
     private static func query(_ sql: String) -> [[String: String]] {
         var handle: OpaquePointer?
-        guard sqlite3_open_v2(Layout.dbPath.path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return [] }
+        // Open read-write, not read-only: the dispatcher runs the DB in WAL mode,
+        // and a read-only connection cannot open a WAL database it didn't create
+        // (SQLITE_CANTOPEN), so every read would return empty after a tick.
+        guard sqlite3_open_v2(Layout.dbPath.path, &handle, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_close(handle) }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -61,6 +64,21 @@ enum Database {
         let rows = query("SELECT at FROM system_audit WHERE event LIKE 'tick.%' ORDER BY id DESC LIMIT 1")
         guard let at = rows.first?["at"], !at.isEmpty else { return nil }
         return shortTime(at)
+    }
+
+    // Pending dispatches: queue_task actions written (e.g. from the Dispatch tab)
+    // but not yet drained into nyx.md by a tick. Shown so a just-queued task is
+    // visible immediately rather than only appearing for the instant between
+    // drain and execution.
+    static func loadPendingQueue() -> [QueueItem] {
+        let rows = query("SELECT id, params FROM pending_actions WHERE action = 'queue_task' AND status = 'pending' ORDER BY id")
+        return rows.compactMap { r in
+            guard let p = r["params"], let data = p.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            let text = (obj["text"] as? String) ?? (obj["raw"] as? String) ?? "(queued task)"
+            let type = (obj["type"] as? String) ?? "task"
+            return QueueItem(id: "queued #\(r["id"] ?? "?")", title: text, type: "\(type) · pending tick")
+        }
     }
 
     // MARK: write — control surface
