@@ -25,6 +25,7 @@ import { resolve } from 'node:path';
 import { audit } from '../audit.js';
 import { config } from '../config.js';
 import { spawnWithTimeout } from '../spawn-helpers.js';
+import { pipelineRunEnv } from './run-secrets.js';
 import { updateRun } from './db.js';
 import { extractJson, parsePlanJson } from './flight-plan.js';
 import { type RemediationDirective } from './redux.js';
@@ -237,9 +238,9 @@ function gitTry(cmd: string, cwd: string): string | null {
   }
 }
 
-function maxPlanEnv(): NodeJS.ProcessEnv {
+function maxPlanEnv(runId?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...(runId ? pipelineRunEnv(runId) : process.env),
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
   };
   return env;
@@ -274,7 +275,7 @@ async function defaultSmoke(run: PipelineRun): Promise<SmokeResult> {
     '```',
   ].join('\n');
   const args = ['-p', prompt, '--model', SMOKE_MODEL, '--permission-mode', config.claudePermissionMode, '--allowed-tools', SMOKE_TOOLS.join(' '), '--add-dir', base];
-  const r = await spawnWithTimeout('claude', args, { cwd: base, env: maxPlanEnv(), captureStdout: true, label: `pipeline-smoke-${run.id}` }, SMOKE_TIMEOUT_MS);
+  const r = await spawnWithTimeout('claude', args, { cwd: base, env: maxPlanEnv(run.id), captureStdout: true, label: `pipeline-smoke-${run.id}` }, SMOKE_TIMEOUT_MS);
   // Hermetic guard: any tree change means the verifier didn't just verify.
   const dirty = gitTry(`git status --porcelain`, base) ?? '';
   const result = interpretSmoke(r.stdout, dirty);
@@ -329,7 +330,7 @@ export async function runDiagnosticRound(run: PipelineRun, round: number): Promi
       '\nCommit when done.',
     ].join('\n');
     const args = ['-p', prompt, '--model', DIAGNOSTIC_MODEL, '--permission-mode', config.claudePermissionMode, '--allowed-tools', DIAGNOSTIC_TOOLS.join(' '), '--add-dir', wt];
-    await spawnWithTimeout('claude', args, { cwd: wt, env: maxPlanEnv(), captureStdout: false, label: `pipeline-diag-${round}-${taskId}` }, DIAGNOSTIC_TIMEOUT_MS);
+    await spawnWithTimeout('claude', args, { cwd: wt, env: maxPlanEnv(run.id), captureStdout: false, label: `pipeline-diag-${round}-${taskId}` }, DIAGNOSTIC_TIMEOUT_MS);
     gitTry(`git add -A`, wt);
     if ((gitTry(`git status --porcelain`, wt) ?? '').length > 0) {
       gitTry(`git -c user.name="${config.gitAuthorName.replace(/"/g, '\\"')}" -c user.email="${config.gitAuthorEmail}" commit -m "pipeline diag R${round}: ${taskId}"`, wt);

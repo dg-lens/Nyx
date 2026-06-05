@@ -50,7 +50,19 @@ enum Database {
                 summary += "\n(stage: \(stage))"
             }
             return Gate(id: r["id"] ?? "", gate: gate, summary: summary, repo: r["repo"] ?? "",
-                        preflight: parsePreflight(r["plan_json"] ?? ""))
+                        preflight: parsePreflight(r["plan_json"] ?? ""),
+                        decisions: parseDecisions(r["plan_json"] ?? ""))
+        }
+    }
+
+    private static func parseDecisions(_ planJson: String) -> [GateDecision] {
+        guard let data = planJson.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let align = obj["alignment"] as? [String: Any],
+              let items = align["decisions"] as? [[String: Any]] else { return [] }
+        return items.compactMap { d in
+            guard let q = d["question"] as? String, !q.isEmpty else { return nil }
+            return GateDecision(question: q, defaultAnswer: d["default"] as? String)
         }
     }
 

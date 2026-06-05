@@ -129,7 +129,7 @@ function coder(taskId: string, branch: string, status: CoderResult['status'] = '
 
 function seedRun(id: string, base: string, plans: FlightPlanContract[], coders: CoderResult[]): void {
   createRun({ id, taskId: 'T', prompt: 'build', now: 1000 });
-  const plan: PlanningResult = { dag: { nodes: [] }, plans, alignment: { conflicts: [], preflight: [] } };
+  const plan: PlanningResult = { dag: { nodes: [] }, plans, alignment: { conflicts: [], preflight: [], decisions: [] } };
   updateRun(id, { status: 'executing', plan_json: freezePlan(plan), coder_results: JSON.stringify(coders), worktree_base: base, integration_branch: 'integration' }, 1000);
 }
 

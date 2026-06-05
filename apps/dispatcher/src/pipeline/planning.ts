@@ -308,6 +308,12 @@ function alignPrompt(prompt: string, dag: TaskDag, plans: FlightPlanContract[]):
             env: 'EXACT_ENV_VAR_NAME — the precise variable name when the item is an env var or secret (so the operator can fill it inline at the gate); omit otherwise',
           },
         ],
+        decisions: [
+          {
+            question: 'a yes/no decision the operator must make that the prompt did NOT scope (architecture/UX/tradeoff); omit if none',
+            default: 'yes | no — your suggested answer',
+          },
+        ],
       },
       null,
       2,
@@ -392,7 +398,7 @@ export async function runAlign(
     label: 'pipeline-align',
   });
   const raw = readArtifact(workingDir, ALIGN_ARTIFACT);
-  const alignment = raw ? parseAlignment(raw) : { conflicts: [], preflight: [] };
+  const alignment = raw ? parseAlignment(raw) : { conflicts: [], preflight: [], decisions: [] };
   // Deterministic backstop: two tasks must not own the same file. The composer
   // surfaces this regardless of the LLM judge so the operator catches it at the
   // preview gate (a coder can't safely co-author a file with a sibling).

@@ -26,8 +26,12 @@ struct GateCard: View {
     @EnvironmentObject var store: Store
     let gate: Gate
     @State private var note = ""
+    @State private var envChoice: [String: String] = [:]   // env -> "global" | "custom"
     @State private var envInputs: [String: String] = [:]
     @State private var envSaved: Set<String> = []
+    @State private var decisionAnswers: [String: String] = [:]
+    @State private var decisionNotes: [String: String] = [:]
+    @State private var showNote: Set<String> = []
 
     private var isPreview: Bool { gate.gate == "preview" }
 
@@ -48,13 +52,22 @@ struct GateCard: View {
             if !gate.preflight.isEmpty {
                 Divider()
                 Text("Preflight requirements").font(.caption.bold()).foregroundStyle(.secondary)
+                Text("Each secret can use Nyx's global value or a custom one scoped to just this run.")
+                    .font(.caption2).foregroundStyle(.tertiary)
                 ForEach(gate.preflight) { preflightRow($0) }
+            }
+
+            if !gate.decisions.isEmpty {
+                Divider()
+                Text("Decisions").font(.caption.bold()).foregroundStyle(.secondary)
+                ForEach(gate.decisions) { decisionRow($0) }
             }
 
             TextField(isPreview ? "revise note (optional)" : "fix note (optional)", text: $note)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Button(isPreview ? "Approve" : "Proceed") {
+                    saveDecisions()
                     store.decide(gate.id, isPreview ? "go" : "proceed", note: nil)
                 }
                 .buttonStyle(.borderedProminent)
@@ -65,8 +78,14 @@ struct GateCard: View {
         }
         .padding(14)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .onAppear {
+            for d in gate.decisions where decisionAnswers[d.question] == nil {
+                decisionAnswers[d.question] = (d.defaultAnswer == "no" ? "no" : "yes")
+            }
+        }
     }
 
+    // MARK: preflight — use global secret, or a per-run custom value
     @ViewBuilder
     private func preflightRow(_ req: PreflightReq) -> some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -77,23 +96,28 @@ struct GateCard: View {
                 Spacer()
                 Text(req.status).font(.caption2).foregroundStyle(.secondary)
             }
-            if !req.note.isEmpty {
-                Text(req.note).font(.caption2).foregroundStyle(.secondary)
-            }
-            if let env = req.env, req.status != "ready" {
+            if !req.note.isEmpty { Text(req.note).font(.caption2).foregroundStyle(.secondary) }
+            if let env = req.env {
                 if envSaved.contains(env) {
-                    Text("✓ saved to .env").font(.caption2).foregroundStyle(.green)
+                    Text("✓ custom value set for this run").font(.caption2).foregroundStyle(.green)
                 } else {
-                    HStack {
-                        Group {
-                            if SettingsStore.looksSecret(env) {
-                                SecureField("value for \(env)", text: binding(env))
-                            } else {
-                                TextField("value for \(env)", text: binding(env))
+                    Picker("", selection: choiceBinding(env)) {
+                        Text("Use global").tag("global")
+                        Text("Custom").tag("custom")
+                    }
+                    .pickerStyle(.segmented).frame(width: 200)
+                    if envChoice[env] == "custom" {
+                        HStack {
+                            Group {
+                                if SettingsStore.looksSecret(env) {
+                                    SecureField("value for this run only", text: inputBinding(env))
+                                } else {
+                                    TextField("value for this run only", text: inputBinding(env))
+                                }
                             }
+                            .textFieldStyle(.roundedBorder)
+                            Button("Set") { setCustom(env) }.disabled((envInputs[env] ?? "").isEmpty)
                         }
-                        .textFieldStyle(.roundedBorder)
-                        Button("Set") { setEnv(env) }.disabled((envInputs[env] ?? "").isEmpty)
                     }
                 }
             }
@@ -101,16 +125,59 @@ struct GateCard: View {
         .padding(.vertical, 1)
     }
 
-    private func binding(_ env: String) -> Binding<String> {
-        Binding(get: { envInputs[env] ?? "" }, set: { envInputs[env] = $0 })
+    // MARK: decisions — Yes/No + optional note, threaded into the coders
+    @ViewBuilder
+    private func decisionRow(_ d: GateDecision) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(d.question).font(.callout).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Picker("", selection: answerBinding(d.question)) {
+                    Text("Yes").tag("yes")
+                    Text("No").tag("no")
+                }
+                .pickerStyle(.segmented).frame(width: 120)
+                Button(showNote.contains(d.question) ? "− note" : "＋ note") {
+                    if showNote.contains(d.question) { showNote.remove(d.question) } else { showNote.insert(d.question) }
+                }
+                .controlSize(.small)
+                Spacer()
+            }
+            if showNote.contains(d.question) {
+                TextField("note (optional)", text: noteBinding(d.question)).textFieldStyle(.roundedBorder)
+            }
+        }
+        .padding(.vertical, 1)
     }
 
-    private func setEnv(_ env: String) {
+    // MARK: bindings + actions
+    private func choiceBinding(_ env: String) -> Binding<String> {
+        Binding(get: { envChoice[env] ?? "global" }, set: { envChoice[env] = $0 })
+    }
+    private func inputBinding(_ env: String) -> Binding<String> {
+        Binding(get: { envInputs[env] ?? "" }, set: { envInputs[env] = $0 })
+    }
+    private func answerBinding(_ q: String) -> Binding<String> {
+        Binding(get: { decisionAnswers[q] ?? "yes" }, set: { decisionAnswers[q] = $0; saveDecisions() })
+    }
+    private func noteBinding(_ q: String) -> Binding<String> {
+        Binding(get: { decisionNotes[q] ?? "" }, set: { decisionNotes[q] = $0; saveDecisions() })
+    }
+
+    private func setCustom(_ env: String) {
         let v = envInputs[env] ?? ""
         guard !v.isEmpty else { return }
-        writeEnvVar(env, v)
+        writeRunSecret(gate.id, env, v)
         envSaved.insert(env)
         envInputs[env] = ""
+    }
+
+    private func saveDecisions() {
+        let answers: [[String: String]] = gate.decisions.map { d in
+            var a = ["question": d.question, "answer": decisionAnswers[d.question] ?? (d.defaultAnswer == "no" ? "no" : "yes")]
+            if let n = decisionNotes[d.question], !n.isEmpty { a["note"] = n }
+            return a
+        }
+        writeRunDecisions(gate.id, answers)
     }
 
     private func statusIcon(_ s: String) -> String {

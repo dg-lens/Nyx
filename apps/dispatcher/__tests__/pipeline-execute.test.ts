@@ -109,7 +109,7 @@ function planWith(plans: FlightPlanContract[]): PlanningResult {
   return {
     dag: { nodes: plans.map((p) => ({ id: p.task_id, description: p.description, deps: p.deps, type: 'code', target_paths: p.modifies })) },
     plans,
-    alignment: { conflicts: [], preflight: [] },
+    alignment: { conflicts: [], preflight: [], decisions: [] },
   };
 }
 

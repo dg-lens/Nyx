@@ -14,6 +14,7 @@
 
 import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
+import { cleanupRunSecrets } from './run-secrets.js';
 import { dirname, basename } from 'node:path';
 
 import { audit } from '../audit.js';
@@ -158,6 +159,7 @@ export function cleanupRunArtifacts(run: PipelineRun): void {
   } catch {
     /* swallow */
   }
+  cleanupRunSecrets(run.id);
 }
 
 export async function runDelivery(run: PipelineRun, deps: DeliveryDeps = {}): Promise<DeliveryResult> {

@@ -299,3 +299,35 @@ func writeEnvVar(_ key: String, _ value: String) {
     if !done { lines.append("\(key)=\(value)") }
     try? lines.joined(separator: "\n").write(to: Layout.envPath, atomically: true, encoding: .utf8)
 }
+
+// Per-run pipeline secret — a custom value scoped to ONE run, separate from the
+// global Data/.env (e.g. a distinct API key for a pipeline-built app).
+@MainActor
+func writeRunSecret(_ runId: String, _ key: String, _ value: String) {
+    guard !value.isEmpty else { return }
+    let path = Layout.runSecretsPath(runId)
+    try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    var lines = (try? String(contentsOf: path, encoding: .utf8))?.components(separatedBy: .newlines) ?? []
+    var done = false
+    for i in lines.indices {
+        let line = lines[i].trimmingCharacters(in: .whitespaces)
+        guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
+        if String(line[..<eq]).trimmingCharacters(in: .whitespaces) == key {
+            lines[i] = "\(key)=\(value)"
+            done = true
+            break
+        }
+    }
+    if !done { lines.append("\(key)=\(value)") }
+    try? lines.joined(separator: "\n").write(to: path, atomically: true, encoding: .utf8)
+}
+
+// Operator gate Y/N answers for a run (threaded into the coders' context).
+@MainActor
+func writeRunDecisions(_ runId: String, _ answers: [[String: String]]) {
+    let path = Layout.runDecisionsPath(runId)
+    try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    if let data = try? JSONSerialization.data(withJSONObject: answers, options: [.prettyPrinted]) {
+        try? data.write(to: path)
+    }
+}

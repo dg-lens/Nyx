@@ -100,9 +100,15 @@ export interface PreflightItem {
   env?: string; // exact env var name when the requirement is an env var / secret
 }
 
+export interface AlignmentDecision {
+  question: string;        // a yes/no decision the operator must make that the prompt didn't scope
+  default?: 'yes' | 'no';  // the planner's suggested answer, if any
+}
+
 export interface Alignment {
   conflicts: AlignmentConflict[];
   preflight: PreflightItem[];
+  decisions: AlignmentDecision[];
 }
 
 // ─── Aggregate plan (frozen at "go") ──────────────────────────────────────────
@@ -243,7 +249,11 @@ export function parseAlignment(raw: string): Alignment {
     note: str(p.note),
     ...(p.env ? { env: str(p.env) } : {}),
   }));
-  return { conflicts, preflight };
+  const decisions = arrOfObj(r.decisions).map((d): AlignmentDecision => ({
+    question: str(d.question),
+    ...(d.default === 'yes' || d.default === 'no' ? { default: d.default } : {}),
+  }));
+  return { conflicts, preflight, decisions };
 }
 
 // ─── Plan freeze / thaw ───────────────────────────────────────────────────────

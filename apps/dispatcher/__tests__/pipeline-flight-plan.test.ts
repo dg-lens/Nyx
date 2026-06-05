@@ -109,7 +109,7 @@ describe('parseAlignment', () => {
   });
 
   test('empty/garbage input yields empty alignment', () => {
-    assert.deepEqual(parseAlignment('garbage'), { conflicts: [], preflight: [] });
+    assert.deepEqual(parseAlignment('garbage'), { conflicts: [], preflight: [], decisions: [] });
   });
 });
 

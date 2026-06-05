@@ -8,12 +8,19 @@ struct PreflightReq: Identifiable {
     let env: String?     // exact env var name when the requirement is an env var/secret
 }
 
+struct GateDecision: Identifiable {
+    var id: String { question }
+    let question: String
+    let defaultAnswer: String?   // "yes" | "no" | nil (planner's suggestion)
+}
+
 struct Gate: Identifiable {
     let id: String
     let gate: String        // "preview" | "review"
     let summary: String
     let repo: String
     var preflight: [PreflightReq] = []
+    var decisions: [GateDecision] = []
 }
 
 struct QueueItem: Identifiable {

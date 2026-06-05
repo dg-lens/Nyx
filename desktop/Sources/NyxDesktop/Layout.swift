@@ -25,6 +25,9 @@ enum Layout {
     static var stockPluginsDir: URL { repoRoot.appendingPathComponent("plugins") }
     static var envPath: URL { dataDir.appendingPathComponent(".env") }
     static var settingsPath: URL { dataDir.appendingPathComponent("settings.json") }
+    static var pipelineSecretsDir: URL { dataDir.appendingPathComponent("pipeline-secrets") }
+    static func runSecretsPath(_ runId: String) -> URL { pipelineSecretsDir.appendingPathComponent("\(runId).env") }
+    static func runDecisionsPath(_ runId: String) -> URL { pipelineSecretsDir.appendingPathComponent("\(runId).decisions.json") }
     static var logoPath: URL { dataDir.appendingPathComponent("logo.png") }
     static var repoDefaultLogo: URL { repoRoot.appendingPathComponent("desktop/Resources/default-logo.png") }
     static var bundledDefaultLogo: URL? { Bundle.main.url(forResource: "default-logo", withExtension: "png") }

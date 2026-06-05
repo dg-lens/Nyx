@@ -66,7 +66,7 @@ function fakePlanResult(): PlanningResult {
     plans: [
       { task_id: 'A', description: 'do a', deps: [], creates: [], modifies: ['src/a.ts'], consumes: [], preflight: [], scope_boundary: [], acceptance: [] },
     ],
-    alignment: { conflicts: [], preflight: [] },
+    alignment: { conflicts: [], preflight: [], decisions: [] },
   };
 }
 
@@ -196,7 +196,7 @@ describe('orchestrator — preview gate', () => {
         { task_id: 'MOD', description: 'module', phase: 0, deps: [], creates: [], modifies: ['m.ts'], consumes: [], preflight: [], scope_boundary: [], acceptance: [] },
         { task_id: 'TEST', description: 'test', phase: 1, deps: [], creates: [], modifies: ['m.test.ts'], consumes: [], preflight: [], scope_boundary: [], acceptance: [] },
       ],
-      alignment: { conflicts: [], preflight: [] },
+      alignment: { conflicts: [], preflight: [], decisions: [] },
     };
   }
 

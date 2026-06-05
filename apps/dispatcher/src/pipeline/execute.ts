@@ -24,6 +24,7 @@ import { audit } from '../audit.js';
 import { config } from '../config.js';
 import * as git from '../git-ops.js';
 import { spawnWithTimeout } from '../spawn-helpers.js';
+import { pipelineRunEnv, loadRunDecisions } from './run-secrets.js';
 import { parsePlanJson, renderCoderSpec, type FlightPlanContract, type PlanningResult } from './flight-plan.js';
 import type { PlanTarget } from './planning.js';
 import { updateRun } from './db.js';
@@ -170,12 +171,13 @@ export interface CoderSpawnArgs {
   workingDir: string;
   timeoutMs: number;
   label: string;
+  runId: string;
 }
 export type CoderSpawn = (args: CoderSpawnArgs) => Promise<{ exitCode: number; stderr: string }>;
 
 const realCoderSpawn: CoderSpawn = async (a) => {
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...pipelineRunEnv(a.runId),
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
   };
   const args = [
@@ -213,6 +215,12 @@ function coderPrompt(run: PipelineRun, plan: FlightPlanContract): string {
       `\n\n## Operator correction (this is a corrective wave — incorporate it, still within your scope)\n` +
       run.fix_directive.trim();
   }
+  const decisions = loadRunDecisions(run.id);
+  if (decisions.length > 0) {
+    prompt +=
+      `\n\n## Operator decisions at the preview gate (honor these, still within your scope)\n` +
+      decisions.map((d) => `- ${d.question} → ${d.answer.toUpperCase()}${d.note ? ` (${d.note})` : ''}`).join('\n');
+  }
   return prompt;
 }
 
@@ -241,6 +249,7 @@ export async function defaultRunCoder(ctx: CoderContext): Promise<CoderResult> {
     workingDir: wtPath,
     timeoutMs: CODER_TIMEOUT_MS,
     label: `pipeline-coder-${sanitize(ctx.plan.task_id)}`,
+    runId: ctx.run.id,
   });
 
   // Commit anything the coder left uncommitted (it may have committed itself).
