@@ -45,9 +45,9 @@ enum Database {
             var summary = r["prompt"] ?? ""
             let brief = r["bz_brief_path"] ?? ""
             if !brief.isEmpty, let txt = try? String(contentsOfFile: brief, encoding: .utf8), !txt.isEmpty {
-                summary = String(txt.prefix(700))
+                summary = recommendationLine(txt) ?? summary
             } else if let stage = r["current_stage"], !stage.isEmpty {
-                summary += "\n(stage: \(stage))"
+                summary += " (stage: \(stage))"
             }
             return Gate(id: r["id"] ?? "", gate: gate, summary: summary, repo: r["repo"] ?? "",
                         preflight: parsePreflight(r["plan_json"] ?? ""),
@@ -64,6 +64,18 @@ enum Database {
             guard let q = d["question"] as? String, !q.isEmpty else { return nil }
             return GateDecision(question: q, defaultAnswer: d["default"] as? String)
         }
+    }
+
+    // The card shows a clean go/no-go recommendation, not the raw brief markdown:
+    // the bold recommendation line ("GO — 3 tasks…" / "NEEDS INPUT — …").
+    private static func recommendationLine(_ brief: String) -> String? {
+        for raw in brief.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("**"), line.hasSuffix("**"), line.count > 4 {
+                return String(line.dropFirst(2).dropLast(2))
+            }
+        }
+        return nil
     }
 
     // alignment.preflight from the frozen plan_json (PlanningResult).

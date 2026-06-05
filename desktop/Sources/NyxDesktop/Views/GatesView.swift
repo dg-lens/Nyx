@@ -30,13 +30,11 @@ struct GateCard: View {
     @State private var envInputs: [String: String] = [:]
     @State private var envSaved: Set<String> = []
     @State private var decisionAnswers: [String: String] = [:]
-    @State private var decisionNotes: [String: String] = [:]
-    @State private var showNote: Set<String> = []
 
     private var isPreview: Bool { gate.gate == "preview" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(isPreview ? "◧ PREVIEW" : "◨ REVIEW")
                     .font(.caption.bold()).foregroundStyle(.tint)
@@ -44,14 +42,16 @@ struct GateCard: View {
                 Text(gate.repo.isEmpty ? gate.id : "\(gate.id) · \(gate.repo)")
                     .font(.caption).foregroundStyle(.secondary)
             }
+
+            // Go / no-go recommendation (clean line, not the raw brief).
             Text(gate.summary)
-                .font(.callout)
+                .font(.callout.weight(.medium))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
 
             if !gate.preflight.isEmpty {
                 Divider()
-                Text("Preflight requirements").font(.caption.bold()).foregroundStyle(.secondary)
+                Text("Requirements").font(.caption.bold()).foregroundStyle(.secondary)
                 Text("Each secret can use Nyx's global value or a custom one scoped to just this run.")
                     .font(.caption2).foregroundStyle(.tertiary)
                 ForEach(gate.preflight) { preflightRow($0) }
@@ -65,14 +65,19 @@ struct GateCard: View {
 
             TextField(isPreview ? "revise note (optional)" : "fix note (optional)", text: $note)
                 .textFieldStyle(.roundedBorder)
+
             HStack {
-                Button(isPreview ? "Approve" : "Proceed") {
-                    saveDecisions()
-                    store.decide(gate.id, isPreview ? "go" : "proceed", note: nil)
-                }
-                .buttonStyle(.borderedProminent)
-                Button(isPreview ? "Revise" : "Fix") {
-                    store.decide(gate.id, isPreview ? "revise" : "fix", note: note)
+                if isPreview {
+                    Button("Go") { saveDecisions(); store.decide(gate.id, "go", note: nil) }
+                        .buttonStyle(.borderedProminent)
+                    Button("Revise") { store.decide(gate.id, "revise", note: note) }
+                    Button("Abort") { store.decide(gate.id, "abort", note: nil) }
+                } else {
+                    Button("Proceed") { store.decide(gate.id, "proceed", note: nil) }
+                        .buttonStyle(.borderedProminent)
+                    Button("Fix") { store.decide(gate.id, "fix", note: note) }
+                    Button("Rollback") { store.decide(gate.id, "rollback", note: nil) }
+                    Button("Abort") { store.decide(gate.id, "abort", note: nil) }
                 }
             }
         }
@@ -85,7 +90,7 @@ struct GateCard: View {
         }
     }
 
-    // MARK: preflight — use global secret, or a per-run custom value
+    // MARK: requirements — use global secret, or a per-run custom value
     @ViewBuilder
     private func preflightRow(_ req: PreflightReq) -> some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -125,26 +130,16 @@ struct GateCard: View {
         .padding(.vertical, 1)
     }
 
-    // MARK: decisions — Yes/No + optional note, threaded into the coders
+    // MARK: decisions — Yes/No (context goes in the revise/fix note, not here)
     @ViewBuilder
     private func decisionRow(_ d: GateDecision) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(d.question).font(.callout).fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Picker("", selection: answerBinding(d.question)) {
-                    Text("Yes").tag("yes")
-                    Text("No").tag("no")
-                }
-                .pickerStyle(.segmented).frame(width: 120)
-                Button(showNote.contains(d.question) ? "− note" : "＋ note") {
-                    if showNote.contains(d.question) { showNote.remove(d.question) } else { showNote.insert(d.question) }
-                }
-                .controlSize(.small)
-                Spacer()
+            Picker("", selection: answerBinding(d.question)) {
+                Text("Yes").tag("yes")
+                Text("No").tag("no")
             }
-            if showNote.contains(d.question) {
-                TextField("note (optional)", text: noteBinding(d.question)).textFieldStyle(.roundedBorder)
-            }
+            .pickerStyle(.segmented).frame(width: 120)
         }
         .padding(.vertical, 1)
     }
@@ -159,9 +154,6 @@ struct GateCard: View {
     private func answerBinding(_ q: String) -> Binding<String> {
         Binding(get: { decisionAnswers[q] ?? "yes" }, set: { decisionAnswers[q] = $0; saveDecisions() })
     }
-    private func noteBinding(_ q: String) -> Binding<String> {
-        Binding(get: { decisionNotes[q] ?? "" }, set: { decisionNotes[q] = $0; saveDecisions() })
-    }
 
     private func setCustom(_ env: String) {
         let v = envInputs[env] ?? ""
@@ -173,9 +165,7 @@ struct GateCard: View {
 
     private func saveDecisions() {
         let answers: [[String: String]] = gate.decisions.map { d in
-            var a = ["question": d.question, "answer": decisionAnswers[d.question] ?? (d.defaultAnswer == "no" ? "no" : "yes")]
-            if let n = decisionNotes[d.question], !n.isEmpty { a["note"] = n }
-            return a
+            ["question": d.question, "answer": decisionAnswers[d.question] ?? (d.defaultAnswer == "no" ? "no" : "yes")]
         }
         writeRunDecisions(gate.id, answers)
     }
