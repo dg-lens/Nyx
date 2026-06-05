@@ -97,6 +97,7 @@ export interface PreflightItem {
   item: string;
   status: PreflightStatus;
   note: string;
+  env?: string; // exact env var name when the requirement is an env var / secret
 }
 
 export interface Alignment {
@@ -240,6 +241,7 @@ export function parseAlignment(raw: string): Alignment {
     item: str(p.item),
     status: (['ready', 'missing', 'unclear'].includes(p.status as string) ? p.status : 'unclear') as PreflightStatus,
     note: str(p.note),
+    ...(p.env ? { env: str(p.env) } : {}),
   }));
   return { conflicts, preflight };
 }

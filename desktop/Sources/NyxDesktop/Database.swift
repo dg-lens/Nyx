@@ -35,7 +35,7 @@ enum Database {
 
     static func loadGates() -> [Gate] {
         let sql = """
-        SELECT id, status, current_stage, prompt, repo, bz_brief_path
+        SELECT id, status, current_stage, prompt, repo, bz_brief_path, plan_json
         FROM pipeline_runs
         WHERE status IN ('awaiting_preview', 'awaiting_review')
         ORDER BY updated_at DESC
@@ -49,7 +49,24 @@ enum Database {
             } else if let stage = r["current_stage"], !stage.isEmpty {
                 summary += "\n(stage: \(stage))"
             }
-            return Gate(id: r["id"] ?? "", gate: gate, summary: summary, repo: r["repo"] ?? "")
+            return Gate(id: r["id"] ?? "", gate: gate, summary: summary, repo: r["repo"] ?? "",
+                        preflight: parsePreflight(r["plan_json"] ?? ""))
+        }
+    }
+
+    // alignment.preflight from the frozen plan_json (PlanningResult).
+    private static func parsePreflight(_ planJson: String) -> [PreflightReq] {
+        guard let data = planJson.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let align = obj["alignment"] as? [String: Any],
+              let items = align["preflight"] as? [[String: Any]] else { return [] }
+        return items.map { p in
+            PreflightReq(
+                item: (p["item"] as? String) ?? "",
+                status: (p["status"] as? String) ?? "unclear",
+                note: (p["note"] as? String) ?? "",
+                env: p["env"] as? String
+            )
         }
     }
 

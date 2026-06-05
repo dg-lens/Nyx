@@ -301,7 +301,12 @@ function alignPrompt(prompt: string, dag: TaskDag, plans: FlightPlanContract[]):
           },
         ],
         preflight: [
-          { item: 'env var / secret / account / repo', status: 'ready | missing | unclear', note: 'one line' },
+          {
+            item: 'env var / secret / account / repo',
+            status: 'ready | missing | unclear',
+            note: 'one line',
+            env: 'EXACT_ENV_VAR_NAME — the precise variable name when the item is an env var or secret (so the operator can fill it inline at the gate); omit otherwise',
+          },
         ],
       },
       null,

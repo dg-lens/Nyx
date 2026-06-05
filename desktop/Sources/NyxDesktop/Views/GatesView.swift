@@ -26,6 +26,8 @@ struct GateCard: View {
     @EnvironmentObject var store: Store
     let gate: Gate
     @State private var note = ""
+    @State private var envInputs: [String: String] = [:]
+    @State private var envSaved: Set<String> = []
 
     private var isPreview: Bool { gate.gate == "preview" }
 
@@ -42,6 +44,13 @@ struct GateCard: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+
+            if !gate.preflight.isEmpty {
+                Divider()
+                Text("Preflight requirements").font(.caption.bold()).foregroundStyle(.secondary)
+                ForEach(gate.preflight) { preflightRow($0) }
+            }
+
             TextField(isPreview ? "revise note (optional)" : "fix note (optional)", text: $note)
                 .textFieldStyle(.roundedBorder)
             HStack {
@@ -56,5 +65,59 @@ struct GateCard: View {
         }
         .padding(14)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func preflightRow(_ req: PreflightReq) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(statusIcon(req.status))
+                Text(req.env ?? req.item)
+                    .font(req.env != nil ? .system(.callout, design: .monospaced) : .callout)
+                Spacer()
+                Text(req.status).font(.caption2).foregroundStyle(.secondary)
+            }
+            if !req.note.isEmpty {
+                Text(req.note).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let env = req.env, req.status != "ready" {
+                if envSaved.contains(env) {
+                    Text("✓ saved to .env").font(.caption2).foregroundStyle(.green)
+                } else {
+                    HStack {
+                        Group {
+                            if SettingsStore.looksSecret(env) {
+                                SecureField("value for \(env)", text: binding(env))
+                            } else {
+                                TextField("value for \(env)", text: binding(env))
+                            }
+                        }
+                        .textFieldStyle(.roundedBorder)
+                        Button("Set") { setEnv(env) }.disabled((envInputs[env] ?? "").isEmpty)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func binding(_ env: String) -> Binding<String> {
+        Binding(get: { envInputs[env] ?? "" }, set: { envInputs[env] = $0 })
+    }
+
+    private func setEnv(_ env: String) {
+        let v = envInputs[env] ?? ""
+        guard !v.isEmpty else { return }
+        writeEnvVar(env, v)
+        envSaved.insert(env)
+        envInputs[env] = ""
+    }
+
+    private func statusIcon(_ s: String) -> String {
+        switch s {
+        case "ready": return "✓"
+        case "missing": return "⚠"
+        default: return "?"
+        }
     }
 }

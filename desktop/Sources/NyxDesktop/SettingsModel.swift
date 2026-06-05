@@ -278,3 +278,24 @@ final class SettingsStore: ObservableObject {
 func applyDockIcon() {
     NSApplication.shared.applicationIconImage = Layout.effectiveLogoURL.flatMap { NSImage(contentsOf: $0) }
 }
+
+// Write/replace a single env var in Data/.env (used by the preview gate's inline
+// preflight inputs, so env vars can be provided right at the gate).
+@MainActor
+func writeEnvVar(_ key: String, _ value: String) {
+    guard !value.isEmpty else { return }
+    var lines = (try? String(contentsOf: Layout.envPath, encoding: .utf8))?
+        .components(separatedBy: .newlines) ?? []
+    var done = false
+    for i in lines.indices {
+        let line = lines[i].trimmingCharacters(in: .whitespaces)
+        guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
+        if String(line[..<eq]).trimmingCharacters(in: .whitespaces) == key {
+            lines[i] = "\(key)=\(value)"
+            done = true
+            break
+        }
+    }
+    if !done { lines.append("\(key)=\(value)") }
+    try? lines.joined(separator: "\n").write(to: Layout.envPath, atomically: true, encoding: .utf8)
+}
