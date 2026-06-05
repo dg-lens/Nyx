@@ -72,7 +72,14 @@ function openDeliveryPR(run: PipelineRun, baseBranch: string): string | null {
     base,
   );
   if (!out) return null;
-  return out.match(/https?:\/\/\S+/)?.[0] ?? out.trim();
+  const prUrl = out.match(/https?:\/\/\S+/)?.[0] ?? out.trim();
+  // Opt-in auto-merge (Settings -> pipeline.autoMerge). Best-effort: needs
+  // auto-merge enabled on the repo; gitTry swallows failure. GitHub still waits
+  // for required checks/approvals before merging.
+  if (config.settings.pipeline.autoMerge) {
+    gitTry(`gh pr merge --auto --squash "${branch}"`, base);
+  }
+  return prUrl;
 }
 
 /** deploy_required detection: integration diff vs base × repo deployPatterns. */

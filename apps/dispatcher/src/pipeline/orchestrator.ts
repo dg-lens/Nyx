@@ -262,7 +262,23 @@ function escalateToReview(run: PipelineRun, reason: 'catastrophic' | 'unresolved
 async function stageShipping(run: PipelineRun, deps: ResolvedDeps): Promise<PipelineRun> {
   const outcome = await deps.ship(run);
   if (outcome.kind === 'green') {
-    return deliverAndFinish(run, deps);
+    // Strict review (Settings -> pipeline.reviewStrictness) pauses even a fully
+    // green run for explicit operator approval. normal/lenient auto-deliver.
+    if (config.settings.pipeline.reviewStrictness !== 'strict') {
+      return deliverAndFinish(run, deps);
+    }
+    const greenBrief = writeBriefFile(
+      run.id,
+      'All tasks are green. Review strictness is "strict", so delivery awaits your explicit approval.',
+    );
+    const gr = transition(run, 'awaiting_review', {
+      bz_brief_path: greenBrief,
+      operator_decision: null,
+      current_stage: 'review_gate',
+    });
+    audit('pipeline.review.delivered', 'pipeline', { runId: gr.id, reason: 'strict-review-of-green' });
+    void notify.pipelineAwaitingGate(gr.id, gr.task_id, 'review', 'Green — awaiting approval (strict mode)');
+    return gr;
   }
   const briefPath = writeBriefFile(run.id, outcome.brief);
   const r = transition(run, 'awaiting_review', {
