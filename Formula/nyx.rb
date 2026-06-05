@@ -152,7 +152,9 @@ class Nyx < Formula
         nyx up
 
       Update to latest HEAD (after committing to ~/Nyx/Core):
-        brew reinstall --HEAD dg-lens/nyx/nyx
+        brew uninstall nyx && brew install --HEAD dg-lens/nyx/nyx
+      (this Homebrew rejects `reinstall --HEAD`; uninstall+install forces a
+      rebuild from the new HEAD instead of relinking the old keg.)
     EOS
   end
 end
