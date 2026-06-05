@@ -18,7 +18,6 @@ import {
   verifyChain,
 } from '../audit.js';
 import { runAudit, MAX_AUDIT_PASSES } from '../audit-runner.js';
-import { runComposerLayer } from '../composer/orchestrate.js';
 import type { FlightPlan } from '../composer/types.js';
 import {
   advancePipeline,
@@ -178,37 +177,17 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
     }
   }
 
-  // ── Composer layer (stage 0 — observation only) ──
-  // For code tasks: run plan-only spawn, then composer call, then proceed with
-  // the existing flow. NEVER throws, NEVER blocks. If composer fails for any
-  // reason, the dispatcher behaves as if the layer didn't exist. The returned
-  // flight plan (if any) is injected into the execution prompt so the agent
-  // executes its own previously-drafted plan.
-  //
-  // Skipped on audit retries (priorAuditPasses > 0) because re-planning when
-  // the working dir already has partial state would muddy the plan-vs-actual
-  // signal. The plan from the first attempt is reused via DB.
-  let flightPlan: FlightPlan | null = null;
-  if (task.type === 'code' && !isRetry) {
-    try {
-      const composerResult = await runComposerLayer(task, workingDir.path);
-      flightPlan = composerResult.flightPlan;
-    } catch (err) {
-      // Defensive — orchestrate.ts is already non-throwing, but guard anyway
-      // so a regression there never blocks dispatch.
-      audit('composer.skipped', 'dispatcher', {
-        taskId: task.id,
-        reason: `runComposerLayer threw: ${(err as Error).message}`,
-      });
-    }
-  }
-
   // ── Attempt + audit loop ──
   // Each iteration: invoke Claude → run gate → finalize. On any stage failure,
   // run the audit phase. If audit auto-fixes, loop. If audit halts or audit cap
   // is reached, emit task.halted_for_review and return.
+  //
+  // (The stage-0 composer layer — a plan-only + composer-check spawn before
+  // execution — was a proof-of-concept and has been removed for non-pipeline
+  // tasks; code tasks now run a single execution spawn. The composer module is
+  // retained for the pipeline's composer-redux stage.)
   for (let attempt = priorAuditPasses; attempt <= MAX_AUDIT_PASSES; attempt++) {
-    const result = await attemptTask(task, workingDir, startedAt, { flightPlan });
+    const result = await attemptTask(task, workingDir, startedAt, { flightPlan: null });
     if (result.status === 'completed' || result.status === 'failed-final') {
       return result.outcome;
     }
