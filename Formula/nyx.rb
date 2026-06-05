@@ -18,7 +18,7 @@ class Nyx < Formula
 
   # HEAD-only formula installed from the local Core git repo (the three-sibling
   # layout: ~/Nyx/Core is the git repo; ~/Nyx/Data and ~/Nyx/Plugins are siblings).
-  head "file://#{Dir.home}/Nyx/Core", using: :git
+  head "file://#{Dir.home}/Nyx/Core", using: :git, branch: "main"
 
   depends_on "node"
   depends_on "pnpm"
