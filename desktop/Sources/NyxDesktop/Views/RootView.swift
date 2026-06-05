@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct RootView: View {
     @EnvironmentObject var store: Store
@@ -11,11 +12,17 @@ struct RootView: View {
                 .tabItem { Label("Dispatch", systemImage: "paperplane") }
             MonitorView()
                 .tabItem { Label("Monitor", systemImage: "waveform.path.ecg") }
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .padding(12)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 HStack(spacing: 6) {
+                    if let logo = NSImage(contentsOf: Layout.logoPath) {
+                        Image(nsImage: logo).resizable().scaledToFit().frame(width: 16, height: 16)
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
                     Circle()
                         .fill(store.state.healthy ? Color.green : Color.secondary)
                         .frame(width: 8, height: 8)

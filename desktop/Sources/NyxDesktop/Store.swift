@@ -34,6 +34,7 @@ final class Store: ObservableObject {
     }
 
     func refresh() {
+        systemName = Layout.systemName
         var s = NyxState()
         s.gates = Database.loadGates()
         s.queue = Database.loadPendingQueue() + QueueFile.load()
