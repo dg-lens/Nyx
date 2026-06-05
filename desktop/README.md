@@ -23,15 +23,28 @@ Paths resolve from `NYX_DATA_DIR` / `NYX_REPO_ROOT` (falling back to `~/Nyx/Data
 
 ## Build & run
 
-Requires the Swift toolchain (full Xcode recommended; Command Line Tools alone ship a partial SwiftPM that can't link the manifest).
+Two paths, depending on your toolchain:
+
+**Command Line Tools only** — use the direct `swiftc` build (`build.sh`). CLT 16.4 ships a broken SwiftPM (its `libPackageDescription` binary is out of sync with its headers, so `swift run`/`swift build` can't link *any* manifest) **and** a duplicate `SwiftBridging` modulemap that breaks every Swift compile. `build.sh` sidesteps SwiftPM entirely, but you must clear the duplicate modulemap once:
+
+```sh
+sudo rm /Library/Developer/CommandLineTools/usr/include/swift/module.modulemap
+cd Core/desktop
+./build.sh
+open NyxDesktop.app
+```
+
+(The removed file is a stale Aug-2023 leftover Apple's package ships alongside the current `bridging.modulemap`; a CLT update may restore it — re-run the `rm` if the SwiftBridging error returns.)
+
+**Full Xcode** — the bundled toolchain is consistent, so SwiftPM works normally:
 
 ```sh
 cd Core/desktop
-swift run            # or: swift build && .build/debug/NyxDesktop
+swift run
 ```
 
-To make it a dock-less menu-bar-only agent, set `LSUIElement` in the app's Info.plist (or call `NSApp.setActivationPolicy(.accessory)` at launch) — left off in the draft so the window is reachable during development.
+To make it a dock-less menu-bar-only agent, set `LSUIElement` in `Info.plist` (or call `NSApp.setActivationPolicy(.accessory)` at launch) — left off in the draft so the window is reachable during development.
 
 ## Status
 
-Draft. Reads and writes are live against `Data/`; the gate/dispatch/monitor flows are wired end-to-end. Not yet wrapped as a signed `.app` bundle or added to login items — `swift run` from here is the dev path.
+Draft. Reads and writes are live against `Data/`; the gate/dispatch/monitor flows are wired end-to-end. `build.sh` produces `NyxDesktop.app` (unsigned, not yet added to login items). The `Package.swift` is kept for the full-Xcode path.

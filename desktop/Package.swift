@@ -9,6 +9,5 @@ let package = Package(
             name: "NyxDesktop",
             path: "Sources/NyxDesktop"
         )
-    ],
-    swiftLanguageVersions: [.v5]
+    ]
 )
