@@ -6,6 +6,7 @@ final class Store: ObservableObject {
     @Published var state = NyxState()
     @Published var systemName = Layout.systemName
     @Published var lastDispatch = ""
+    @Published var ticking = false
 
     private var timer: Timer?
 
@@ -45,10 +46,17 @@ final class Store: ObservableObject {
 
     func runTick() {
         let script = Layout.tickScript
-        guard FileManager.default.fileExists(atPath: script.path) else { return }
+        guard !ticking, FileManager.default.fileExists(atPath: script.path) else { return }
+        ticking = true
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [script.path]
-        try? p.run()
+        p.arguments = [script.path, "--no-build"]
+        p.terminationHandler = { _ in
+            DispatchQueue.main.async { [weak self] in
+                self?.ticking = false
+                self?.refresh()
+            }
+        }
+        do { try p.run() } catch { ticking = false }
     }
 }

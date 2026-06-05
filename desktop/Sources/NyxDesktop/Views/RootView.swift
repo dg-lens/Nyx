@@ -24,7 +24,19 @@ struct RootView: View {
                 }
             }
             ToolbarItem {
+                Button { store.runTick() } label: {
+                    if store.ticking {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Tick", systemImage: "bolt.fill")
+                    }
+                }
+                .disabled(store.ticking)
+                .help("Run one dispatch tick now")
+            }
+            ToolbarItem {
                 Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Reload state")
             }
         }
     }
