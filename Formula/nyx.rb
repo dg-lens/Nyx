@@ -11,6 +11,8 @@
 # NYX_DATA_DIR    (default ~/Nyx/Data)    holds nyx.md, data/, logs/, .env.
 # NYX_PLUGINS_DIR (default ~/Nyx/Plugins) holds local (private) plugins.
 # NYX_REPO_ROOT   (#{opt_libexec})        holds compiled Core code; set by wrappers.
+require "etc"
+
 class Nyx < Formula
   desc "Autonomous task dispatcher with hash-chained audit and MCP integrations"
   homepage "https://github.com/dg-lens/Nyx"
@@ -33,16 +35,18 @@ class Nyx < Formula
       system "pnpm", "-r", "build"
     end
 
-    data_dir = "#{Dir.home}/Nyx/Data"
-    plugins_dir = "#{Dir.home}/Nyx/Plugins"
-    home_dir = Dir.home
+    # Dir.home inside `def install` is Homebrew's sandbox HOME, not the real
+    # user's. Resolve the invoking user's home from the passwd DB instead.
+    home_dir = Etc.getpwuid(Process.uid).dir
+    data_dir = "#{home_dir}/Nyx/Data"
+    plugins_dir = "#{home_dir}/Nyx/Plugins"
 
     # Wrapper: nyx CLI — points at the libexec code + the sibling Data/Plugins.
     (bin/"nyx").write <<~SH
       #!/bin/bash
       export NYX_REPO_ROOT="#{opt_libexec}"
-      export NYX_DATA_DIR="${NYX_DATA_DIR:-#{data_dir}}"
-      export NYX_PLUGINS_DIR="${NYX_PLUGINS_DIR:-#{plugins_dir}}"
+      export NYX_DATA_DIR="${NYX_DATA_DIR:-$HOME/Nyx/Data}"
+      export NYX_PLUGINS_DIR="${NYX_PLUGINS_DIR:-$HOME/Nyx/Plugins}"
       exec "#{opt_libexec}/scripts/nyx" "$@"
     SH
     chmod 0755, bin/"nyx"
@@ -51,8 +55,8 @@ class Nyx < Formula
     (bin/"nyx-dispatch.sh").write <<~SH
       #!/bin/bash
       export NYX_REPO_ROOT="#{opt_libexec}"
-      export NYX_DATA_DIR="${NYX_DATA_DIR:-#{data_dir}}"
-      export NYX_PLUGINS_DIR="${NYX_PLUGINS_DIR:-#{plugins_dir}}"
+      export NYX_DATA_DIR="${NYX_DATA_DIR:-$HOME/Nyx/Data}"
+      export NYX_PLUGINS_DIR="${NYX_PLUGINS_DIR:-$HOME/Nyx/Plugins}"
       exec "#{opt_libexec}/scripts/nyx-dispatch.sh" "$@"
     SH
     chmod 0755, bin/"nyx-dispatch.sh"
@@ -121,8 +125,9 @@ class Nyx < Formula
   end
 
   def caveats
-    data_dir = "#{Dir.home}/Nyx/Data"
-    plugins_dir = "#{Dir.home}/Nyx/Plugins"
+    home_dir = Etc.getpwuid(Process.uid).dir
+    data_dir = "#{home_dir}/Nyx/Data"
+    plugins_dir = "#{home_dir}/Nyx/Plugins"
     <<~EOS
       Nyx data directory (nyx.md, database, .env, logs):
         #{data_dir}
