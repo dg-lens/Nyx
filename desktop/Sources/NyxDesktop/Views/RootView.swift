@@ -20,7 +20,8 @@ struct RootView: View {
                         .fill(store.state.healthy ? Color.green : Color.secondary)
                         .frame(width: 8, height: 8)
                     Text(store.systemName).font(.headline)
-                    Text("· tick \(store.state.lastTick)").foregroundStyle(.secondary).font(.caption)
+                    Text("· next tick \(store.nextTickCountdown)")
+                        .foregroundStyle(.secondary).font(.caption).monospacedDigit()
                 }
             }
             ToolbarItem {

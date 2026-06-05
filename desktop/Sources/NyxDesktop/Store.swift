@@ -7,15 +7,30 @@ final class Store: ObservableObject {
     @Published var systemName = Layout.systemName
     @Published var lastDispatch = ""
     @Published var ticking = false
+    @Published var nextTickCountdown = "—"
 
     private var timer: Timer?
+    private var countdownTimer: Timer?
 
     func start() {
         refresh()
+        updateCountdown()
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateCountdown() }
+        }
+    }
+
+    // Ticks fire on the wall-clock 5-minute grid (:00, :05, …); count down to the
+    // next boundary. Reflects the daemon schedule once `brew services start`.
+    func updateCountdown() {
+        let c = Calendar.current.dateComponents([.minute, .second], from: Date())
+        let secsInto = ((c.minute ?? 0) % 5) * 60 + (c.second ?? 0)
+        let remaining = max(0, 300 - secsInto)
+        nextTickCountdown = String(format: "%d:%02d", remaining / 60, remaining % 60)
     }
 
     func refresh() {
@@ -35,13 +50,16 @@ final class Store: ObservableObject {
         refresh()
     }
 
-    func dispatch(text: String, type: String, repo: String?) {
+    func dispatch(text: String, type: String, model: String, priority: String, repo: String?) {
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        var params = ["text": text, "type": type]
+        var params = ["text": text, "type": type, "model": model, "priority": priority]
         if let repo, !repo.isEmpty { params["repo"] = repo }
-        let ok = Database.enqueueAction("queue_task", params: params)
-        lastDispatch = ok ? "Queued → \(systemName).md (applies next tick)" : "Failed to enqueue"
+        // decompose_task: the dispatcher runs a sonnet claude -p pass that turns
+        // this plain-language request into one or more fully-tagged queue tasks.
+        let ok = Database.enqueueAction("decompose_task", params: params)
+        lastDispatch = ok ? "Decomposing via sonnet… tasks will appear in the queue." : "Failed to enqueue"
         refresh()
+        if ok { runTick() }
     }
 
     func runTick() {

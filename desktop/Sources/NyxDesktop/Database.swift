@@ -71,13 +71,14 @@ enum Database {
     // visible immediately rather than only appearing for the instant between
     // drain and execution.
     static func loadPendingQueue() -> [QueueItem] {
-        let rows = query("SELECT id, params FROM pending_actions WHERE action = 'queue_task' AND status = 'pending' ORDER BY id")
+        let rows = query("SELECT id, action, params FROM pending_actions WHERE action IN ('queue_task', 'decompose_task') AND status = 'pending' ORDER BY id")
         return rows.compactMap { r in
             guard let p = r["params"], let data = p.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
             let text = (obj["text"] as? String) ?? (obj["raw"] as? String) ?? "(queued task)"
             let type = (obj["type"] as? String) ?? "task"
-            return QueueItem(id: "queued #\(r["id"] ?? "?")", title: text, type: "\(type) · pending tick")
+            let label = r["action"] == "decompose_task" ? "\(type) · decomposing" : "\(type) · pending tick"
+            return QueueItem(id: "queued #\(r["id"] ?? "?")", title: text, type: label)
         }
     }
 
