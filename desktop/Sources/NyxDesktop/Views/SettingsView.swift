@@ -160,29 +160,50 @@ struct SettingsView: View {
     }
 
     // MARK: Integrations
+    private var orderedCategories: [String] {
+        let present = Set(s.envFields.map { $0.category })
+        let order = ["Core", "Memory", "Slack", "RemoteActions"]
+        return order.filter { present.contains($0) } + present.subtracting(order).sorted()
+    }
+
     private var environmentSection: some View {
         Section("Environment & Secrets") {
-            Text("Manage every variable here — no need to open Data/.env. Secrets are write-only: a set value is never displayed, only replaced.")
+            Text("Manage every variable here — no need to open Data/.env. Grouped by component; expand to edit.")
                 .font(.caption).foregroundStyle(.secondary)
-            ForEach($s.envFields) { $field in
-                if field.secret {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(field.label)
-                            Spacer()
-                            Text(field.isSet ? "✓ set" : "— not set")
-                                .font(.caption2)
-                                .foregroundStyle(field.isSet ? Color.green : Color.secondary)
-                        }
-                        SecureField(field.isSet ? "enter a new value to replace" : "paste value", text: $field.value)
-                    }
-                } else {
-                    LabeledContent(field.label) {
-                        TextField(field.key, text: $field.value).frame(maxWidth: 260)
+            Toggle("Show secret values", isOn: Binding(get: { s.showSecrets }, set: { s.setShowSecrets($0) }))
+            if s.showSecrets {
+                Text("Secrets are visible and retained. Default is write-only — a set secret is never shown, only replaced.")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+            ForEach(orderedCategories, id: \.self) { cat in
+                DisclosureGroup(cat) {
+                    ForEach(s.envFields.indices.filter { s.envFields[$0].category == cat }, id: \.self) { i in
+                        envRow(i)
                     }
                 }
             }
             Button("Save environment") { s.saveEnvFields() }.buttonStyle(.borderedProminent)
+        }
+    }
+
+    @ViewBuilder private func envRow(_ i: Int) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(s.envFields[i].key).font(.system(.callout, design: .monospaced))
+                Text(s.envFields[i].label).font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if s.envFields[i].secret && !s.showSecrets {
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(s.envFields[i].isSet ? "✓ set" : "— not set")
+                        .font(.caption2).foregroundStyle(s.envFields[i].isSet ? Color.green : Color.secondary)
+                    SecureField("paste value", text: $s.envFields[i].value)
+                        .textFieldStyle(.roundedBorder).frame(width: 240)
+                }
+            } else {
+                TextField("value", text: $s.envFields[i].value)
+                    .textFieldStyle(.roundedBorder).frame(width: 240)
+            }
         }
     }
 

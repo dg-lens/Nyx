@@ -43,8 +43,9 @@ struct EnvField: Identifiable {
     let key: String
     let label: String
     let secret: Bool
-    var value: String      // plain: current value (editable). secret: write-only input.
+    var value: String      // plain: current value (editable). secret: write-only input unless showSecrets.
     var isSet: Bool        // whether .env currently holds a value
+    var category: String = "Core"
 }
 
 @MainActor
@@ -53,6 +54,7 @@ final class SettingsStore: ObservableObject {
     @Published var instanceName = ""
     @Published var operatorName = ""
     @Published var envFields: [EnvField] = []
+    @Published var showSecrets = false
     @Published var plugins: [PluginInfo] = []
     @Published var daemonRunning = false
     @Published var status = ""
@@ -152,13 +154,16 @@ final class SettingsStore: ObservableObject {
             seen.insert(f.key)
             let v = current[f.key] ?? ""
             f.isSet = !v.isEmpty
-            f.value = f.secret ? "" : v
+            f.value = (f.secret && !showSecrets) ? "" : v
+            f.category = Self.categoryFor(f.key)
             fields.append(f)
         }
         for key in current.keys.sorted() where !seen.contains(key) {
             let v = current[key] ?? ""
             let secret = Self.looksSecret(key)
-            fields.append(EnvField(key: key, label: key, secret: secret, value: secret ? "" : v, isSet: !v.isEmpty))
+            fields.append(EnvField(key: key, label: key, secret: secret,
+                                   value: (secret && !showSecrets) ? "" : v, isSet: !v.isEmpty,
+                                   category: Self.categoryFor(key)))
         }
         envFields = fields
     }
@@ -166,7 +171,7 @@ final class SettingsStore: ObservableObject {
     func saveEnvFields() {
         var updates: [String: String] = [:]
         for f in envFields {
-            if f.secret {
+            if f.secret && !showSecrets {
                 // write-only: only update when a new value was typed; never clear.
                 if !f.value.isEmpty { updates[f.key] = f.value }
             } else {
@@ -180,6 +185,19 @@ final class SettingsStore: ObservableObject {
 
     static func looksSecret(_ key: String) -> Bool {
         return key.range(of: "TOKEN|KEY|SECRET|PASSWORD|PASS|CRED", options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    static func categoryFor(_ key: String) -> String {
+        if key.hasPrefix("SLACK_") { return "Slack" }
+        if key.hasPrefix("REMOTEACTIONS_") { return "RemoteActions" }
+        if key.hasPrefix("NYX_MEMORY") { return "Memory" }
+        if key.hasPrefix("ANTHROPIC_") || key.hasPrefix("GITHUB_") { return "Core" }
+        return "Other"
+    }
+
+    func setShowSecrets(_ on: Bool) {
+        showSecrets = on
+        loadEnvFields()
     }
 
     // MARK: plugins
