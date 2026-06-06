@@ -35,27 +35,48 @@ Rules:
 - Keep each description concrete and self-contained.`;
 
 export function buildDecomposerPrompt(intent: DecomposeIntent): string {
-  const lines: string[] = [
-    `You are Nyx's task decomposer. Convert the operator's request into one or more queue tasks.`,
-    `Emit ONE detailed task if the request is a single unit of work, or SEVERAL tasks (ordered with [depends:]) if it naturally splits.`,
-    ``,
-    TASK_FORMAT,
-    ``,
-  ];
-  if (intent.model && intent.model !== 'auto') {
-    lines.push(`Put [model: ${intent.model}] on every task.`);
+  const isPipeline = (intent.type ?? '').toLowerCase() === 'pipeline';
+  const lines: string[] = [];
+
+  if (isPipeline) {
+    // Pipeline tasks are NOT decomposed here — the pipeline's own planning stage
+    // splits the work into phases + parallel coders. The decomposer just fleshes
+    // the idea out into one self-contained brief.
+    lines.push(
+      `You are Nyx's task decomposer. The operator chose the PIPELINE type. Do NOT split this into multiple tasks — the pipeline runs its OWN planning stage that decomposes the work into phases and parallel coders.`,
+      `Emit EXACTLY ONE [type: pipeline] task whose description is the operator's idea FLESHED OUT: a clear, self-contained brief (goal, scope, key surfaces/pages, data model + constraints) — concrete enough for the pipeline to plan from, but NOT itself a task breakdown.`,
+      ``,
+      TASK_FORMAT,
+      ``,
+      `Put [type: pipeline] on the single task. Do NOT add [model:] or [gate:] — the pipeline picks per-stage models and gates itself.`,
+    );
+    if (intent.repo) lines.push(`Put [repo: ${intent.repo}].`);
+    if (intent.priority && intent.priority !== 'normal') lines.push(`Put [priority: ${intent.priority}].`);
+    if (intent.schedule?.startsWith('slot:')) lines.push(`Add [slot: ${intent.schedule.slice(5)}].`);
+    else if (intent.schedule?.startsWith('every:')) lines.push(`Add [every: ${intent.schedule.slice(6)}].`);
   } else {
     lines.push(
-      `Choose [model:] per task: haiku for simple/mechanical work, sonnet for normal code/analysis, opus for complex reasoning or risky changes.`,
+      `You are Nyx's task decomposer. Convert the operator's request into one or more queue tasks.`,
+      `Emit ONE detailed task if the request is a single unit of work, or SEVERAL tasks (ordered with [depends:]) if it naturally splits.`,
+      ``,
+      TASK_FORMAT,
+      ``,
     );
-  }
-  if (intent.type) lines.push(`Default [type:] is ${intent.type} unless the work clearly calls for another.`);
-  if (intent.repo) lines.push(`Put [repo: ${intent.repo}] on code/analysis/pipeline tasks.`);
-  if (intent.priority && intent.priority !== 'normal') lines.push(`Put [priority: ${intent.priority}] on the tasks.`);
-  if (intent.schedule?.startsWith('slot:')) {
-    lines.push(`Schedule it with [slot: ${intent.schedule.slice(5)}] — runs once daily at that 5-minute slot. Prefer emitting a single task.`);
-  } else if (intent.schedule?.startsWith('every:')) {
-    lines.push(`Schedule it with [every: ${intent.schedule.slice(6)}] — a recurring cadence. Prefer emitting a single task.`);
+    if (intent.model && intent.model !== 'auto') {
+      lines.push(`Put [model: ${intent.model}] on every task.`);
+    } else {
+      lines.push(
+        `Choose [model:] per task: haiku for simple/mechanical work, sonnet for normal code/analysis, opus for complex reasoning or risky changes.`,
+      );
+    }
+    if (intent.type) lines.push(`Default [type:] is ${intent.type} unless the work clearly calls for another.`);
+    if (intent.repo) lines.push(`Put [repo: ${intent.repo}] on code/analysis/pipeline tasks.`);
+    if (intent.priority && intent.priority !== 'normal') lines.push(`Put [priority: ${intent.priority}] on the tasks.`);
+    if (intent.schedule?.startsWith('slot:')) {
+      lines.push(`Schedule it with [slot: ${intent.schedule.slice(5)}] — runs once daily at that 5-minute slot. Prefer emitting a single task.`);
+    } else if (intent.schedule?.startsWith('every:')) {
+      lines.push(`Schedule it with [every: ${intent.schedule.slice(6)}] — a recurring cadence. Prefer emitting a single task.`);
+    }
   }
   lines.push(``, `Operator request:`, intent.text, ``);
   lines.push(
