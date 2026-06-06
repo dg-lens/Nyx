@@ -58,6 +58,29 @@ describe('decideMerges (pure)', () => {
     assert.deepEqual(held, ['B']);
   });
 
+  test('P2 (final arbiter) clears a P1 semantic_suspect → it merges', () => {
+    // The bake-ecom-001 failure: P1 flagged API-ROUTES semantic_suspect (additive
+    // route + correct-for-Next-15 Promise params), P2 said fits_whole, but the gate
+    // held it anyway and escalated to a destructive-only review. semantic_suspect is
+    // P1's soft "unsure" verdict — P2, the final arbiter, may clear it.
+    const plans = [fp('A'), fp('B')];
+    const { mergeOrder, held } = decideMerges(plans, [p1('A', 'clean'), p1('B', 'semantic_suspect')], p2of([['A', true], ['B', true]]));
+    assert.deepEqual(mergeOrder.sort(), ['A', 'B']);
+    assert.deepEqual(held, []);
+  });
+
+  test('a semantic_suspect that P2 also rejects stays held', () => {
+    const { held } = decideMerges([fp('A')], [p1('A', 'semantic_suspect')], p2of([['A', false]]));
+    assert.deepEqual(held, ['A']);
+  });
+
+  test('hard P1 verdicts stay blocking even when P2 fits', () => {
+    for (const v of ['conflict', 'failed', 'scope_drift', 'signature_drift'] as const) {
+      const { held } = decideMerges([fp('A')], [p1('A', v)], p2of([['A', true]]));
+      assert.deepEqual(held, ['A'], v);
+    }
+  });
+
   test('interface gate: a clean consumer is HELD when its producer is held (no orphan merge)', () => {
     // This is the PIPE-SMOKE failure: TEST (deps MODULE) was clean and got
     // merged while MODULE was held, leaving a test importing a missing module.

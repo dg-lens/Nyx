@@ -73,8 +73,10 @@ struct GateCard: View {
                     Button("Revise") { store.decide(gate.id, "revise", note: note) }
                     Button("Abort") { store.decide(gate.id, "abort", note: nil) }
                 } else {
-                    Button("Proceed") { store.decide(gate.id, "proceed", note: nil) }
+                    // Accept = merge the held task(s) + continue the build (non-destructive).
+                    Button("Accept & continue") { store.decide(gate.id, "accept", note: nil) }
                         .buttonStyle(.borderedProminent)
+                    Button("Proceed (ship merged)") { store.decide(gate.id, "proceed", note: nil) }
                     Button("Fix") { store.decide(gate.id, "fix", note: note) }
                     Button("Rollback") { store.decide(gate.id, "rollback", note: nil) }
                     Button("Abort") { store.decide(gate.id, "abort", note: nil) }

@@ -1,7 +1,8 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test, beforeEach } from 'node:test';
 
@@ -18,7 +19,7 @@ import {
 } from '../src/pipeline/db.js';
 import { assertTransition, canTransition, legalNext } from '../src/pipeline/state-machine.js';
 import { _setBriefsDir, advancePipeline, createPipelineRun, failPipelineRun, resumeDecidedRuns } from '../src/pipeline/orchestrator.js';
-import type { PlanningResult } from '../src/pipeline/flight-plan.js';
+import { freezePlan, type PlanningResult } from '../src/pipeline/flight-plan.js';
 import type { OperatorDecision, PipelineStatus } from '../src/pipeline/types.js';
 import { readQueue } from '../src/task-reader.js';
 import type { ParsedTask } from '../src/types.js';
@@ -367,5 +368,55 @@ describe('failPipelineRun (no retry loop on a thrown stage)', () => {
 
   test('is a no-op when the task has no run', () => {
     assert.doesNotThrow(() => failPipelineRun('PIPE-MISSING', 'x'));
+  });
+});
+
+describe('orchestrator — review gate: accept (merge held + continue)', () => {
+  const ship = async () => ({ kind: 'green' as const, smoke: { passed: true, summary: 'ok', failures: [] } });
+  const deliver = async () => ({ pr_url: null, pushed: false, deploy_targets: [], matched_files: [], brief: '# delivered' });
+  function g(cmd: string, cwd: string): string {
+    return execSync(cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }).trim();
+  }
+
+  test('force-merges the held branch into integration and continues (no re-code)', async () => {
+    // Real git base: integration + a held "api-branch" carrying a file not yet integrated.
+    const base = mkdtempSync(join(tmpdir(), 'nyx-accept-'));
+    g('git init -q', base);
+    g('git config user.email t@t.t', base);
+    g('git config user.name tester', base);
+    writeFileSync(resolve(base, 'scaffold.txt'), 'base\n');
+    g('git add -A', base); g('git commit -q -m base', base);
+    g('git checkout -q -B integration', base);
+    g('git checkout -q -B api-branch integration', base);
+    writeFileSync(resolve(base, 'api.ts'), 'export const api = 1\n');
+    g('git add -A', base); g('git commit -q -m api', base);
+    g('git checkout -q integration', base);
+
+    const plan: PlanningResult = {
+      dag: { nodes: [] },
+      plans: [{ task_id: 'API-ROUTES', description: 'api', phase: 0, deps: [], creates: [], modifies: ['api.ts'], consumes: [], preflight: [], scope_boundary: [], acceptance: [] }],
+      alignment: { conflicts: [], preflight: [], decisions: [] },
+    };
+    createRun({ id: 'pr_acc', taskId: 'BAKE', prompt: 'build', now: 1000 });
+    updateRun('pr_acc', {
+      status: 'awaiting_review', current_stage: 'review_gate', current_phase: 0,
+      plan_json: freezePlan(plan), worktree_base: base, integration_branch: 'integration',
+      coder_results: JSON.stringify([{ task_id: 'API-ROUTES', branch: 'api-branch', status: 'committed' }]),
+      redux_findings: JSON.stringify({ merged: ['CART-STATE'], held: ['API-ROUTES'] }),
+      operator_decision: { kind: 'accept', at: 'now' },
+    }, 1000);
+
+    const final = await advancePipeline(getRun('pr_acc')!, { ship, deliver });
+
+    // The held branch is now on integration — the merge happened, nothing re-coded.
+    assert.ok(g('git ls-tree -r --name-only integration', base).split('\n').includes('api.ts'),
+      'held API-ROUTES branch merged into integration');
+    // Continued past the held state to delivery (1 phase → shipping → green → done).
+    assert.equal(final.status, 'done');
+    const f = JSON.parse(getRun('pr_acc')!.redux_findings!) as { merged: string[]; held: string[] };
+    assert.deepEqual(f.held, [], 'held cleared');
+    assert.ok(f.merged.includes('API-ROUTES'), 'formerly-held task now counted as merged');
+    assert.ok(events().includes('pipeline.review.accept'));
+    rmSync(base, { recursive: true, force: true });
   });
 });

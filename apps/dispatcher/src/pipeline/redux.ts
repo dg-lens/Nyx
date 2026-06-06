@@ -308,12 +308,20 @@ export function decideMerges(
   p2: P2Result,
 ): { mergeOrder: string[]; held: string[] } {
   const byId = new Map(plans.map((p) => [p.task_id, p]));
-  const p1clean = new Set(p1.filter((f) => f.verdict === 'clean').map((f) => f.task_id));
+  // P1 verdicts the P2 arbiter is allowed to clear. `semantic_suspect` is P1's
+  // "looks unusual, not sure" verdict (and the parse-failure default) — exactly
+  // what P2, the FINAL arbiter, exists to adjudicate. Without this, a coder P1
+  // flags suspect and P2 explicitly clears (fits_whole) is still held forever,
+  // with no remediation directive, so the autonomous rounds flail and it
+  // escalates to a review gate with only destructive options. Hard P1 verdicts
+  // (conflict/failed/scope_drift/signature_drift) stay blocking regardless of P2.
+  const P1_SOFT = new Set<P1Verdict>(['clean', 'semantic_suspect']);
+  const p1soft = new Set(p1.filter((f) => P1_SOFT.has(f.verdict)).map((f) => f.task_id));
   const p2ok = new Set(p2.per_task.filter((t) => t.fits_whole).map((t) => t.task_id));
 
-  // Seed with the locally-clean tasks, then drop any whose producers aren't also
-  // in the set, repeating until stable.
-  const mergeable = new Set(plans.filter((p) => p1clean.has(p.task_id) && p2ok.has(p.task_id)).map((p) => p.task_id));
+  // Seed with the locally-acceptable tasks (P2 fits ∧ P1 not a hard failure),
+  // then drop any whose producers aren't also in the set, repeating until stable.
+  const mergeable = new Set(plans.filter((p) => p1soft.has(p.task_id) && p2ok.has(p.task_id)).map((p) => p.task_id));
   const producersOf = (p: FlightPlanContract): string[] => [
     ...p.deps,
     ...p.consumes.map((c) => c.from_task),

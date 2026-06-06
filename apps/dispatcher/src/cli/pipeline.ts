@@ -18,7 +18,7 @@ import { getRun, listRuns } from '../pipeline/db.js';
 import { submitDecision } from '../pipeline/decide.js';
 import type { DecisionKind, PipelineRun } from '../pipeline/types.js';
 
-const DECISION_VERBS = new Set<DecisionKind>(['go', 'revise', 'abort', 'proceed', 'fix', 'rollback']);
+const DECISION_VERBS = new Set<DecisionKind>(['go', 'revise', 'abort', 'proceed', 'fix', 'rollback', 'accept']);
 
 function usage(): void {
   process.stderr.write(
@@ -27,8 +27,9 @@ function usage(): void {
       `  status <RUN>               show a run + gate brief path\n` +
       `  go       <RUN> [--note T]  preview gate: freeze the plan + start coding\n` +
       `  revise   <RUN> --note T    preview gate: re-plan with your input\n` +
-      `  proceed  <RUN> [--note T]  review gate: accept / ship as-is\n` +
-      `  fix      <RUN> --note T    review gate: corrective wave (in-pipeline)\n` +
+      `  accept   <RUN> [--note T]  review gate: merge the held task(s) + CONTINUE the build\n` +
+      `  proceed  <RUN> [--note T]  review gate: ship only what already merged (stops here)\n` +
+      `  fix      <RUN> --note T    review gate: corrective wave (re-code from phase 0)\n` +
       `  rollback <RUN> [--note T]  review gate: replan from scratch\n` +
       `  abort    <RUN> [--note T]  stop the run\n`,
   );
@@ -51,7 +52,7 @@ function statusNotes(r: PipelineRun): string[] {
   const notes: string[] = [];
   if (r.status === 'awaiting_preview') notes.push('at the PREVIEW gate — read the brief, then go / revise / abort');
   else if (r.status === 'awaiting_review') {
-    notes.push('at the REVIEW gate — fix / proceed / rollback / abort');
+    notes.push('at the REVIEW gate — accept (merge held + continue) / proceed / fix / rollback / abort');
     try {
       const f = JSON.parse(r.redux_findings ?? '{}') as { held?: string[]; merged?: string[] };
       if (f.merged?.length) notes.push(`integrated: ${f.merged.join(', ')}`);
@@ -72,6 +73,7 @@ function decisionCommands(r: PipelineRun): string[] {
   }
   if (r.status === 'awaiting_review') {
     return [
+      `nyx pipeline accept ${r.id}`,
       `nyx pipeline proceed ${r.id}`,
       `nyx pipeline fix ${r.id} --note "..."`,
       `nyx pipeline rollback ${r.id}`,

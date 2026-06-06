@@ -33,7 +33,7 @@ import { createRun, getRun, getRunByTaskId, runsAwaitingDecision, updateRun } fr
 import { runExecuting, type ExecuteResult } from './execute.js';
 import { buildPreviewBrief, freezePlan, groupPhases, hasBlockingConflicts, parsePlanJson, previewRecommendation, type PlanningResult } from './flight-plan.js';
 import { runPlanning, type PlanTarget } from './planning.js';
-import { runRedux, type ReduxResult } from './redux.js';
+import { runMergeQueue, runRedux, type ReduxResult } from './redux.js';
 import { MAX_AUTONOMOUS_DIAGNOSTIC_ROUNDS, buildReviewBrief, reviewRecommendation, runDiagnosticRound, runShipping, type ShipOutcome } from './shipping.js';
 import { cleanupRunArtifacts, runDelivery, type DeliveryResult } from './delivery.js';
 import { assertTransition } from './state-machine.js';
@@ -326,6 +326,37 @@ async function deliverAndFinish(run: PipelineRun, deps: ResolvedDeps, via?: stri
   return done;
 }
 
+/**
+ * Force-merge the run's currently-held tasks into the integration branch — the
+ * operator's "I looked, these are fine" override at the review gate. Returns the
+ * ids that merged cleanly + the ids that genuinely conflicted (left held).
+ * Persists the updated merged/held split onto redux_findings.
+ */
+function forceMergeHeld(run: PipelineRun): { merged: string[]; stillHeld: string[] } {
+  const base = run.worktree_base;
+  const integration = run.integration_branch;
+  let findings: { merged?: string[]; held?: string[] } = {};
+  try {
+    findings = run.redux_findings ? JSON.parse(run.redux_findings) : {};
+  } catch {
+    findings = {};
+  }
+  const held = Array.isArray(findings.held) ? findings.held : [];
+  if (held.length === 0 || !base || !integration) return { merged: [], stillHeld: held };
+  const coders = run.coder_results
+    ? (JSON.parse(run.coder_results) as Array<{ task_id: string; branch: string }>)
+    : [];
+  const branchByTask = new Map(coders.map((c) => [c.task_id, c.branch]));
+  const { merged, held: stillHeld } = runMergeQueue(base, integration, held, branchByTask);
+  const newFindings = {
+    ...findings,
+    merged: [...(findings.merged ?? []), ...merged],
+    held: stillHeld,
+  };
+  updateRun(run.id, { redux_findings: JSON.stringify(newFindings) }, now());
+  return { merged, stillHeld };
+}
+
 async function handleReviewDecision(run: PipelineRun, deps: ResolvedDeps): Promise<PipelineRun> {
   const d = run.operator_decision!;
   void notify.pipelineResumed(run.id, run.task_id, 'review', d.kind);
@@ -333,6 +364,34 @@ async function handleReviewDecision(run: PipelineRun, deps: ResolvedDeps): Promi
     audit('pipeline.aborted', 'pipeline', { runId: run.id, at: 'review' });
     cleanupRunArtifacts(run);
     return transition(run, 'aborted', { operator_decision: null });
+  }
+  if (d.kind === 'accept') {
+    // Non-destructive override: the operator judged the held task(s) acceptable.
+    // Force-merge them into the integration branch and CONTINUE the build from
+    // where it paused — next phase, or final smoke if this was the last phase.
+    // Nothing is re-coded; the completed phases are kept.
+    const { merged, stillHeld } = forceMergeHeld(run);
+    audit('pipeline.review.accept', 'pipeline', { runId: run.id, accepted: merged, conflicted: stillHeld });
+    const cur = getRun(run.id) ?? run;
+    if (stillHeld.length > 0) {
+      // A held branch genuinely conflicts — can't silently drop it. Re-park at the
+      // review gate (clear the decision so the tick doesn't loop) with a fresh brief.
+      const briefPath = writeBriefFile(cur.id, buildReviewBrief(cur, 'unresolved', null));
+      void notify.pipelineAwaitingGate(cur.id, cur.task_id, 'review', `accept: ${stillHeld.join(', ')} conflict — needs fix/rollback`);
+      return updateRun(cur.id, { operator_decision: null, bz_brief_path: briefPath }, now()) ?? cur;
+    }
+    const plan = parsePlanJson(cur.plan_json);
+    const phases = plan ? groupPhases(plan.plans) : [];
+    const k = cur.current_phase;
+    if (k + 1 < phases.length) {
+      return transition(cur, 'executing', {
+        operator_decision: null,
+        current_stage: 'executing',
+        current_phase: k + 1,
+        diagnostic_round: 0,
+      });
+    }
+    return transition(cur, 'shipping', { operator_decision: null, current_stage: 'shipping' });
   }
   if (d.kind === 'fix') {
     // Corrective wave — fresh autonomous attempt. Thread the operator's directive

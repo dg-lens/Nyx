@@ -99,6 +99,7 @@ export type AuditEvent =
   | 'pipeline.smoke.completed'
   | 'pipeline.review.delivered'
   | 'pipeline.review.proceed'
+  | 'pipeline.review.accept'
   | 'pipeline.review.fix'
   | 'pipeline.review.rollback'
   | 'pipeline.short_circuit'

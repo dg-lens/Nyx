@@ -15,7 +15,7 @@ import { getRun, updateRun } from './db.js';
 import { isAwaiting, type DecisionKind, type OperatorDecision, type PipelineRun } from './types.js';
 
 export const PREVIEW_KINDS: readonly DecisionKind[] = ['go', 'revise', 'abort'];
-export const REVIEW_KINDS: readonly DecisionKind[] = ['proceed', 'fix', 'rollback', 'abort'];
+export const REVIEW_KINDS: readonly DecisionKind[] = ['accept', 'proceed', 'fix', 'rollback', 'abort'];
 
 export interface SubmitResult {
   ok: boolean;

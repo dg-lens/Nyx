@@ -64,6 +64,14 @@ describe('submitDecision', () => {
     assert.equal(getRun('pr_proc')?.operator_decision?.kind, 'proceed');
   });
 
+  test('accept (merge held + continue) is valid at the review gate, not the preview gate', () => {
+    runAt('pr_acc', 'awaiting_review');
+    assert.equal(submitDecision('pr_acc', 'accept').ok, true);
+    assert.equal(getRun('pr_acc')?.operator_decision?.kind, 'accept');
+    runAt('pr_acc_prev', 'awaiting_preview');
+    assert.equal(submitDecision('pr_acc_prev', 'accept').ok, false);
+  });
+
   test('abort is valid at either gate', () => {
     runAt('pr_a', 'awaiting_preview');
     assert.equal(submitDecision('pr_a', 'abort').ok, true);

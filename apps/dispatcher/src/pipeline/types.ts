@@ -39,7 +39,7 @@ export function isAwaiting(s: PipelineStatus): boolean {
  * `operator_decision` to null the moment it consumes one, so a stale decision
  * can never be re-applied on a later tick.
  */
-export type DecisionKind = 'go' | 'revise' | 'abort' | 'proceed' | 'fix' | 'rollback';
+export type DecisionKind = 'go' | 'revise' | 'abort' | 'proceed' | 'fix' | 'rollback' | 'accept';
 
 export interface OperatorDecision {
   kind: DecisionKind;
