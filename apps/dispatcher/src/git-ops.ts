@@ -97,6 +97,28 @@ export function createLocalWorktree(taskId: string): WorkingDir {
 }
 
 /**
+ * Greenfield scaffold dir: a brand-new, standalone git repo (NOT a worktree of
+ * ~/Nyx, NOT a clone of any remote). Used by pipeline runs whose `repo` is a
+ * greenfield keyword (`local`) — the operator wants a new local project built
+ * from scratch. `git init` + an empty initial commit so branches/worktrees/
+ * merges work exactly like a cloned base. No liveness sentinel — the dir is the
+ * deliverable and must stay clean. The caller owns the cleanup policy: the
+ * throwaway planning dir deletes itself; the durable project base does not.
+ */
+export function createGreenfieldDir(path: string): WorkingDir {
+  if (existsSync(path)) rmSync(path, { recursive: true, force: true });
+  mkdirSync(path, { recursive: true });
+  run('git init -b main', path);
+  configureGitIdentity(path);
+  run('git commit --allow-empty -m "nyx: greenfield init"', path);
+  return {
+    kind: 'clone',
+    path,
+    cleanup: () => { if (existsSync(path)) rmSync(path, { recursive: true, force: true }); },
+  };
+}
+
+/**
  * Pin the git author/committer identity inside a working dir so any commits
  * made there — including ones the spawned Claude makes directly via Bash —
  * are attributed to the configured operator. `commitAll()` ALSO sets the

@@ -34,6 +34,7 @@ import {
   type PlanningResult,
   type TaskDag,
 } from './flight-plan.js';
+import { invalidRepoReason, targetMode } from './target.js';
 import type { PipelineRun } from './types.js';
 
 const PLAN_TIMEOUT_MS = 5 * 60_000;
@@ -127,11 +128,20 @@ function defaultDeps(): PlanningDeps {
 
 // ─── Working dir ──────────────────────────────────────────────────────────────
 
-/** Clone the target repo (or local worktree if no repo) for planning agents. */
+/** Working dir for the planning agents, by target mode (see ./target.ts). */
 export function setupPlanningDir(run: PipelineRun, target: PlanTarget): git.WorkingDir {
-  if (target.repo) {
-    const baseBranch = config.gitTargets[target.repo]?.baseBranch;
-    return git.cloneExternalRepo(run.id, target.repo, 1, baseBranch ? { baseBranch } : {});
+  const mode = targetMode(target.repo);
+  if (mode === 'external') {
+    const baseBranch = config.gitTargets[target.repo!]?.baseBranch;
+    return git.cloneExternalRepo(run.id, target.repo!, 1, baseBranch ? { baseBranch } : {});
+  }
+  if (mode === 'greenfield') {
+    // Throwaway empty git dir under the /tmp clone prefix so cleanup's sweep
+    // reclaims it; the real project is scaffolded fresh at integration-base time.
+    return git.createGreenfieldDir(`${config.cloneRootPrefix}${run.id}-plan`);
+  }
+  if (mode === 'invalid') {
+    throw new Error(invalidRepoReason(target.repo));
   }
   return git.createLocalWorktree(run.id);
 }

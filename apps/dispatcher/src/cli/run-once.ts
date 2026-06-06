@@ -22,6 +22,7 @@ import type { FlightPlan } from '../composer/types.js';
 import {
   advancePipeline,
   createPipelineRun,
+  failPipelineRun,
   getRunByTaskId,
   resumeDecidedRuns,
 } from '../pipeline/orchestrator.js';
@@ -720,6 +721,9 @@ async function main(): Promise<void> {
       } catch (err) {
         const e = err as Error;
         audit('pipeline.failed', 'pipeline', { taskId: next.id, error: e.stack ?? e.message });
+        // Drive the run terminal so a thrown stage doesn't leave it at a
+        // non-terminal status and retry the same doomed work every tick.
+        failPipelineRun(next.id, e.message);
         console.error(`[nyx] pipeline ${next.id} threw:`, e.stack ?? e.message);
       }
       chainDepth++;

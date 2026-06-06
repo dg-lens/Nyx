@@ -42,6 +42,15 @@ describe('buildDeliveryBrief', () => {
     assert.match(brief, /Integration branch:\*\* nyx-pipeline\/x\/integration/);
     assert.doesNotMatch(brief, /Manual deploy required/);
   });
+
+  test('greenfield run points at the local project dir, not a PR or manual-deploy note', () => {
+    const run = seed('pr_green', { repo: 'local', integration_branch: 'nyx-pipeline/x/integration', worktree_base: '/data/projects/T' });
+    const brief = buildDeliveryBrief(run, { pr_url: null, deploy_targets: [] });
+    assert.match(brief, /New local project:\*\* `\/data\/projects\/T`/);
+    assert.match(brief, /Your new project lives at `\/data\/projects\/T`/);
+    assert.doesNotMatch(brief, /Deploy is your manual step/);
+    assert.doesNotMatch(brief, /PR \(review/);
+  });
 });
 
 describe('runDelivery', () => {
@@ -67,6 +76,14 @@ describe('runDelivery', () => {
     assert.equal(result.pr_url, null);
     assert.match(result.brief, /# Delivered/);
   });
+
+  test('greenfield run (repo: local) skips the push — local project has no remote', async () => {
+    const run = seed('pr_greendeliver', { repo: 'local', worktree_base: '/tmp/whatever' });
+    let pushed = false;
+    const result = await runDelivery(run, { push: () => { pushed = true; return 'x'; }, skipCleanup: true });
+    assert.equal(pushed, false, 'greenfield → push not attempted');
+    assert.equal(result.pr_url, null);
+  });
 });
 
 describe('cleanupRunArtifacts', () => {
@@ -82,5 +99,13 @@ describe('cleanupRunArtifacts', () => {
   test('is a no-op when there is no base (never throws)', () => {
     const run = seed('pr_nobase');
     assert.doesNotThrow(() => cleanupRunArtifacts(run));
+  });
+
+  test('greenfield run KEEPS its base — the project dir is the deliverable', () => {
+    const base = mkdtempSync(join(tmpdir(), 'nyx-greenbase-'));
+    writeFileSync(resolve(base, 'package.json'), '{}');
+    const run = seed('pr_greenkeep', { repo: 'local', worktree_base: base });
+    cleanupRunArtifacts(run);
+    assert.equal(existsSync(base), true, 'greenfield project dir must survive cleanup');
   });
 });

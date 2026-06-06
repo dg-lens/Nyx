@@ -52,6 +52,7 @@ export const config = {
   dbPath: resolve(DATA_DIR, 'data', 'nyx.db'),
   logsDir: resolve(DATA_DIR, 'logs'),
   outputsDir: resolve(DATA_DIR, 'outputs'),
+  projectsDir: resolve(DATA_DIR, 'projects'),
   worktreesDir: resolve(DATA_DIR, 'worktrees'),
   contextDir: resolve(DATA_DIR, 'context'),
 

@@ -59,6 +59,25 @@ manual step** (autonomous deploy + CI-wait + auto-migrate are v2). For a no-repo
 (self-target) run there's no origin to PR to: delivery emits a brief pointing at
 the integration branch in the base clone and does not clean up.
 
+### Target modes (`target.ts`)
+
+A run's `repo` field selects WHERE the work lands. Classified once in `target.ts`
+(`targetMode`) so every setup site agrees — never branch on `run.repo`
+truthiness directly (that's the bug that treated `[repo: local]` as a GitHub repo
+and tried to `git clone https://github.com/local.git`):
+
+| `repo` value | mode | planning dir / integration base | delivery |
+|---|---|---|---|
+| `owner/name` | `external` | clone `github.com/owner/name.git` | rebase + push branch + open PR (no auto-merge) |
+| empty / null | `self` | worktree of `~/Nyx` / clone local Nyx | brief → integration branch in base; cleanup removes base |
+| `local` `new` `greenfield` `scratch` | `greenfield` | fresh standalone `git init` repo (`createGreenfieldDir`) at `Data/projects/<task_id>` | NO PR (no remote); brief points at the project dir; **cleanup KEEPS the base** — the project IS the deliverable |
+| anything else | `invalid` | — | planning throws → run goes terminal `failed` (readable message, no retry loop) |
+
+Greenfield is for "build me a NEW local app" — the project lands at
+`Data/projects/<task_id>` as its own git repo with no remote; the operator pushes
+it wherever later. Coder worktrees still live under `/tmp/nyx-clone-<runId>-*`
+(swept on cleanup), so the durable project dir stays clean.
+
 ---
 
 ## File map
@@ -67,14 +86,15 @@ the integration branch in the base clone and does not clean up.
 |---|---|
 | `types.ts` | `PipelineRun`, `PipelineStatus` (9-state machine), `OperatorDecision`, terminal/awaiting predicates. |
 | `state-machine.ts` | Pure legal-transition table. `assertTransition` throws on illegal moves (a stage bug surfaces loudly). `failed`/`aborted` are universal sinks. |
+| `target.ts` | Pure `targetMode(repo)` classifier → `external` / `self` / `greenfield` / `invalid`. The single source of truth for where a run lands; `setupPlanningDir`, `setupIntegrationBase`, `runDelivery`, `cleanupRunArtifacts` all key off it. |
 | `db.ts` | `pipeline_runs` table (idempotent, mutable, mirrors composer/db.ts posture) + `_setPipelineDb()`. CRUD + `activeRuns`/`runsAwaitingDecision`/`listRuns`. |
 | `flight-plan.ts` | The pipeline's planning data: task DAG + flight-plan **interface contract** (`phase`/`creates`/`consumes`/`scope_boundary`), alignment, lenient parsers, the preview-brief renderer (renders phases), **`renderCoderSpec`** (compile a contract → the scoped coder prompt — each coder gets ONLY its slice, never the operator goal), **`groupPhases`** (bucket plans by `phase`, ascending), and **`detectScopeOverlaps`** (composer backstop — two tasks writing the same file is a blocking conflict). Pure. |
 | `planning.ts` | Stages ②③④. `runPlanning` clones the repo, spawns decompose → sequential flight-plan → align agents, reads their `.nyx/pipeline/*.json` artifacts. Spawn is **dependency-injected** (`PlanningDeps`) for testability; the real path mirrors composer/plan-spawner's Max-plan env strip. |
 | `execute.ts` | Stage ⑤, PHASE-SCOPED. `runExecuting` runs the run's CURRENT phase's coders in topological waves (`scheduleWaves`, ≤ cap) — each in its own worktree off the LIVE integration branch (carries prior phases' merges), committing to its own branch — sets the base up once (reused across phases) + accumulates `coder_results`. `scheduleWaves` pure + tested; `defaultRunCoder` (real git worktree + spawn + commit) injected. Coder prompt = `renderCoderSpec(plan)` — scoped spec, never the goal. |
 | `redux.ts` | Stage ⑥ (composer stages 1–3 promoted), PHASE-SCOPED to `current_phase`'s tasks. `harvestFacts` → `judgeP1` (deterministic conflict/failed override) → `judgeP2` cross-worktree interface graph (final arbiter; remediation + catastrophic) → `decideMerges` (pure — **interface gate**: merges only if P1-clean ∧ P2-fits ∧ every `deps`/`consumes` producer also merges, fixpoint) → `runMergeQueue` (authoritative). Persists `redux_findings`/`remediation_plan` for the phase. Judges injected; git real (temp-repo tests). |
 | `shipping.ts` | Final smoke only (per-phase recovery now lives in executing). `runShipping` runs `defaultSmoke` once → green / review. **`defaultSmoke` is HERMETIC**: pristine `checkout/reset/clean` + verify-only prompt + post-run `git status` dirty-guard (`interpretSmoke`) — a verifier that mutates the tree fails the run. **`runDiagnosticRound`** (exported, used by the executing phase loop) re-implements held tasks from a clean integration baseline + only ADOPTS a fix that landed in-scope (`classifyDiagnosticFix`). `buildReviewBrief` pure. `MAX_AUTONOMOUS_DIAGNOSTIC_ROUNDS=2`. |
-| `delivery.ts` | Stage ⑨ (terminal A). `runDelivery`: push the integration branch + open a PR WITHOUT auto-merge (`openDeliveryPR`, injected), `detectPipelineDeploy` (changedFiles × repo `deployPatterns` → reuse `task.production.deploy_required`), `buildDeliveryBrief` (pure), `cleanupRunArtifacts` (remove base + worktrees). The orchestrator emits the `pipeline.delivered` marker with the PR result. |
-| `orchestrator.ts` | The state-machine driver. `advancePipeline` (segment loop), `createPipelineRun`, `resumeDecidedRuns` (tick priority 1), the stage segments + gate handlers. Planning is injected (`AdvanceDeps.plan`) so the orchestration is unit-testable with a canned `PlanningResult`. `_setBriefsDir` test seam. |
+| `delivery.ts` | Stage ⑨ (terminal A). `runDelivery`: PR push ONLY for `external` (`openDeliveryPR`, injected), `detectPipelineDeploy` (changedFiles × repo `deployPatterns` → reuse `task.production.deploy_required`), `buildDeliveryBrief` (pure; greenfield → project-dir brief), `cleanupRunArtifacts` (remove base + worktrees — but KEEPS a greenfield base). The orchestrator emits the `pipeline.delivered` marker with the PR result. |
+| `orchestrator.ts` | The state-machine driver. `advancePipeline` (segment loop), `createPipelineRun`, **`failPipelineRun`** (drive a run terminal after a thrown stage — without it a `planning` clone failure leaves the run non-terminal and the next tick retries the doomed work forever), `resumeDecidedRuns` (tick priority 1), the stage segments + gate handlers. Planning is injected (`AdvanceDeps.plan`) so the orchestration is unit-testable with a canned `PlanningResult`. `_setBriefsDir` test seam. |
 | `decide.ts` | `submitDecision` — the single chokepoint the CLI calls (a future remote plugin reuses it). Validates the decision against the run's current gate, records it, emits `pipeline.decision.submitted`. |
 
 Wiring outside this dir:

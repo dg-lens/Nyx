@@ -20,6 +20,7 @@ import { dirname, basename } from 'node:path';
 import { audit } from '../audit.js';
 import { config } from '../config.js';
 import { changedFiles, detectDeployRequired } from '../deploy-detector.js';
+import { isGreenfield, targetMode } from './target.js';
 import type { PipelineRun } from './types.js';
 
 export interface DeliveryResult {
@@ -103,12 +104,17 @@ export function buildDeliveryBrief(run: PipelineRun, result: { pr_url: string | 
       return { merged: [], held: [] };
     }
   })();
+  const greenfield = isGreenfield(run.repo);
   const L: string[] = [];
   L.push(`# Delivered — ${run.id}`);
   L.push('');
   L.push(`**Prompt:** ${run.prompt}`);
   L.push('');
-  L.push(result.pr_url ? `**PR (review + merge):** ${result.pr_url}` : `**Integration branch:** ${run.integration_branch} (in ${run.worktree_base})`);
+  if (greenfield) {
+    L.push(`**New local project:** \`${run.worktree_base}\` (branch \`${run.integration_branch}\`)`);
+  } else {
+    L.push(result.pr_url ? `**PR (review + merge):** ${result.pr_url}` : `**Integration branch:** ${run.integration_branch} (in ${run.worktree_base})`);
+  }
   L.push(`**Gate:** green · **Integrated:** ${merged.merged.length} task(s)${merged.held.length ? ` · **left out:** ${merged.held.join(', ')}` : ''}`);
   L.push('');
   if (result.deploy_targets.length) {
@@ -116,7 +122,11 @@ export function buildDeliveryBrief(run: PipelineRun, result: { pr_url: string | 
     for (const t of result.deploy_targets) L.push(`- ${t}`);
     L.push('');
   }
-  L.push('Green + PR-ready. **Deploy is your manual step** (autonomous deploy is v2).');
+  if (greenfield) {
+    L.push(`Green. **Your new project lives at \`${run.worktree_base}\`** — it's a standalone git repo (no remote). Open it, run it, and push it wherever you like when ready.`);
+  } else {
+    L.push('Green + PR-ready. **Deploy is your manual step** (autonomous deploy is v2).');
+  }
   return L.join('\n');
 }
 
@@ -126,6 +136,9 @@ export function buildDeliveryBrief(run: PipelineRun, result: { pr_url: string | 
  */
 export function cleanupRunArtifacts(run: PipelineRun): void {
   const base = run.worktree_base;
+  // Greenfield's base IS the deliverable (Data/projects/<task>) — detach its
+  // coder worktrees but NEVER delete the project itself.
+  const keepBase = isGreenfield(run.repo);
   if (base && existsSync(base)) {
     // Detach worktrees first so git doesn't complain, then remove the base.
     const wts = gitTry('git worktree list --porcelain', base);
@@ -137,10 +150,12 @@ export function cleanupRunArtifacts(run: PipelineRun): void {
         }
       }
     }
-    try {
-      rmSync(base, { recursive: true, force: true });
-    } catch {
-      /* swallow */
+    if (!keepBase) {
+      try {
+        rmSync(base, { recursive: true, force: true });
+      } catch {
+        /* swallow */
+      }
     }
   }
   // Sweep any stray /tmp/nyx-clone-<runid>* dirs (coder/diag worktrees).
@@ -167,7 +182,7 @@ export async function runDelivery(run: PipelineRun, deps: DeliveryDeps = {}): Pr
   const pushFn = deps.push ?? openDeliveryPR;
 
   let prUrl: string | null = null;
-  if (run.repo) {
+  if (targetMode(run.repo) === 'external') {
     prUrl = pushFn(run, baseBranch);
   }
   const { matched, targets } = detectPipelineDeploy(run, baseBranch);

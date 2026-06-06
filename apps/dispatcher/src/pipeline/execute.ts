@@ -28,6 +28,7 @@ import { pipelineRunEnv, loadRunDecisions } from './run-secrets.js';
 import { parsePlanJson, renderCoderSpec, type FlightPlanContract, type PlanningResult } from './flight-plan.js';
 import type { PlanTarget } from './planning.js';
 import { updateRun } from './db.js';
+import { invalidRepoReason, targetMode } from './target.js';
 import type { PipelineRun } from './types.js';
 
 const CODER_TIMEOUT_MS = 30 * 60_000;
@@ -138,10 +139,18 @@ export function setupIntegrationBase(run: PipelineRun, target: PlanTarget): {
   integrationBranch: string;
   cleanup: () => void;
 } {
+  const mode = targetMode(target.repo);
   let base: git.WorkingDir;
-  if (target.repo) {
-    const baseBranch = config.gitTargets[target.repo]?.baseBranch;
-    base = git.cloneExternalRepo(`${run.id}-base`, target.repo, 1, baseBranch ? { baseBranch } : {});
+  if (mode === 'external') {
+    const baseBranch = config.gitTargets[target.repo!]?.baseBranch;
+    base = git.cloneExternalRepo(`${run.id}-base`, target.repo!, 1, baseBranch ? { baseBranch } : {});
+  } else if (mode === 'greenfield') {
+    // Durable, standalone repo under Data/projects/<task>: this IS the deliverable,
+    // so cleanup must NOT delete it (no-op cleanup; delivery keeps the base).
+    const projectPath = resolve(config.projectsDir, sanitize(run.task_id));
+    base = { ...git.createGreenfieldDir(projectPath), cleanup: () => {} };
+  } else if (mode === 'invalid') {
+    throw new ExecuteError(invalidRepoReason(target.repo));
   } else {
     // Self-target: clone the local Nyx repo so worktrees share an object store.
     const basePath = `${config.cloneRootPrefix}${run.id}-base`;

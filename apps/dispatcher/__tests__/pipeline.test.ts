@@ -17,7 +17,7 @@ import {
   updateRun,
 } from '../src/pipeline/db.js';
 import { assertTransition, canTransition, legalNext } from '../src/pipeline/state-machine.js';
-import { _setBriefsDir, advancePipeline, createPipelineRun, resumeDecidedRuns } from '../src/pipeline/orchestrator.js';
+import { _setBriefsDir, advancePipeline, createPipelineRun, failPipelineRun, resumeDecidedRuns } from '../src/pipeline/orchestrator.js';
 import type { PlanningResult } from '../src/pipeline/flight-plan.js';
 import type { OperatorDecision, PipelineStatus } from '../src/pipeline/types.js';
 import { readQueue } from '../src/task-reader.js';
@@ -341,5 +341,31 @@ describe('task parser', () => {
     assert.equal(t?.gates, 'none');
     assert.equal(t?.model, 'opus');
     assert.deepEqual(t?.invalidTags, []);
+  });
+});
+
+describe('failPipelineRun (no retry loop on a thrown stage)', () => {
+  test('drives a non-terminal run to terminal failed with the error recorded', () => {
+    const run = createPipelineRun(makeTask('PIPE-FAIL'));
+    assert.equal(run.status, 'planning');
+    failPipelineRun('PIPE-FAIL', 'clone of https://github.com/local.git failed');
+    const after = getRunByTaskId('PIPE-FAIL')!;
+    assert.equal(after.status, 'failed');
+    assert.match(after.error ?? '', /clone of https/);
+    // The run is now terminal, so the tick scan no longer re-picks it.
+    assert.equal(activeRuns().some((r) => r.task_id === 'PIPE-FAIL'), false);
+  });
+
+  test('is a no-op on an already-terminal run (no double-fail)', () => {
+    const run = createPipelineRun(makeTask('PIPE-DONE'));
+    updateRun(run.id, { status: 'done' }, Date.now());
+    failPipelineRun('PIPE-DONE', 'should be ignored');
+    const after = getRunByTaskId('PIPE-DONE')!;
+    assert.equal(after.status, 'done');
+    assert.equal(after.error, null);
+  });
+
+  test('is a no-op when the task has no run', () => {
+    assert.doesNotThrow(() => failPipelineRun('PIPE-MISSING', 'x'));
   });
 });

@@ -114,6 +114,21 @@ export function createPipelineRun(task: ParsedTask): PipelineRun {
   return run;
 }
 
+/**
+ * Drive a run to the terminal `failed` status after an unrecoverable error
+ * (e.g. a planning-stage clone that throws). Without this, a thrown segment
+ * leaves the run at its non-terminal status — `planning` — so the next tick
+ * re-picks it and re-runs the identical doomed work, spamming `pipeline.failed`
+ * into the audit chain on every tick. `failed` is a universal sink in the state
+ * machine, so this is legal from any non-terminal status. No-op if the run is
+ * already terminal or absent.
+ */
+export function failPipelineRun(taskId: string, error: string): void {
+  const run = getRunByTaskId(taskId);
+  if (!run || isTerminal(run.status)) return;
+  transition(run, 'failed', { error: error.slice(0, 1000), current_stage: 'failed' });
+}
+
 // ─── Stage segments ───────────────────────────────────────────────────────────
 
 /** Planning (②③④) → freeze proposed plan, write brief, PAUSE at preview gate. */
