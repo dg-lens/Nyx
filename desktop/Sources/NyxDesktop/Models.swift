@@ -12,6 +12,7 @@ struct GateDecision: Identifiable {
     var id: String { question }
     let question: String
     let defaultAnswer: String?   // "yes" | "no" | nil (planner's suggestion)
+    var savedAnswer: String? = nil   // previously-submitted answer from <run>.decisions.json
 }
 
 struct Gate: Identifiable {

@@ -49,20 +49,42 @@ enum Database {
             } else if let stage = r["current_stage"], !stage.isEmpty {
                 summary += " (stage: \(stage))"
             }
-            return Gate(id: r["id"] ?? "", gate: gate, summary: summary, repo: r["repo"] ?? "",
+            let runId = r["id"] ?? ""
+            // Planning decisions (alignment.decisions) belong to the PREVIEW gate
+            // only: they were answered there and baked into the coders. The REVIEW
+            // gate is about the BUILT result (proceed/fix/rollback) — re-showing the
+            // frozen planning questions there is stale and confusing.
+            let decisions = gate == "preview"
+                ? parseDecisions(r["plan_json"] ?? "", saved: loadSavedAnswers(runId))
+                : []
+            return Gate(id: runId, gate: gate, summary: summary, repo: r["repo"] ?? "",
                         preflight: parsePreflight(r["plan_json"] ?? ""),
-                        decisions: parseDecisions(r["plan_json"] ?? ""))
+                        decisions: decisions)
         }
     }
 
-    private static func parseDecisions(_ planJson: String) -> [GateDecision] {
+    // Previously-submitted answers from <run>.decisions.json, keyed by question, so
+    // a re-opened preview (e.g. after a revise) reflects what was already answered
+    // instead of resetting to the planner's defaults.
+    private static func loadSavedAnswers(_ runId: String) -> [String: String] {
+        let path = Layout.runDecisionsPath(runId).path
+        guard let data = FileManager.default.contents(atPath: path),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [:] }
+        var out: [String: String] = [:]
+        for d in arr {
+            if let q = d["question"] as? String, let a = d["answer"] as? String { out[q] = a }
+        }
+        return out
+    }
+
+    private static func parseDecisions(_ planJson: String, saved: [String: String]) -> [GateDecision] {
         guard let data = planJson.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let align = obj["alignment"] as? [String: Any],
               let items = align["decisions"] as? [[String: Any]] else { return [] }
         return items.compactMap { d in
             guard let q = d["question"] as? String, !q.isEmpty else { return nil }
-            return GateDecision(question: q, defaultAnswer: d["default"] as? String)
+            return GateDecision(question: q, defaultAnswer: d["default"] as? String, savedAnswer: saved[q])
         }
     }
 

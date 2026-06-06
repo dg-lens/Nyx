@@ -85,7 +85,8 @@ struct GateCard: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
         .onAppear {
             for d in gate.decisions where decisionAnswers[d.question] == nil {
-                decisionAnswers[d.question] = (d.defaultAnswer == "no" ? "no" : "yes")
+                // Prefer a previously-submitted answer; fall back to the planner's default.
+                decisionAnswers[d.question] = d.savedAnswer ?? (d.defaultAnswer == "no" ? "no" : "yes")
             }
         }
     }
