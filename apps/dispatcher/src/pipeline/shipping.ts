@@ -26,6 +26,7 @@ import { audit } from '../audit.js';
 import { config } from '../config.js';
 import { spawnWithTimeout } from '../spawn-helpers.js';
 import { pipelineRunEnv } from './run-secrets.js';
+import { installDeps } from './install-deps.js';
 import { updateRun } from './db.js';
 import { extractJson, parsePlanJson } from './flight-plan.js';
 import { type RemediationDirective } from './redux.js';
@@ -262,6 +263,19 @@ async function defaultSmoke(run: PipelineRun): Promise<SmokeResult> {
   gitTry(`git checkout -q "${integration}"`, base);
   gitTry(`git reset --hard -q "${integration}"`, base);
   gitTry(`git clean -fd -q`, base);
+  // Install deps on the base BEFORE the verifier runs the gate. The pipeline
+  // bypasses preflight and the verifier is read-only ("do NOT install missing
+  // modules"), so without this the integration branch has no node_modules and a
+  // greenfield Node gate fails on module-not-found. `git clean -fd` above keeps
+  // gitignored node_modules, so the install persists across smoke rounds.
+  const deps = installDeps(base);
+  if (deps.ran.length > 0) {
+    audit('pipeline.deps.installed', 'pipeline.shipping', {
+      runId: run.id,
+      ok: deps.ok,
+      commands: deps.ran.map((r) => ({ cmd: r.cmd, ok: r.ok })),
+    });
+  }
   const prompt = [
     `# Pipeline smoke supervisor — ${run.id}`,
     '',

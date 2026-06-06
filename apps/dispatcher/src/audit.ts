@@ -94,6 +94,7 @@ export type AuditEvent =
   | 'pipeline.diagnostic.finished'
   | 'pipeline.diagnostic.fix.verified'
   | 'pipeline.diagnostic.fix.rejected'
+  | 'pipeline.deps.installed'
   | 'pipeline.smoke.invalidated'
   | 'pipeline.smoke.completed'
   | 'pipeline.review.delivered'
