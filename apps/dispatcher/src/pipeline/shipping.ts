@@ -358,7 +358,7 @@ export async function runDiagnosticRound(run: PipelineRun, round: number): Promi
     await spawnWithTimeout('claude', args, { cwd: wt, env: maxPlanEnv(run.id), captureStdout: false, label: `pipeline-diag-${round}-${taskId}` }, DIAGNOSTIC_TIMEOUT_MS);
     gitTry(`git add -A`, wt);
     if ((gitTry(`git status --porcelain`, wt) ?? '').length > 0) {
-      gitTry(`git -c user.name="${config.gitAuthorName.replace(/"/g, '\\"')}" -c user.email="${config.gitAuthorEmail}" commit -m "pipeline diag R${round}: ${taskId}"`, wt);
+      gitTry(`git -c user.name="${config.gitAuthorName.replace(/"/g, '\\"')}" -c user.email="${config.gitAuthorEmail.replace(/"/g, '\\"')}" commit -m "pipeline diag R${round}: ${taskId}"`, wt);
     }
     // #4 verify: did the fix land, and stay in scope?
     const changed = (gitTry(`git diff --name-only "${integration}".."${fixBranch}"`, base) ?? '')

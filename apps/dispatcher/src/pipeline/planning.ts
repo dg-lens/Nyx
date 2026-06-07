@@ -16,6 +16,7 @@
  * which this module reads + leniently parses (flight-plan.ts).
  */
 
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -42,7 +43,11 @@ const PLAN_SUBDIR = '.nyx/pipeline';
 export const DAG_ARTIFACT = `${PLAN_SUBDIR}/dag.json`;
 export const ALIGN_ARTIFACT = `${PLAN_SUBDIR}/alignment.json`;
 export function planArtifact(taskId: string): string {
-  return `${PLAN_SUBDIR}/plan-${sanitize(taskId)}.json`;
+  // Append a short hash of the RAW id so two ids that sanitize to the same
+  // string (e.g. 'FOO/BAR' and 'FOO_BAR') never share an artifact filename and
+  // can't read each other's stale JSON.
+  const tag = createHash('sha1').update(taskId).digest('hex').slice(0, 8);
+  return `${PLAN_SUBDIR}/plan-${sanitize(taskId)}-${tag}.json`;
 }
 
 const PLAN_TOOLS = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'TodoWrite'];
@@ -164,6 +169,15 @@ function clearArtifacts(workingDir: string): void {
     } catch {
       /* swallow */
     }
+  }
+}
+
+/** Remove a single relative artifact so a failed write can't read a stale read. */
+function clearArtifact(workingDir: string, rel: string): void {
+  try {
+    rmSync(resolve(workingDir, rel), { force: true });
+  } catch {
+    /* swallow */
   }
 }
 
@@ -390,6 +404,9 @@ export async function runFlightPlans(
   const ordered = topoSort(dag);
   const plans: FlightPlanContract[] = [];
   for (const node of ordered) {
+    // Clear this node's expected artifact first so a failed (re)write reads as
+    // missing (-> degradedContract) instead of returning a neighbor's leftover.
+    clearArtifact(workingDir, planArtifact(node.id));
     await deps.spawn({
       prompt: flightPlanPrompt(node, plans),
       model: FLIGHT_PLAN_MODEL,

@@ -19,7 +19,10 @@ export interface AmbiguityEscalation {
   lean_reason?: string;
 }
 
-export function parseAmbiguityFile(workingDirPath: string): AmbiguityEscalation | null {
+export function parseAmbiguityFile(
+  workingDirPath: string,
+  expectedTaskId?: string,
+): AmbiguityEscalation | null {
   const filePath = resolve(workingDirPath, AMBIGUITY_FILE);
   if (!existsSync(filePath)) return null;
 
@@ -38,6 +41,7 @@ export function parseAmbiguityFile(workingDirPath: string): AmbiguityEscalation 
   }
 
   if (!isAmbiguityEscalation(parsed)) return null;
+  if (expectedTaskId !== undefined && parsed.task_id !== expectedTaskId) return null;
   return parsed;
 }
 

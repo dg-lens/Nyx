@@ -25,11 +25,23 @@ struct NyxApp: App {
     }
 
     // Custom logo (Data/logo.png) as the menu-bar icon if set, else the default
-    // template symbol. Re-read each render so a logo change shows on next refresh.
+    // template symbol. The decoded logo is cached and only re-read from disk when
+    // the file path or its modification time changes, so body re-evaluation (every
+    // state change / refresh) does not repeat synchronous disk IO + decode.
+    private static var cachedLogo: (path: String, mtime: Date, image: NSImage)?
+
     private static func menuBarIcon(gates: Int) -> NSImage {
-        if let url = Layout.effectiveLogoURL, let logo = NSImage(contentsOf: url) {
-            logo.size = NSSize(width: 18, height: 18)
-            return logo
+        if let url = Layout.effectiveLogoURL {
+            let path = url.path
+            let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
+            if let cache = cachedLogo, cache.path == path, cache.mtime == mtime {
+                return cache.image
+            }
+            if let logo = NSImage(contentsOf: url) {
+                logo.size = NSSize(width: 18, height: 18)
+                cachedLogo = (path, mtime ?? .distantPast, logo)
+                return logo
+            }
         }
         let symbol = gates > 0 ? "circle.hexagongrid.fill" : "circle.hexagongrid"
         let img = NSImage(systemSymbolName: symbol, accessibilityDescription: "Nyx menu bar") ?? NSImage()

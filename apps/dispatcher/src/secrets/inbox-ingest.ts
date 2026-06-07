@@ -40,7 +40,13 @@ function isValidRotationEvent(o: unknown): o is RotationEvent {
   const r = o as Record<string, unknown>;
   if (typeof r['project_name'] !== 'string' || !r['project_name']) return false;
   if (typeof r['secret_key'] !== 'string' || !r['secret_key']) return false;
-  if (r['rotates_in_days'] !== undefined && typeof r['rotates_in_days'] !== 'number') return false;
+  if (
+    r['rotates_in_days'] !== undefined &&
+    (typeof r['rotates_in_days'] !== 'number' ||
+      !Number.isInteger(r['rotates_in_days']) ||
+      r['rotates_in_days'] <= 0)
+  )
+    return false;
   return true;
 }
 

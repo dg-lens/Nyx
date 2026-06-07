@@ -21,10 +21,13 @@ export function fetchMachineAccountToken(tokenPath: string): string {
   const stat = statSync(tokenPath);
   // POSIX mode bits — strip everything above 0o777, the lower 9 bits are perms.
   const mode = stat.mode & 0o777;
-  if (mode !== 0o600) {
+  // Reject any group/world access (0o077). Owner-only modes — 0600 and the
+  // stricter 0400 — are both acceptable; pinning exactly 0600 would falsely
+  // reject a hardened read-only token.
+  if (mode & 0o077) {
     throw new Error(
       `Bitwarden token file ${tokenPath} has insecure perms ${mode.toString(8)} — ` +
-        `must be 0600. Run: chmod 600 ${tokenPath}`,
+        `must be owner-only (0600 or 0400). Run: chmod 600 ${tokenPath}`,
     );
   }
   return readFileSync(tokenPath, 'utf8').trim();
@@ -80,10 +83,11 @@ export function loadOrgCreds(adminCredsPath: string): OrgCreds {
     throw new Error(`Bitwarden admin creds not found at ${adminCredsPath}`);
   }
   const mode = statSync(adminCredsPath).mode & 0o777;
-  if (mode !== 0o600) {
+  // Reject any group/world access (0o077); allow owner-only 0600 or 0400.
+  if (mode & 0o077) {
     throw new Error(
       `Bitwarden admin creds file ${adminCredsPath} has insecure perms ${mode.toString(8)} — ` +
-        `must be 0600. Run: chmod 600 ${adminCredsPath}`,
+        `must be owner-only (0600 or 0400). Run: chmod 600 ${adminCredsPath}`,
     );
   }
   const raw = readFileSync(adminCredsPath, 'utf8');
@@ -167,6 +171,10 @@ export async function createProject(
     },
   );
   if (!res.ok) {
+    // A bearer that was valid-by-clock but revoked/rotated server-side returns
+    // 401/403. Drop the cached bearer so the next getOrgAccessToken re-fetches a
+    // fresh one instead of serving the dead token for the rest of its TTL.
+    if (res.status === 401 || res.status === 403) _resetOrgTokenCache();
     const detail = await res.text().catch(() => '<unreadable>');
     throw new Error(`createProject(${name}) failed: ${res.status} — ${detail.slice(0, 300)}`);
   }
@@ -195,6 +203,7 @@ export async function createMachineAccount(
     },
   );
   if (!accountRes.ok) {
+    if (accountRes.status === 401 || accountRes.status === 403) _resetOrgTokenCache();
     const detail = await accountRes.text().catch(() => '<unreadable>');
     throw new Error(`createMachineAccount(${name}) failed: ${accountRes.status} — ${detail.slice(0, 300)}`);
   }
@@ -211,6 +220,7 @@ export async function createMachineAccount(
     },
   );
   if (!grantRes.ok) {
+    if (grantRes.status === 401 || grantRes.status === 403) _resetOrgTokenCache();
     const detail = await grantRes.text().catch(() => '<unreadable>');
     throw new Error(`grant project access for ${name} failed: ${grantRes.status} — ${detail.slice(0, 300)}`);
   }
@@ -225,6 +235,7 @@ export async function createMachineAccount(
     },
   );
   if (!tokenRes.ok) {
+    if (tokenRes.status === 401 || tokenRes.status === 403) _resetOrgTokenCache();
     const detail = await tokenRes.text().catch(() => '<unreadable>');
     throw new Error(`access-token mint for ${name} failed: ${tokenRes.status} — ${detail.slice(0, 300)}`);
   }

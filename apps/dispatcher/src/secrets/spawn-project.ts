@@ -71,17 +71,33 @@ function projectNameFromTaskId(taskId: string): string | null {
   return cleaned || null;
 }
 
-function reposFromTaskLines(task: ParsedTask): string[] {
+const REPO_ENTRY_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+/**
+ * Parse the `[repos:]` tag, partitioning entries into well-formed and malformed.
+ * A non-empty `invalid` list means the operator's declared mapping cannot be
+ * fully honored — the caller must surface this rather than silently dropping the
+ * bad entries (which would leave future `[repo:]` auto-resolution finding no
+ * project for the dropped repos).
+ */
+function reposFromTaskLines(task: ParsedTask): { valid: string[]; invalid: string[] } {
   for (const line of task.rawLines) {
     const m = line.match(REPOS_TAG_RE);
     if (m && m[1]) {
-      return m[1]
+      const entries = m[1]
         .split(',')
         .map(s => s.trim())
-        .filter(s => /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(s));
+        .filter(s => s.length > 0);
+      const valid: string[] = [];
+      const invalid: string[] = [];
+      for (const e of entries) {
+        if (REPO_ENTRY_RE.test(e)) valid.push(e);
+        else invalid.push(e);
+      }
+      return { valid, invalid };
     }
   }
-  return [];
+  return { valid: [], invalid: [] };
 }
 
 function expandUser(p: string): string {
@@ -162,6 +178,27 @@ export async function handleSpawnProject(task: ParsedTask): Promise<RunOutcome> 
       already_provisioned: true,
     });
     return { taskId: task.id, status: 'completed', durationMs: Date.now() - startedAt };
+  }
+
+  // Validate the [repos:] mapping BEFORE any irreversible Bitwarden op (this is
+  // the only place we can fail safely with no orphaned machine account). A
+  // malformed entry — missing slash, illegal char, stray whitespace inside —
+  // must fail the task rather than be silently dropped, otherwise the project is
+  // registered with fewer repos than declared and future [repo:] auto-resolution
+  // for the dropped repos finds no project.
+  const { valid: repos, invalid: invalidRepos } = reposFromTaskLines(task);
+  if (invalidRepos.length) {
+    const failureLog =
+      `[repos:] tag contains malformed entries: ${invalidRepos.join(', ')}. ` +
+      `Each entry must match org/name (only [A-Za-z0-9._-] in each half). ` +
+      `Fix the tag and re-queue — no Bitwarden project was created.`;
+    audit('task.failed', 'dispatcher', {
+      taskId: task.id,
+      failure_log: failureLog,
+      invalid_repos: invalidRepos,
+    });
+    await notify.taskFailed(task.id, 'parse', failureLog);
+    return { taskId: task.id, status: 'failed', durationMs: Date.now() - startedAt, failureLog };
   }
 
   let creds;
@@ -247,7 +284,7 @@ export async function handleSpawnProject(task: ParsedTask): Promise<RunOutcome> 
   }
 
   // Step 4: register in the project-registry table (audits internally).
-  const repos = reposFromTaskLines(task);
+  // `repos` was parsed + validated up front (before any Bitwarden op).
   try {
     registerProject({
       name,

@@ -28,6 +28,7 @@ export interface ComposerLayerResult {
     | 'plan_missing'
     | 'plan_invalid'
     | 'plan_spawn_failed'
+    | 'plan_save_failed'
     | 'composer_threw';
 }
 
@@ -83,13 +84,20 @@ export async function runComposerLayer(
   try {
     saveFlightPlan(plan);
   } catch (err) {
+    // The plan was NOT persisted, so a later ancestor lookup via
+    // getLatestFlightPlan(task.id) will not find it. We still proceed with the
+    // in-memory plan for THIS run's execution, but flag the divergence
+    // explicitly (distinct status + audit note) so the chain's recorded state
+    // vs. the executing state is explainable — never silently conflated with a
+    // phase-2 composer-call failure ('composer_threw'), which DID persist.
     audit('composer.skipped', 'composer.orchestrate', {
       taskId: task.id,
       stage: 'save_plan',
       reason: `saveFlightPlan threw: ${(err as Error).message}`,
+      using_unpersisted_plan: true,
     });
     removeFlightPlanArtifact(workingDir);
-    return { flightPlan: plan, status: 'composer_threw' };
+    return { flightPlan: plan, status: 'plan_save_failed' };
   }
   audit('task.flight_plan.submitted', 'composer.orchestrate', {
     taskId: task.id,

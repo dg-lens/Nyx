@@ -35,24 +35,28 @@ function scanSecrets(cwd: string, report: FindingsReport): void {
     if (!existsSync(abs)) continue;
     let body: string;
     try { body = readFileSync(abs, 'utf8'); } catch { continue; }
-    const lines = body.split('\n');
     for (const { name, pattern } of SECRET_PATTERNS) {
       pattern.lastIndex = 0;
-      const matches = body.match(pattern);
-      if (!matches) continue;
-      const first = matches[0];
-      const lineIdx = lines.findIndex(l => l.includes(first));
-      const finding: Finding = {
-        id: `secret-${name.replace(/\s+/g, '-').toLowerCase()}-${rel}`,
-        severity: 'critical',
-        category: 'secret',
-        title: `Possible ${name} committed`,
-        file: rel,
-        ...(lineIdx >= 0 ? { line: lineIdx + 1 } : {}),
-        evidence: first.slice(0, 120),
-        recommendation: `Rotate the credential immediately, remove from history with git filter-repo, and add the pattern to .gitignore.`,
-      };
-      addFinding(report, finding);
+      const seenLines = new Set<number>();
+      for (const match of body.matchAll(pattern)) {
+        const matched = match[0];
+        const offset = match.index ?? 0;
+        const lineNo = body.slice(0, offset).split('\n').length;
+        if (seenLines.has(lineNo)) continue;
+        seenLines.add(lineNo);
+        const slug = name.replace(/\s+/g, '-').toLowerCase();
+        const finding: Finding = {
+          id: `secret-${slug}-${rel}-${lineNo}`,
+          severity: 'critical',
+          category: 'secret',
+          title: `Possible ${name} committed`,
+          file: rel,
+          line: lineNo,
+          evidence: matched.slice(0, 120),
+          recommendation: `Rotate the credential immediately, remove from history with git filter-repo, and add the pattern to .gitignore.`,
+        };
+        addFinding(report, finding);
+      }
     }
   }
 }

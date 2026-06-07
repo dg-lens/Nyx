@@ -29,6 +29,7 @@ import {
   type FailureClass,
 } from './audit-classifier.js';
 import { config } from './config.js';
+import { detectMainBranch } from './git-ops.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
 import { buildSpawnInvocation } from './task-runner.js';
 import type { ParsedTask } from './types.js';
@@ -136,7 +137,7 @@ async function runAutofix(
     };
   }
   try {
-    applyAutofix(ctx.workingDir, classification.autofix);
+    applyAutofix(ctx.workingDir, classification.autofix, ctx.task);
     audit('task.audit.autofix.applied', 'audit-runner', {
       taskId: ctx.task.id,
       pattern: classification.pattern,
@@ -160,32 +161,53 @@ async function runAutofix(
   }
 }
 
-function applyAutofix(cwd: string, hint: AutofixHint): void {
+function applyAutofix(cwd: string, hint: AutofixHint, task: ParsedTask): void {
   switch (hint.kind) {
     case 'rewrite-pnpm-workspace': {
       rewritePnpmWorkspace(cwd);
-      regenerateLockfileIfPnpm(cwd);
+      regenerateLockfileIfPnpm(cwd, task.id);
       return;
     }
     case 'add-pnpm-build-approval': {
       addPnpmBuildApproval(cwd, hint.packages);
-      regenerateLockfileIfPnpm(cwd);
+      regenerateLockfileIfPnpm(cwd, task.id);
       return;
     }
     case 'regenerate-pnpm-lockfile': {
-      regenerateLockfileIfPnpm(cwd);
+      regenerateLockfileIfPnpm(cwd, task.id);
       return;
     }
     case 'add-devdep': {
       addDevDeps(cwd, hint.packages);
-      regenerateLockfileIfPnpm(cwd);
+      regenerateLockfileIfPnpm(cwd, task.id);
       return;
     }
     case 'rebase-against-main': {
       const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+      // A self-task (~/Nyx) has no `origin` remote — rebasing against an
+      // origin ref is impossible. Escalate rather than abort silently.
+      const hasOrigin = (() => {
+        try {
+          const remotes = execSync('git remote', { cwd, stdio: 'pipe', timeout: 10_000, env: gitEnv });
+          return remotes.toString().split('\n').some((r) => r.trim() === 'origin');
+        } catch {
+          return false;
+        }
+      })();
+      if (!hasOrigin) {
+        throw new Error(
+          'rebase-against-main: no `origin` remote (likely a self-task); cannot rebase against a remote base — operator must resolve manually',
+        );
+      }
+      // Resolve the base the same way finalize.ts/git-ops.ts do: per-repo
+      // override first, else origin/HEAD (via detectMainBranch). Repos whose
+      // default branch is not `main` (master, dev, release/*) would otherwise
+      // fail to find `origin/main`.
+      const baseBranch = (task.repo ? config.gitTargets[task.repo]?.baseBranch : undefined) ?? detectMainBranch();
+      const baseRef = `origin/${baseBranch}`;
       execSync('git fetch origin', { cwd, stdio: 'pipe', timeout: 60_000, env: gitEnv });
       // Caller already aborted the merge, so this is a clean re-rebase.
-      execSync('git rebase origin/main || git rebase --abort', {
+      execSync(`git rebase ${baseRef} || git rebase --abort`, {
         cwd,
         stdio: 'pipe',
         timeout: 60_000,
@@ -279,7 +301,7 @@ function addMypyPlugin(cwd: string, plugin: string): void {
   writeFileSync(pyproj, next);
 }
 
-function regenerateLockfileIfPnpm(cwd: string): void {
+function regenerateLockfileIfPnpm(cwd: string, taskId: string): void {
   if (!existsSync(join(cwd, 'package.json'))) return;
   try {
     execSync('pnpm install --lockfile-only --prefer-offline', {
@@ -290,6 +312,7 @@ function regenerateLockfileIfPnpm(cwd: string): void {
   } catch (err) {
     // Non-fatal — the caller's gate retry will surface install errors clearly.
     audit('task.audit.autofix.failed', 'audit-runner', {
+      taskId,
       reason: `pnpm install --lockfile-only failed: ${(err as Error).message}`,
     });
   }
@@ -484,7 +507,7 @@ function parseDiagnosticVerdict(stdout: string):
     if (!line) continue;
     const fixedMatch = line.match(/^VERDICT:\s*fixed\s*[—:-]?\s*(.*)$/i);
     if (fixedMatch) return { kind: 'fixed', note: (fixedMatch[1] ?? '').trim() };
-    const haltMatch = line.match(/^VERDICT:\s*halt\s*[:-]\s*(.*)$/i);
+    const haltMatch = line.match(/^VERDICT:\s*halt\s*[—:-]?\s*(.*)$/i);
     if (haltMatch) return { kind: 'halt', note: (haltMatch[1] ?? '').trim() };
   }
   return { kind: 'unparseable' };

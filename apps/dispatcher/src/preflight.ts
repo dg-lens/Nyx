@@ -33,6 +33,53 @@ import type { ParsedTask } from './types.js';
 
 const INSTALL_TIMEOUT_MS = 90_000;
 
+/** Cap the install-probe failure log so it can't dump an unbounded blob into the
+ *  audit row + Slack. The audit excerpt is already 500 chars; the propagated
+ *  failureLog (run-once.ts task.failed) is uncapped, so cap it here at the source. */
+const INSTALL_LOG_MAX = 4_000;
+
+/** Env-var names whose values must never reach the install probe's stdout/stderr.
+ *  Substring-matched, case-insensitive, against every env key. Two layers:
+ *  (1) such vars are stripped from the probe's env so a registry/index URL can't
+ *  interpolate them, and (2) any surviving value is redacted from captured output. */
+const SECRET_ENV_PATTERNS = [
+  'TOKEN',
+  'KEY',
+  'SECRET',
+  'PASSWORD',
+  'PASSWD',
+  'CREDENTIAL',
+  'AUTH',
+];
+
+function isSecretEnvName(name: string): boolean {
+  const upper = name.toUpperCase();
+  return SECRET_ENV_PATTERNS.some((p) => upper.includes(p));
+}
+
+/** Env for the install probe with secret-bearing vars removed, so a package
+ *  manager resolving a creds-embedded registry/index URL can't echo them. */
+function minimizedInstallEnv(): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (isSecretEnvName(name)) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
+/** Redact any non-trivial secret env value that survived into captured output. */
+function redactSecrets(text: string): string {
+  let out = text;
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!value || value.length < 8) continue;
+    if (!isSecretEnvName(name)) continue;
+    out = out.split(value).join(`<redacted:${name}>`);
+  }
+  return out;
+}
+
 export interface PreflightResult {
   /** True iff every check passed. */
   passed: boolean;
@@ -133,17 +180,20 @@ function runCmd(cmd: string, cwd: string): PreflightResult {
       stdio: 'pipe',
       timeout: INSTALL_TIMEOUT_MS,
       encoding: 'utf8',
+      env: minimizedInstallEnv(),
     });
     return { passed: true };
   } catch (err) {
     const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; message: string };
     const stdout = e.stdout?.toString() ?? '';
     const stderr = e.stderr?.toString() ?? '';
+    const log = redactSecrets(
+      `Pre-flight install probe failed: \`${cmd}\`\n\n` +
+        `stderr:\n${stderr}\n\nstdout:\n${stdout}\n\nerror: ${e.message}`,
+    );
     return {
       passed: false,
-      failureLog:
-        `Pre-flight install probe failed: \`${cmd}\`\n\n` +
-        `stderr:\n${stderr}\n\nstdout:\n${stdout}\n\nerror: ${e.message}`,
+      failureLog: log.length > INSTALL_LOG_MAX ? `${log.slice(0, INSTALL_LOG_MAX)}\n…[truncated]` : log,
     };
   }
 }

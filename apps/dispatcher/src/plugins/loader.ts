@@ -10,6 +10,50 @@ import type { NyxPlugin, PluginContext, PluginManifest } from './sdk.js';
 import { SDK_VERSION } from './sdk.js';
 import { config } from '../config.js';
 
+/** Core's running version, compared against a plugin manifest's `coreVersion` range. */
+export const CORE_VERSION = '0.3.0';
+
+function parseSemver(v: string): [number, number, number] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v.trim());
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function cmpSemver(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < 3; i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av !== bv) return av < bv ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Minimal semver range check: supports a single comparator
+ * (`>=`, `>`, `<=`, `<`, `=`) plus bare versions and `*`. A range we cannot
+ * parse returns `true` (fail-open) so an unknown format never blocks a load.
+ */
+function satisfiesCoreVersion(range: string, core: string): boolean {
+  const trimmed = range.trim();
+  if (trimmed === '' || trimmed === '*') return true;
+  const coreV = parseSemver(core);
+  if (!coreV) return true;
+  const m = /^(>=|<=|>|<|=)?\s*(.+)$/.exec(trimmed);
+  if (!m) return true;
+  const op = m[1] ?? '=';
+  const target = parseSemver(m[2] ?? '');
+  if (!target) return true;
+  const c = cmpSemver(coreV, target);
+  switch (op) {
+    case '>': return c > 0;
+    case '>=': return c >= 0;
+    case '<': return c < 0;
+    case '<=': return c <= 0;
+    case '=': return c === 0;
+    default: return true;
+  }
+}
+
 export interface LoadedPlugin {
   name: string;
   manifest: PluginManifest;
@@ -65,6 +109,10 @@ export async function loadPlugins(
     }
     if (manifest.sdkVersion.split('.')[0] !== SDK_VERSION) {
       ev.skipped(manifest.name, `sdkVersion ${manifest.sdkVersion} incompatible with core SDK ${SDK_VERSION}`);
+      continue;
+    }
+    if (manifest.coreVersion && !satisfiesCoreVersion(manifest.coreVersion, CORE_VERSION)) {
+      ev.skipped(manifest.name, `coreVersion ${manifest.coreVersion} incompatible with core ${CORE_VERSION}`);
       continue;
     }
     if (config.settings.plugins.disabled.includes(manifest.name)) {
