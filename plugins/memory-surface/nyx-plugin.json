@@ -1,0 +1,12 @@
+{
+  "name": "memory-surface",
+  "version": "0.1.0",
+  "sdkVersion": "1",
+  "tier": "approved",
+  "runtime": "both",
+  "coreVersion": ">=1.2.0",
+  "capabilities": {
+    "ioSources": ["memory-surface"],
+    "env": ["NYX_DATA_DIR"]
+  }
+}

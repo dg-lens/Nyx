@@ -6,6 +6,6 @@
   "coreVersion": ">=1.2.0",
   "capabilities": {
     "hooksAttached": [{ "name": "task.promptBuild", "kind": "filter" }],
-    "env": ["NYX_MEMORY_BACKEND"]
+    "env": ["NYX_DATA_DIR", "NYX_MEMORY_BUDGET"]
   }
 }
