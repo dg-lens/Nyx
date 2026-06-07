@@ -175,32 +175,54 @@ export async function handleSpawnProject(task: ParsedTask): Promise<RunOutcome> 
 
   // Step 4: register in the project-registry table (audits internally).
   const repos = reposFromTaskLines(task);
-  registerProject({
-    name,
-    bwProjectId: projectId,
-    bwMachineAccountId: machineAccountId,
-    tokenPath,
-    repos,
-    createdBy: 'dispatcher:spawn-project',
-  });
+  try {
+    registerProject({
+      name,
+      bwProjectId: projectId,
+      bwMachineAccountId: machineAccountId,
+      tokenPath,
+      repos,
+      createdBy: 'dispatcher:spawn-project',
+    });
+  } catch (err) {
+    const failureLog = `registerProject(${name}) failed: ${(err as Error).message}`;
+    audit('task.failed', 'dispatcher', {
+      taskId: task.id,
+      failure_log: failureLog,
+      bw_project_id: projectId,
+    });
+    await notify.taskFailed(task.id, 'register-project', failureLog);
+    return { taskId: task.id, status: 'failed', durationMs: Date.now() - startedAt, failureLog };
+  }
 
   // Step 5: tell the operator. NEVER include the access token itself.
-  const rotateAt = new Date(Date.now() + config.bitwardenDefaultRotationDays * 86_400_000);
-  const reposNote = repos.length ? ` Repos: ${repos.join(', ')}.` : '';
-  await notify.dm(
-    `🔑 Bitwarden project \`${name}\` ready. ` +
-      `Token at \`${tokenPath}\` (chmod 600).${reposNote} ` +
-      `Rotate by ${rotateAt.toISOString().slice(0, 10)}.`,
-  );
+  try {
+    const rotateAt = new Date(Date.now() + config.bitwardenDefaultRotationDays * 86_400_000);
+    const reposNote = repos.length ? ` Repos: ${repos.join(', ')}.` : '';
+    await notify.dm(
+      `🔑 Bitwarden project \`${name}\` ready. ` +
+        `Token at \`${tokenPath}\` (chmod 600).${reposNote} ` +
+        `Rotate by ${rotateAt.toISOString().slice(0, 10)}.`,
+    );
 
-  audit('task.completed', 'dispatcher', {
-    taskId: task.id,
-    durationMs: Date.now() - startedAt,
-    bw_project_id: projectId,
-    bw_machine_account_id: machineAccountId,
-    token_path: tokenPath,
-    repos,
-  });
+    audit('task.completed', 'dispatcher', {
+      taskId: task.id,
+      durationMs: Date.now() - startedAt,
+      bw_project_id: projectId,
+      bw_machine_account_id: machineAccountId,
+      token_path: tokenPath,
+      repos,
+    });
+  } catch (err) {
+    const failureLog = `spawn-project notify/audit (post-register) failed: ${(err as Error).message}`;
+    audit('task.failed', 'dispatcher', {
+      taskId: task.id,
+      failure_log: failureLog,
+      bw_project_id: projectId,
+    });
+    await notify.taskFailed(task.id, 'finalize', failureLog);
+    return { taskId: task.id, status: 'failed', durationMs: Date.now() - startedAt, failureLog };
+  }
 
   return {
     taskId: task.id,

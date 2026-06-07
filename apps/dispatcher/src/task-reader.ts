@@ -3,7 +3,11 @@ import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { GateStage, Model, ParsedTask, Priority, TaskType } from './types.js';
 import { config } from './config.js';
 
-const TAG_RE = /\[([a-z]+):\s*([^\]]+)\]/g;
+// Matches only the OPENER of a tag: `[name:` plus any leading whitespace.
+// The value is then scanned manually with bracket-depth tracking so a path
+// containing a Next.js dynamic-route segment (`[slug]`, `[[...catchall]]`)
+// is captured whole instead of being truncated at the first inner `]`.
+const TAG_OPEN_RE = /\[([a-z]+):\s*/g;
 const HEADER_ACTIVE = /^##\s+Active Tasks\s*$/i;
 const HEADER_COMPLETED = /^##\s+Completed\s*$/i;
 const TASK_LINE_RE = /^- \[( |x|X)\]\s+([A-Z][A-Z0-9-]+)\s+[—-]\s+(.+?)\s*$/;
@@ -84,9 +88,30 @@ export function parseEveryStep(raw: string): number | null {
 function parseTags(blob: string): Record<string, string> {
   const tags: Record<string, string> = {};
   let m: RegExpExecArray | null;
-  TAG_RE.lastIndex = 0;
-  while ((m = TAG_RE.exec(blob))) {
-    if (m[1] && m[2]) tags[m[1]] = m[2].trim();
+  TAG_OPEN_RE.lastIndex = 0;
+  while ((m = TAG_OPEN_RE.exec(blob))) {
+    const name = m[1];
+    if (!name) continue;
+    // Scan from just past the opener, tracking nested-bracket depth so the
+    // tag only closes on a `]` at depth 0. Inner pairs from dynamic-route
+    // segments (`[slug]`, `[[...catchall]]`) keep the value intact.
+    let depth = 0;
+    let value = '';
+    let i = TAG_OPEN_RE.lastIndex;
+    let closed = false;
+    for (; i < blob.length; i++) {
+      const ch = blob[i];
+      if (ch === '[') depth++;
+      else if (ch === ']') {
+        if (depth === 0) { closed = true; break; }
+        depth--;
+      }
+      value += ch;
+    }
+    if (!closed) continue;
+    if (value.trim()) tags[name] = value.trim();
+    // Resume scanning after the closing `]` so we don't re-enter the value.
+    TAG_OPEN_RE.lastIndex = i + 1;
   }
   return tags;
 }

@@ -102,6 +102,12 @@ export async function finalizeCodeLocal(ctx: FinalizeContext): Promise<RunOutcom
         audit('task.merged', 'dispatcher', { taskId: task.id, branch: workingDir.branch });
       } catch (err) {
         const e = err as Error;
+        // mergeBranchIntoMain self-cleans on conflict (abort + reset to its
+        // pre-merge sha), so config.root is already clean when it throws. The
+        // best-effort abort here covers any other mid-merge throw path and is a
+        // safe no-op when no merge is in progress; resetMainTo runs only when a
+        // snapshot exists (a throw AFTER a successful merge returned).
+        git.abortMergeIfAny();
         if (snapshot) {
           git.resetMainTo(snapshot);
           audit('task.rollback', 'dispatcher', { taskId: task.id, reason: e.message, restoredTo: snapshot.preMergeSha });

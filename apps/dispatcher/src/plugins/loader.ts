@@ -29,9 +29,21 @@ export async function loadPlugins(
   const loaded: LoadedPlugin[] = [];
   if (!existsSync(pluginsDir)) return loaded;
 
-  for (const dirName of readdirSync(pluginsDir)) {
+  let entries: string[];
+  try {
+    entries = readdirSync(pluginsDir);
+  } catch {
+    return loaded;
+  }
+
+  for (const dirName of entries) {
     const dir = resolve(pluginsDir, dirName);
-    if (!statSync(dir).isDirectory()) continue;
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+    } catch {
+      ev.skipped(dirName, 'unreadable entry (dangling symlink or permission denied)');
+      continue;
+    }
 
     const manifestPath = resolve(dir, 'nyx-plugin.json');
     if (!existsSync(manifestPath)) {

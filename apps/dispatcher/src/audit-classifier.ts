@@ -88,7 +88,11 @@ function extractPackages(log: string): string[] {
   if (!m?.[1]) return [];
   return m[1]
     .split(',')
-    .map((s) => s.trim().split('@')[0]!)
+    .map((s) => {
+      const t = s.trim();
+      const at = t.lastIndexOf('@');
+      return at > 0 ? t.slice(0, at) : t;
+    })
     .filter((s) => s.length > 0);
 }
 

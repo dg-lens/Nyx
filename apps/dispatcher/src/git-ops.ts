@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { config } from './config.js';
@@ -11,8 +11,30 @@ export interface WorkingDir {
   cleanup(): void;
 }
 
+/**
+ * Strip any secret value from a string before it can reach a log sink. execSync
+ * throws an Error whose `.message` is `Command failed: <full argv>\n<stderr>` —
+ * for a clone whose URL embeds `x-access-token:<TOKEN>@github.com`, the token is
+ * in that message verbatim. That message flows into the hash-chained audit DB
+ * and Slack, so it MUST be scrubbed at the throw site. Redacts the configured
+ * GitHub token + the `x-access-token:…@` URL credential form generically.
+ */
+export function redactSecrets(s: string): string {
+  let out = s.replace(/(x-access-token:)[^@/\s]+(@)/g, '$1***$2');
+  if (config.githubToken) out = out.split(config.githubToken).join('***');
+  return out;
+}
+
 function run(cmd: string, cwd?: string): string {
-  return execSync(cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }).trim();
+  try {
+    return execSync(cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }).trim();
+  } catch (err) {
+    const e = err as Error & { stdout?: Buffer | string; stderr?: Buffer | string };
+    const scrubbed = new Error(redactSecrets(e.message ?? String(e)));
+    if (e.stdout != null) (scrubbed as Error & { stdout?: string }).stdout = redactSecrets(e.stdout.toString());
+    if (e.stderr != null) (scrubbed as Error & { stderr?: string }).stderr = redactSecrets(e.stderr.toString());
+    throw scrubbed;
+  }
 }
 
 function tryRun(cmd: string, cwd?: string): string | null {
@@ -106,7 +128,25 @@ export function createLocalWorktree(taskId: string): WorkingDir {
  * throwaway planning dir deletes itself; the durable project base does not.
  */
 export function createGreenfieldDir(path: string): WorkingDir {
-  if (existsSync(path)) rmSync(path, { recursive: true, force: true });
+  if (existsSync(path)) {
+    // Durable deliverable dirs live under config.projectsDir and are NOT
+    // throwaway. Distinct task_ids can sanitize to the same path (e.g. "My/Proj"
+    // and "My_Proj" both -> "my_proj"), so a second greenfield run could wipe a
+    // prior delivered project — a standalone repo with no remote, unrecoverable.
+    // Refuse to clobber a non-empty durable project dir; the throwaway planning
+    // dir (under cloneRootPrefix) still gets wiped for a clean slate on retry.
+    const resolvedPath = resolve(path);
+    const isDurable = resolvedPath === resolve(config.projectsDir) ||
+      resolvedPath.startsWith(resolve(config.projectsDir) + '/');
+    if (isDurable && readdirSync(path).length > 0) {
+      throw new Error(
+        `createGreenfieldDir refusing to wipe existing non-empty project dir ${resolvedPath}: ` +
+          `another greenfield run's task_id sanitizes to this path. ` +
+          `Use a distinct task_id or remove the prior deliverable manually.`,
+      );
+    }
+    rmSync(path, { recursive: true, force: true });
+  }
   mkdirSync(path, { recursive: true });
   run('git init -b main', path);
   configureGitIdentity(path);
@@ -338,13 +378,36 @@ export function mergeBranchIntoMain(branch: string): MergeSnapshot {
   const mainBranch = detectMainBranch();
   run(`git checkout ${mainBranch}`, config.root);
   const preMergeSha = run('git rev-parse HEAD', config.root);
-  run(`git merge --no-ff ${branch} -m "nyx: merge ${branch}"`, config.root);
+  try {
+    run(`git merge --no-ff ${branch} -m "nyx: merge ${branch}"`, config.root);
+  } catch (err) {
+    // A conflicting merge leaves config.root mid-merge (MERGE_HEAD set, conflict
+    // markers in tracked files). Abort + hard-reset to the pre-merge sha so the
+    // live repo is always clean before the exception propagates, then re-throw
+    // with err.stdout (where git writes the CONFLICT notices) folded into the
+    // message so the audit-classifier's merge-conflict pattern can match it.
+    tryRun('git merge --abort', config.root);
+    tryRun(`git reset --hard ${preMergeSha}`, config.root);
+    const e = err as Error & { stdout?: Buffer | string };
+    const stdout = e.stdout ? e.stdout.toString() : '';
+    throw new Error(stdout ? `${stdout}\n${e.message}` : e.message);
+  }
   return { mainBranch, preMergeSha };
 }
 
 export function resetMainTo(snapshot: MergeSnapshot): void {
   run(`git checkout ${snapshot.mainBranch}`, config.root);
   run(`git reset --hard ${snapshot.preMergeSha}`, config.root);
+}
+
+/**
+ * Best-effort abort of any in-progress merge in config.root. Safe no-op when no
+ * merge is underway (`git merge --abort` exits non-zero, swallowed by tryRun).
+ * Used by finalizeCodeLocal's rollback path so the live repo is never left in a
+ * conflicted mid-merge state across ticks.
+ */
+export function abortMergeIfAny(cwd: string = config.root): void {
+  tryRun('git merge --abort', cwd);
 }
 
 /**

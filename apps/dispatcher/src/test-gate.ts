@@ -254,6 +254,16 @@ function runStage(stage: StageDef, cwd: string): { passed: boolean; durationMs: 
   const log = `[$ ${stage.cmd} ${stage.args.join(' ')}]\n${res.stdout ?? ''}\n${res.stderr ?? ''}`.trim();
   const exitCode = res.status ?? -1;
 
+  // A spawn error (most importantly the timeout that SIGTERMs the child and
+  // returns status=null) is an unconditional fail, regardless of any pass
+  // marker in the partial stdout. Without this, judgeTests(-1, partialLog)
+  // can match a "N passed" line printed before the process hung in teardown
+  // and wrongly report the gate as passed.
+  if (res.error || (res.status === null && res.signal != null)) {
+    const reason = res.error ? res.error.message : `killed by signal ${res.signal} (likely gate stage timeout)`;
+    return { passed: false, durationMs: Date.now() - start, log: `${log}\n[spawn error: ${reason}]`.trim() };
+  }
+
   if (stage.name === 'tests' && !stage.strict) {
     const verdict = judgeTests(exitCode, log);
     return { passed: verdict.passed, durationMs: Date.now() - start, log, ...(verdict.note ? { note: verdict.note } : {}) };

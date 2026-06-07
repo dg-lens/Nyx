@@ -63,7 +63,7 @@ struct GateCard: View {
                 ForEach(gate.decisions) { decisionRow($0) }
             }
 
-            TextField(isPreview ? "revise note (optional)" : "fix note (optional)", text: $note)
+            TextField(isPreview ? "revise note (required)" : "fix note (required)", text: $note)
                 .textFieldStyle(.roundedBorder)
 
             HStack {
@@ -71,6 +71,7 @@ struct GateCard: View {
                     Button("Go") { saveDecisions(); store.decide(gate.id, "go", note: nil) }
                         .buttonStyle(.borderedProminent)
                     Button("Revise") { store.decide(gate.id, "revise", note: note) }
+                        .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("Abort") { store.decide(gate.id, "abort", note: nil) }
                 } else {
                     // Accept = merge the held task(s) + continue the build (non-destructive).
@@ -78,6 +79,7 @@ struct GateCard: View {
                         .buttonStyle(.borderedProminent)
                     Button("Proceed (ship merged)") { store.decide(gate.id, "proceed", note: nil) }
                     Button("Fix") { store.decide(gate.id, "fix", note: note) }
+                        .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("Rollback") { store.decide(gate.id, "rollback", note: nil) }
                     Button("Abort") { store.decide(gate.id, "abort", note: nil) }
                 }

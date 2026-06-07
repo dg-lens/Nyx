@@ -126,6 +126,16 @@ export function createPipelineRun(task: ParsedTask): PipelineRun {
 export function failPipelineRun(taskId: string, error: string): void {
   const run = getRunByTaskId(taskId);
   if (!run || isTerminal(run.status)) return;
+  // Reclaim the run's /tmp clones, coder/diagnostic worktrees, and PLAINTEXT
+  // per-run secrets file before going terminal — the `failed` sink is the most
+  // common error exit, and without this it leaks disk + operator secrets
+  // indefinitely (only abort/delivery cleaned up before). Best-effort: a cleanup
+  // failure must never block the terminal transition.
+  try {
+    cleanupRunArtifacts(run);
+  } catch {
+    /* swallow — cleanup is best-effort; the terminal transition must still happen */
+  }
   transition(run, 'failed', { error: error.slice(0, 1000), current_stage: 'failed' });
 }
 
@@ -246,6 +256,12 @@ async function stageExecuting(run: PipelineRun, deps: ResolvedDeps): Promise<Pip
 
   audit('pipeline.stage.advanced', 'pipeline', { runId: cur.id, stage: `phase.${k}.done`, held: heldCount(cur) });
 
+  // Catastrophic short-circuits STRAIGHT to the human review gate, BEFORE the
+  // empty-held success branch — a catastrophic redux verdict can land with zero
+  // held tasks (the breakage is a cross-task hole, not a held branch), and
+  // advancing/shipping it would silently deliver a broken integration.
+  if (findingsCatastrophic(cur)) return escalateToReview(cur, 'catastrophic');
+
   if (heldCount(cur) === 0) {
     if (k + 1 < phases.length) {
       // Advance + YIELD: stay `executing`, reset the per-phase round counter.
@@ -253,7 +269,8 @@ async function stageExecuting(run: PipelineRun, deps: ResolvedDeps): Promise<Pip
     }
     return transition(cur, 'shipping', { current_stage: 'shipping' });
   }
-  return escalateToReview(cur, findingsCatastrophic(cur) ? 'catastrophic' : 'unresolved');
+  // Catastrophic is handled above; reaching here means held > 0 and recoverable.
+  return escalateToReview(cur, 'unresolved');
 }
 
 /** Park at the review gate with a brief + Slack ping. */

@@ -320,7 +320,9 @@ export async function runDiagnosticRound(run: PipelineRun, round: number): Promi
   const rem = parseRemediation(run);
   const plan = parsePlanJson(run.plan_json);
   const planByTask = new Map((plan?.plans ?? []).map((p) => [p.task_id, p]));
-  const coders = run.coder_results ? (JSON.parse(run.coder_results) as Array<{ task_id: string; branch: string }>) : [];
+  const coders = run.coder_results
+    ? (JSON.parse(run.coder_results) as Array<{ task_id: string; branch: string; status: string; commit: string | null; files_changed: string[] }>)
+    : [];
 
   let adopted = false;
   for (const taskId of held) {
@@ -355,7 +357,14 @@ export async function runDiagnosticRound(run: PipelineRun, round: number): Promi
     const allowed = contract ? [...contract.creates.map((c) => c.file), ...contract.modifies] : [];
     const { landed, strayed } = classifyDiagnosticFix(changed, allowed);
     if (landed && strayed.length === 0) {
-      coder.branch = fixBranch; // adopt — redux re-trials the clean fix
+      // adopt — redux re-trials the clean fix. Refresh the WHOLE record, not just
+      // the branch: stale `status`/`commit` from the discarded attempt make
+      // harvestFacts emit empty facts (redux.ts:145) and force a 'failed' P1
+      // verdict (redux.ts:417), so the repaired branch would be held forever.
+      coder.branch = fixBranch;
+      coder.status = 'committed';
+      coder.commit = (gitTry(`git rev-parse "${fixBranch}"`, base) ?? '').trim() || null;
+      coder.files_changed = changed;
       adopted = true;
       audit('pipeline.diagnostic.fix.verified', 'pipeline.shipping', { runId: run.id, round, taskId, files: changed.length });
     } else {

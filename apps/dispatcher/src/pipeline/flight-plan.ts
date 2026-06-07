@@ -258,8 +258,35 @@ export function parseAlignment(raw: string): Alignment {
 
 // ─── Plan freeze / thaw ───────────────────────────────────────────────────────
 
+/**
+ * Renumber phase values to a dense, contiguous, zero-based sequence so the raw
+ * `phase` number always equals its position in `groupPhases()`'s dense array.
+ * The decomposer is an LLM and `parseDag`/`parseFlightPlanContract` accept ANY
+ * non-negative integer phase (gaps, non-zero base), but the orchestrator walks
+ * `current_phase` as a dense index into `groupPhases()` while `runExecuting`/
+ * `runRedux` filter tasks by the raw `phase` number — the two only agree when
+ * phases are exactly 0,1,2,…. Normalizing at freeze time makes them coincide for
+ * every input. Pure: maps the sorted distinct phase values to 0..n-1 across both
+ * `dag.nodes` and `plans`.
+ */
+function normalizePhases(result: PlanningResult): PlanningResult {
+  const distinct = [
+    ...new Set([
+      ...result.dag.nodes.map((n) => (Number.isInteger(n.phase) && n.phase >= 0 ? n.phase : 0)),
+      ...result.plans.map((p) => (Number.isInteger(p.phase) && p.phase >= 0 ? p.phase : 0)),
+    ]),
+  ].sort((a, b) => a - b);
+  const denseOf = new Map(distinct.map((v, i) => [v, i]));
+  const remap = (phase: number): number => denseOf.get(Number.isInteger(phase) && phase >= 0 ? phase : 0) ?? 0;
+  return {
+    ...result,
+    dag: { nodes: result.dag.nodes.map((n) => ({ ...n, phase: remap(n.phase) })) },
+    plans: result.plans.map((p) => ({ ...p, phase: remap(p.phase) })),
+  };
+}
+
 export function freezePlan(result: PlanningResult): string {
-  return JSON.stringify(result);
+  return JSON.stringify(normalizePhases(result));
 }
 
 export function parsePlanJson(json: string | null): PlanningResult | null {
