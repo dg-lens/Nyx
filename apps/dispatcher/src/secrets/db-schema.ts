@@ -46,7 +46,7 @@ export function openSecretsDb(): DatabaseSync {
     );
 
     CREATE INDEX IF NOT EXISTS idx_secret_rotations_due
-      ON secret_rotations (project_name, created_at);
+      ON secret_rotations (((created_at / 1000) + (rotates_in_days * 86400)));
   `);
   return db;
 }

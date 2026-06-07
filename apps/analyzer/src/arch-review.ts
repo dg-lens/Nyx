@@ -28,8 +28,11 @@ function findUnusedDeps(cwd: string, report: FindingsReport): void {
   }).join('\n');
 
   const unused = deps.filter(d => {
-    const importRe = new RegExp(`(?:from\\s+['"\`]${d}(?:/|['"\`])|require\\(['"\`]${d}(?:/|['"\`])|import\\s+['"\`]${d}(?:/|['"\`]))`);
-    return !importRe.test(corpus);
+    const e = d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try {
+      const importRe = new RegExp(`(?:from\\s+['"\`]${e}(?:/|['"\`])|require\\(['"\`]${e}(?:/|['"\`])|import\\s+['"\`]${e}(?:/|['"\`]))`);
+      return !importRe.test(corpus);
+    } catch { return false; }
   });
 
   for (const dep of unused) {

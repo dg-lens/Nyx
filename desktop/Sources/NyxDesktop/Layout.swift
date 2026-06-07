@@ -44,9 +44,10 @@ enum Layout {
     static var systemName: String {
         let envPath = dataDir.appendingPathComponent(".env")
         guard let text = try? String(contentsOf: envPath, encoding: .utf8) else { return "Nyx" }
-        for raw in text.components(separatedBy: .newlines) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            for key in ["NYX_NAME=", "name="] where line.lowercased().hasPrefix(key.lowercased()) {
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        for key in ["NAME=", "NYX_NAME="] {
+            for line in lines where line.lowercased().hasPrefix(key.lowercased()) {
                 let value = line.dropFirst(key.count)
                     .trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
                 if !value.isEmpty { return value }

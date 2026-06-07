@@ -278,7 +278,10 @@ function runStage(stage: StageDef, cwd: string): { passed: boolean; durationMs: 
   // can match a "N passed" line printed before the process hung in teardown
   // and wrongly report the gate as passed.
   if (res.error || (res.status === null && res.signal != null)) {
-    const reason = res.error ? res.error.message : `killed by signal ${res.signal} (likely gate stage timeout)`;
+    const errCode = (res.error as NodeJS.ErrnoException | undefined)?.code;
+    const reason = res.error
+      ? `${res.error.message}${errCode ? ` (${errCode})` : ''}`
+      : `killed by signal ${res.signal} (likely gate stage timeout)`;
     return { passed: false, durationMs: Date.now() - start, log: `${log}\n[spawn error: ${reason}]`.trim() };
   }
 
@@ -290,9 +293,14 @@ function runStage(stage: StageDef, cwd: string): { passed: boolean; durationMs: 
 }
 
 export function countTestsPassed(log: string): number | undefined {
-  const m = log.match(/(\d+)\s+passed/i);
-  if (!m || !m[1]) return undefined;
-  return Number.parseInt(m[1], 10);
+  // Prefer the LAST "N passed" occurrence: when this receives concatenated
+  // stage logs, installer/build output (pnpm peer-dep checks, lint summaries)
+  // can print "N passed" before the tests stage, and the final summary line is
+  // the one we want. Last match is the tests-stage summary.
+  const matches = [...log.matchAll(/(\d+)\s+passed/gi)];
+  const last = matches[matches.length - 1];
+  if (!last || !last[1]) return undefined;
+  return Number.parseInt(last[1], 10);
 }
 
 export function runGate(task: ParsedTask, cwd: string): GateResult {

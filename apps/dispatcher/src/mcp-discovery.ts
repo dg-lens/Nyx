@@ -27,6 +27,15 @@ function sanitize(name: string): string {
 export function listMcpServers(): string[] {
   if (cached) return cached;
   try {
+    // Intentional exception to the spawnWithTimeout / process-group-kill
+    // invariant (apps/dispatcher/src/spawn-helpers.ts). That helper exists for
+    // long-running async `claude -p` task spawns whose tool-invocation
+    // grandchildren hold pipe FDs open and cause duration overshoots when only
+    // the direct child is signalled. `claude mcp list` is a short, synchronous,
+    // tightly-bounded discovery call (10s hard timeout, no streaming tool use,
+    // no grandchildren) run once per dispatcher process. A synchronous
+    // process-group variant would add complexity with no practical benefit at
+    // this bound, so this site is deliberately left on execFileSync.
     const out = execFileSync('claude', ['mcp', 'list'], {
       encoding: 'utf8',
       timeout: 10_000,

@@ -33,6 +33,12 @@ export function submitDecision(
   if (!isAwaiting(run.status)) {
     return { ok: false, message: `run ${runId} is '${run.status}', not waiting at a gate` };
   }
+  if (run.operator_decision) {
+    return {
+      ok: false,
+      message: `a '${run.operator_decision.kind}' decision is already armed for ${runId}; wait for the next tick to apply it`,
+    };
+  }
   const gate = run.status === 'awaiting_preview' ? 'preview' : 'review';
   const allowed = gate === 'preview' ? PREVIEW_KINDS : REVIEW_KINDS;
   if (!allowed.includes(kind)) {

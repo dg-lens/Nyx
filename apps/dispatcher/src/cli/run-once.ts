@@ -100,8 +100,9 @@ function redactClaudeOutput(s: string): string {
  *
  * Strict: only counts processes whose argv[0] basename is exactly "claude",
  * OR `node`/`tsx` invocations whose argv[1] basename is "claude" (or ends in
- * `claude.js`). Substring matches on "claude" elsewhere in the command line
- * are ignored.
+ * `claude.js`). GUI/dispatcher exclusion is decided from the EXECUTABLE path
+ * tokens (argv[0]/argv[1]) only — never the full command line, which carries
+ * user-controlled prompt/`--add-dir` args that could otherwise spoof the guard.
  */
 function hasLiveClaude(): boolean {
   try {
@@ -114,35 +115,76 @@ function hasLiveClaude(): boolean {
       if (pid === me) continue;
       const cmd = (m[2] ?? '').trim();
       if (!cmd) continue;
+
+      const tokens = cmd.split(/\s+/);
       // Exclude the Nyx dispatcher's own processes AND the operator's
-      // interactive Claude Code session(s). Case-insensitive on the latter
-      // because the new claude-code path on macOS is
-      // /Users/<u>/Library/Application Support/Claude/claude-code/<ver>/claude.app/...
-      // (lowercase claude.app), while the older /Applications/Claude.app/...
-      // GUI had a capital C. Both should be excluded; only the spawned
-      // `claude` CLI for an in-flight Nyx task should trigger the live
-      // detection.
-      const cmdLower = cmd.toLowerCase();
+      // interactive Claude Code session(s) by inspecting the EXECUTABLE-path
+      // region only — the tokens BEFORE the first flag (a token starting with
+      // `-`). The spawned task's user-controlled args (`-p <prompt>`,
+      // `--add-dir <path>`) all come AFTER the first flag, so a prompt or
+      // working-dir path that happens to contain "claude.app" or "claude-code/"
+      // can no longer be misclassified as the operator's GUI session and skipped
+      // (which would defeat the concurrency guard). The executable region still
+      // spans multiple whitespace tokens so a GUI path with spaces
+      // (/Users/<u>/Library/Application Support/Claude/claude-code/.../claude.app/...)
+      // is matched in full.
+      //
+      // Case-insensitive on the GUI markers because the new claude-code path on
+      // macOS is /Users/<u>/Library/Application Support/Claude/claude-code/<ver>/claude.app/...
+      // (lowercase claude.app), while the older /Applications/Claude.app/... GUI
+      // had a capital C. Both must be excluded; only the spawned `claude` CLI for
+      // an in-flight Nyx task should trigger live detection.
+      const firstFlagIdx = tokens.findIndex((t) => t.startsWith('-'));
+      const exeRegion = (firstFlagIdx === -1 ? tokens : tokens.slice(0, firstFlagIdx)).join(' ');
+      const exeRegionLower = exeRegion.toLowerCase();
       if (
-        cmd.includes('nyx-dispatch.sh') ||
-        cmd.includes('run-once') ||
-        cmdLower.includes('claude.app') ||
-        cmdLower.includes('claude-code/')
+        exeRegion.includes('nyx-dispatch.sh') ||
+        exeRegion.includes('run-once') ||
+        exeRegionLower.includes('claude.app') ||
+        exeRegionLower.includes('claude-code/')
       ) {
         continue;
       }
 
-      const tokens = cmd.split(/\s+/);
-      const t0 = basename(tokens[0] ?? '');
+      const exe = tokens[0] ?? '';
+      const wrapped = tokens[1] ?? '';
+      const t0 = basename(exe);
       if (t0 === 'claude') return true;
-      if ((t0 === 'node' || t0 === 'tsx') && tokens[1]) {
-        const t1 = basename(tokens[1] ?? '');
+      if ((t0 === 'node' || t0 === 'tsx') && wrapped) {
+        const t1 = basename(wrapped);
         if (t1 === 'claude' || t1.endsWith('claude.js')) return true;
       }
     }
     return false;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Snapshot the set of untracked paths in a working dir (relative to its git
+ * root). Used to bracket the wisdom-capture spawn: anything that becomes
+ * untracked DURING the spawn — and isn't in this pre-snapshot — was created by
+ * the wisdom agent and must be swept before `commitAll` (`git add -A`) stages
+ * it into the task's commit/PR. The main task's own output (and the operator's
+ * pre-existing untracked files in a self-task worktree) all exist BEFORE the
+ * spawn, so they're in the snapshot and never removed. Best-effort: a git error
+ * returns an empty set, and the caller falls back to removing only WISDOM_FILE.
+ */
+function untrackedSnapshot(workingDir: string): Set<string> {
+  try {
+    const out = execSync('git status --porcelain --untracked-files=all', {
+      cwd: workingDir,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+    });
+    const set = new Set<string>();
+    for (const line of out.split('\n')) {
+      if (line.startsWith('?? ')) set.add(line.slice(3).trim());
+    }
+    return set;
+  } catch {
+    return new Set<string>();
   }
 }
 
@@ -369,6 +411,11 @@ async function attemptTask(
   // for None. Non-fatal: any failure here is logged and skipped; it never blocks
   // dispatch or gate execution.
   if (task.type === 'code') {
+    // Snapshot untracked files BEFORE the wisdom spawn so the finally block can
+    // sweep anything the spawn newly created (not just the known WISDOM_FILE) —
+    // the spawn has an unrestricted Write tool and could drop scratch files that
+    // commitAll's `git add -A` would otherwise fold into the task's commit/PR.
+    const preWisdomUntracked = untrackedSnapshot(workingDir.path);
     try {
       const wisdomResult = await invokeWisdomCapture(task, workingDir.path);
       const wisdom = wisdomResult.exitCode === 0
@@ -408,11 +455,22 @@ async function attemptTask(
         reason: `wisdom capture threw: ${(err as Error).message}`,
       });
     } finally {
-      // Always clean up NYX_WISDOM.md from the working dir so it doesn't
-      // get committed to external repos or Nyx local as part of the task diff.
-      const wfPath = resolve(workingDir.path, WISDOM_FILE);
-      if (existsSync(wfPath)) {
-        try { rmSync(wfPath); } catch { /* swallow */ }
+      // Guarantee zero net change to the committed diff from wisdom capture.
+      // Sweep every path the spawn newly made untracked — not just WISDOM_FILE —
+      // so a scratch file written under any name (or nested path) can't survive
+      // into commitAll's `git add -A`. Files untracked BEFORE the spawn (the main
+      // task's output, the operator's pre-existing untracked files) are in the
+      // snapshot and left untouched.
+      const postWisdomUntracked = untrackedSnapshot(workingDir.path);
+      const toSweep = new Set<string>([WISDOM_FILE]);
+      for (const rel of postWisdomUntracked) {
+        if (!preWisdomUntracked.has(rel)) toSweep.add(rel);
+      }
+      for (const rel of toSweep) {
+        const p = resolve(workingDir.path, rel);
+        if (existsSync(p)) {
+          try { rmSync(p, { recursive: true, force: true }); } catch { /* swallow */ }
+        }
       }
     }
   }

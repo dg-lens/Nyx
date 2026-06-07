@@ -82,7 +82,7 @@ END { flush() }
 
 FIRED_TODAY=""
 if [[ -f "$DB" ]]; then
-  TODAY_UTC_START=$(date -j -v0H -v0M -v0S "+%Y-%m-%dT%H:%M:%S")
+  TODAY_UTC_START=$(date -u -j -v0H -v0M -v0S "+%Y-%m-%dT%H:%M:%S")
   FIRED_TODAY=$(sqlite3 "$DB" "
     SELECT DISTINCT json_extract(payload, '\$.taskId')
     FROM system_audit

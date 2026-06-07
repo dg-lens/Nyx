@@ -58,8 +58,9 @@ function diffForTask(workingDir: string, taskId: string): string | null {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    if (out.length > MAX_DIFF_BYTES) {
-      return `${out.slice(0, MAX_DIFF_BYTES)}\n[...truncated ${out.length - MAX_DIFF_BYTES} bytes]`;
+    const buf = Buffer.from(out, 'utf8');
+    if (buf.length > MAX_DIFF_BYTES) {
+      return `${buf.subarray(0, MAX_DIFF_BYTES).toString('utf8')}\n[...truncated ${buf.length - MAX_DIFF_BYTES} bytes]`;
     }
     return out;
   } catch {

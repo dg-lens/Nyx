@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 
 import { audit } from '../audit.js';
 import { config } from '../config.js';
@@ -17,13 +17,19 @@ export interface FinalizeContext {
   testsPassed?: number;
 }
 
-function writeFinalizeSentinel(taskId: string): void {
-  const payload = { pid: process.pid, taskId, startedAt: new Date().toISOString() };
-  writeFileSync(config.finalizeSentinelPath, JSON.stringify(payload), 'utf8');
-}
-
-function clearFinalizeSentinel(): void {
-  try { rmSync(config.finalizeSentinelPath, { force: true }); } catch { /* noop */ }
+/**
+ * Resolve a task's `[output:]` value against config.dataDir and assert the
+ * result stays within config.dataDir. `task.output` is taken verbatim from the
+ * queue task's tag with no parse-time validation, so an absolute path or one
+ * containing `..` segments could otherwise escape dataDir and write artifacts
+ * anywhere the dispatcher user can write. Returns the resolved base, or null if
+ * the value escapes the data directory.
+ */
+function resolveOutputBase(output: string, ...extra: string[]): string | null {
+  const base = resolve(config.dataDir, output.replace(/\/$/, ''), ...extra);
+  const rel = relative(config.dataDir, base);
+  if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return base;
+  return null;
 }
 
 /**
@@ -134,75 +140,70 @@ function maybeEmitDeployRequired(
 
 export async function finalizeCodeLocal(ctx: FinalizeContext): Promise<RunOutcome> {
   const { task, workingDir, durationMs } = ctx;
-  writeFinalizeSentinel(task.id);
-  try {
-    const docSweepFailure = runDocSweep(task, workingDir.path);
-    if (docSweepFailure) {
-      return { taskId: task.id, status: 'failed', durationMs, failureLog: docSweepFailure };
-    }
-
-    const message = `nyx(${task.id}): ${task.description}`;
-    const didCommit = git.commitAll(workingDir.path, message);
-
-    // Mirror finalizeCodeExternal's no-changes handling. When Claude produced no
-    // new file changes there are two sub-cases:
-    //   1. A prior attempt committed to the worktree branch but crashed before
-    //      merging — the branch has commits not yet in main. The work IS done;
-    //      fall through to the merge. Don't burn another audit cycle.
-    //   2. Nothing was ever committed and the branch has no commits ahead of
-    //      main — a real "Claude produced nothing" failure. Route to audit
-    //      instead of silently reporting success.
-    let priorAttemptCommit = false;
-    if (!didCommit) {
-      const mainBranch = git.detectMainBranch();
-      priorAttemptCommit =
-        !!workingDir.branch && commitsAheadOfMain(workingDir.branch, mainBranch) > 0;
-      if (!priorAttemptCommit) {
-        return {
-          taskId: task.id,
-          status: 'failed',
-          durationMs,
-          failureLog: 'claude produced no file changes — nothing to commit or merge',
-        };
-      }
-    }
-
-    if (didCommit) {
-      audit('task.committed', 'dispatcher', { taskId: task.id });
-    } else {
-      audit('task.committed', 'dispatcher', {
-        taskId: task.id,
-        source: 'prior-attempt',
-        note: 'no new changes this attempt; merging existing branch commit(s)',
-      });
-    }
-    if ((didCommit || priorAttemptCommit) && workingDir.branch) {
-      let snapshot: git.MergeSnapshot | null = null;
-      try {
-        snapshot = git.mergeBranchIntoMain(workingDir.branch);
-        audit('task.merged', 'dispatcher', { taskId: task.id, branch: workingDir.branch });
-      } catch (err) {
-        const e = err as Error;
-        // mergeBranchIntoMain self-cleans on conflict (abort + reset to its
-        // pre-merge sha), so config.root is already clean when it throws. The
-        // best-effort abort here covers any other mid-merge throw path and is a
-        // safe no-op when no merge is in progress; resetMainTo runs only when a
-        // snapshot exists (a throw AFTER a successful merge returned).
-        git.abortMergeIfAny();
-        if (snapshot) {
-          git.resetMainTo(snapshot);
-          audit('task.rollback', 'dispatcher', { taskId: task.id, reason: e.message, restoredTo: snapshot.preMergeSha });
-        } else {
-          audit('task.rollback', 'dispatcher', { taskId: task.id, reason: e.message, restoredTo: 'pre-merge-noop' });
-        }
-        return { taskId: task.id, status: 'failed', durationMs, failureLog: `merge failed: ${e.message}` };
-      }
-    }
-    workingDir.cleanup();
-    return { taskId: task.id, status: 'completed', durationMs, testsPassed: ctx.testsPassed };
-  } finally {
-    clearFinalizeSentinel();
+  const docSweepFailure = runDocSweep(task, workingDir.path);
+  if (docSweepFailure) {
+    return { taskId: task.id, status: 'failed', durationMs, failureLog: docSweepFailure };
   }
+
+  const message = `nyx(${task.id}): ${task.description}`;
+  const didCommit = git.commitAll(workingDir.path, message);
+
+  // Mirror finalizeCodeExternal's no-changes handling. When Claude produced no
+  // new file changes there are two sub-cases:
+  //   1. A prior attempt committed to the worktree branch but crashed before
+  //      merging — the branch has commits not yet in main. The work IS done;
+  //      fall through to the merge. Don't burn another audit cycle.
+  //   2. Nothing was ever committed and the branch has no commits ahead of
+  //      main — a real "Claude produced nothing" failure. Route to audit
+  //      instead of silently reporting success.
+  let priorAttemptCommit = false;
+  if (!didCommit) {
+    const mainBranch = git.detectMainBranch();
+    priorAttemptCommit =
+      !!workingDir.branch && commitsAheadOfMain(workingDir.branch, mainBranch) > 0;
+    if (!priorAttemptCommit) {
+      return {
+        taskId: task.id,
+        status: 'failed',
+        durationMs,
+        failureLog: 'claude produced no file changes — nothing to commit or merge',
+      };
+    }
+  }
+
+  if (didCommit) {
+    audit('task.committed', 'dispatcher', { taskId: task.id });
+  } else {
+    audit('task.committed', 'dispatcher', {
+      taskId: task.id,
+      source: 'prior-attempt',
+      note: 'no new changes this attempt; merging existing branch commit(s)',
+    });
+  }
+  if ((didCommit || priorAttemptCommit) && workingDir.branch) {
+    let snapshot: git.MergeSnapshot | null = null;
+    try {
+      snapshot = git.mergeBranchIntoMain(workingDir.branch);
+      audit('task.merged', 'dispatcher', { taskId: task.id, branch: workingDir.branch });
+    } catch (err) {
+      const e = err as Error;
+      // mergeBranchIntoMain self-cleans on conflict (abort + reset to its
+      // pre-merge sha), so config.root is already clean when it throws. The
+      // best-effort abort here covers any other mid-merge throw path and is a
+      // safe no-op when no merge is in progress; resetMainTo runs only when a
+      // snapshot exists (a throw AFTER a successful merge returned).
+      git.abortMergeIfAny();
+      if (snapshot) {
+        git.resetMainTo(snapshot);
+        audit('task.rollback', 'dispatcher', { taskId: task.id, reason: e.message, restoredTo: snapshot.preMergeSha });
+      } else {
+        audit('task.rollback', 'dispatcher', { taskId: task.id, reason: e.message, restoredTo: 'pre-merge-noop' });
+      }
+      return { taskId: task.id, status: 'failed', durationMs, failureLog: `merge failed: ${e.message}` };
+    }
+  }
+  workingDir.cleanup();
+  return { taskId: task.id, status: 'completed', durationMs, testsPassed: ctx.testsPassed };
 }
 
 export async function finalizeCodeExternal(ctx: FinalizeContext): Promise<RunOutcome> {
@@ -381,9 +382,21 @@ export async function finalizeAnalysis(ctx: FinalizeContext): Promise<RunOutcome
       failureLog: 'analysis produced no NYX_FINDINGS.md',
     };
   }
-  const outBase = task.output
-    ? resolve(config.dataDir, task.output.replace(/\/$/, ''))
-    : resolve(config.outputsDir, 'reports');
+  let outBase: string;
+  if (task.output) {
+    const resolved = resolveOutputBase(task.output);
+    if (!resolved) {
+      return {
+        taskId: task.id,
+        status: 'failed',
+        durationMs,
+        failureLog: `[output:] path escapes data dir: ${task.output}`,
+      };
+    }
+    outBase = resolved;
+  } else {
+    outBase = resolve(config.outputsDir, 'reports');
+  }
   mkdirSync(outBase, { recursive: true });
   const outFile = resolve(outBase, `${task.id}-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
   cpSync(findingsSrc, outFile);
@@ -405,9 +418,21 @@ export async function finalizeContent(ctx: FinalizeContext): Promise<RunOutcome>
       failureLog: 'content task produced no output files',
     };
   }
-  const outBase = task.output
-    ? resolve(config.dataDir, task.output.replace(/\/$/, ''), task.id)
-    : resolve(config.outputsDir, 'content', task.id);
+  let outBase: string;
+  if (task.output) {
+    const resolved = resolveOutputBase(task.output, task.id);
+    if (!resolved) {
+      return {
+        taskId: task.id,
+        status: 'failed',
+        durationMs,
+        failureLog: `[output:] path escapes data dir: ${task.output}`,
+      };
+    }
+    outBase = resolved;
+  } else {
+    outBase = resolve(config.outputsDir, 'content', task.id);
+  }
   mkdirSync(outBase, { recursive: true });
   for (const name of artifacts) {
     cpSync(resolve(workingDir.path, name), resolve(outBase, name), { recursive: true });

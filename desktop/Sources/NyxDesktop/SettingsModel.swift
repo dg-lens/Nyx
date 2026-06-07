@@ -156,8 +156,13 @@ final class SettingsStore: ObservableObject {
     }
 
     func saveIdentity() {
+        let name = instanceName.trimmingCharacters(in: .whitespaces)
+        // Keep NYX_NAME in sync with NAME: Layout.systemName (menu bar / app title /
+        // notifications) reads NYX_NAME first, so writing only NAME would leave a
+        // stale NYX_NAME winning and diverge the title from the Settings field.
         saveEnv([
-            "NAME": instanceName.trimmingCharacters(in: .whitespaces),
+            "NAME": name,
+            "NYX_NAME": name,
             "OPERATOR_NAME": operatorName.trimmingCharacters(in: .whitespaces),
         ])
     }
@@ -214,8 +219,17 @@ final class SettingsStore: ObservableObject {
     }
 
     func setShowSecrets(_ on: Bool) {
+        // Preserve typed-but-unsaved edits: snapshot current field values, rebuild
+        // from disk to apply the new masking, then re-apply any non-empty in-memory
+        // value so toggling masking never discards what the operator typed.
+        let pending = Dictionary(envFields.map { ($0.key, $0.value) }, uniquingKeysWith: { _, last in last })
         showSecrets = on
         loadEnvFields()
+        for i in envFields.indices {
+            if let typed = pending[envFields[i].key], !typed.isEmpty {
+                envFields[i].value = typed
+            }
+        }
     }
 
     // MARK: plugins

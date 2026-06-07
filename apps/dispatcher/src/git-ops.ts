@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 
 import { config } from './config.js';
 
@@ -64,13 +64,31 @@ interface Sentinel {
   startedAt: string;
 }
 
-function isProcessAlive(pid: number): boolean {
+/**
+ * Liveness check for sentinel ownership, hardened against PID reuse. A bare
+ * process.kill(pid, 0) is a PID-reuse hazard: after the original dispatcher dies
+ * the OS can recycle its PID for an unrelated process, and the signal then
+ * reports it live — pinning a working dir to a ghost forever. A Nyx dispatcher
+ * always runs as the operator's own user, so:
+ *   - ESRCH (no such process) AND EPERM (PID owned by a different user, which a
+ *     same-user dispatcher never is) both mean this is not our process -> stale.
+ *   - When the PID is signalable, cross-check its command line still looks like
+ *     a node process (the dispatcher runtime). A recycled PID running some other
+ *     binary fails this and is treated as stale.
+ * `ps` unavailable or empty -> fall back to the bare signal result (preserve the
+ * more-permissive behavior rather than wrongly clearing a possibly-live dir).
+ */
+function isSentinelOwnerAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  } catch {
+    // ESRCH (no such process) AND EPERM (PID owned by a different user, which a
+    // same-user dispatcher never is) both mean this is not our process -> stale.
+    return false;
   }
+  const comm = tryRun(`ps -o comm= -p ${pid}`);
+  if (comm === null || comm.trim() === '') return true;
+  return /node/i.test(comm);
 }
 
 function readSentinel(dir: string): Sentinel | null {
@@ -210,6 +228,12 @@ export function removeWorktree(path: string): void {
   tryRun(`git worktree remove --force "${path}"`, config.root);
   if (existsSync(path)) rmSync(path, { recursive: true, force: true });
   tryRun(`git worktree prune`, config.root);
+  // Also delete the per-run branch the worktree was created on
+  // (`nyx/<taskId>`). The worktree's leaf dir name is the taskId, so branchName
+  // reconstructs the exact branch. Guarded by tryRun: a branch that is still
+  // checked out elsewhere or already gone is a clean no-op — without this, every
+  // self-target run leaks a dangling nyx/* branch in config.root.
+  tryRun(`git branch -D "${branchName(basename(path))}"`, config.root);
 }
 
 export function cloneExternalRepo(
@@ -349,7 +373,7 @@ export function inFlight(taskId: string): 'live' | 'stale_cleared' | 'none' {
   const worktreePath = resolve(getWorktreesDir(), taskId);
   if (existsSync(worktreePath)) {
     const s = readSentinel(worktreePath);
-    if (s && isProcessAlive(s.pid)) return 'live';
+    if (s && isSentinelOwnerAlive(s.pid)) return 'live';
     removeWorktree(worktreePath);
     return 'stale_cleared';
   }
@@ -357,7 +381,7 @@ export function inFlight(taskId: string): 'live' | 'stale_cleared' | 'none' {
   const clonePath = `${config.cloneRootPrefix}${taskId}`;
   if (existsSync(clonePath)) {
     const s = readSentinel(clonePath);
-    if (s && isProcessAlive(s.pid)) return 'live';
+    if (s && isSentinelOwnerAlive(s.pid)) return 'live';
     try { rmSync(clonePath, { recursive: true, force: true }); } catch { /* swallow */ }
     return 'stale_cleared';
   }
@@ -396,7 +420,10 @@ export function commitAll(cwd: string, message: string): boolean {
 }
 
 export function detectMainBranch(): string {
-  const fromOrigin = tryRun('git symbolic-ref --short refs/remotes/origin/HEAD', config.root)?.split('/').pop();
+  // `--short` output is `origin/<branch>`; strip only the leading `origin/` so a
+  // default branch that itself contains a slash (`origin/release/2026`) keeps
+  // its full name rather than collapsing to the last segment via split/pop.
+  const fromOrigin = tryRun('git symbolic-ref --short refs/remotes/origin/HEAD', config.root)?.replace(/^origin\//, '');
   if (fromOrigin) return fromOrigin;
   const explicit = process.env['NYX_MAIN_BRANCH'];
   if (explicit) return explicit;
@@ -565,5 +592,7 @@ export function pushDirectToBranch(
  * specified.
  */
 function detectBaseBranch(cwd: string): string {
-  return tryRun('git symbolic-ref --short refs/remotes/origin/HEAD', cwd)?.split('/').pop() ?? 'main';
+  // Strip only the leading `origin/` (not every '/') so a default branch with a
+  // slash in its name survives — see detectMainBranch for the same reasoning.
+  return tryRun('git symbolic-ref --short refs/remotes/origin/HEAD', cwd)?.replace(/^origin\//, '') ?? 'main';
 }

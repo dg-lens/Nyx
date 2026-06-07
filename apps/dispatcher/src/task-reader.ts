@@ -69,7 +69,12 @@ export function slotWindow(d: Date = new Date()): { slot: number; start: Date; e
 // ─── Schedule parsing ────────────────────────────────────────────────────────
 
 function parseSlot(raw: string): { value: number; valid: true } | { valid: false } {
-  const n = Number.parseInt(raw.trim(), 10);
+  // Anchor the whole string so trailing garbage is rejected instead of silently
+  // truncated by parseInt — `12abc`, `1e2`, `12.9` are typos, not slot 12/1/12.
+  // Matches the strict `^…$` anchoring already used in parseEveryStep.
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return { valid: false };
+  const n = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(n) || n < 0 || n >= SLOTS_PER_DAY) return { valid: false };
   return { value: n, valid: true };
 }
@@ -98,8 +103,9 @@ export function parseEveryStep(raw: string): number | null {
 
 // ─── Tag parsing ─────────────────────────────────────────────────────────────
 
-function parseTags(blob: string): Record<string, string> {
+function parseTags(blob: string): { tags: Record<string, string>; duplicates: string[] } {
   const tags: Record<string, string> = {};
+  const duplicates: string[] = [];
   let m: RegExpExecArray | null;
   TAG_OPEN_RE.lastIndex = 0;
   while ((m = TAG_OPEN_RE.exec(blob))) {
@@ -122,11 +128,21 @@ function parseTags(blob: string): Record<string, string> {
       value += ch;
     }
     if (!closed) continue;
-    if (value.trim()) tags[name] = value.trim();
+    if (value.trim()) {
+      // A tag key appearing twice is ambiguous: the last occurrence would
+      // silently win (potentially routing to the wrong repo/type). Record the
+      // collision so readQueue can surface it as an invalidTag rather than
+      // overwrite without warning. First-seen value is retained for context.
+      if (Object.prototype.hasOwnProperty.call(tags, name)) {
+        if (!duplicates.includes(name)) duplicates.push(name);
+      } else {
+        tags[name] = value.trim();
+      }
+    }
     // Resume scanning after the closing `]` so we don't re-enter the value.
     TAG_OPEN_RE.lastIndex = i + 1;
   }
-  return tags;
+  return { tags, duplicates };
 }
 
 function defaultsForType(type: TaskType): { gates: GateStage[] | 'none'; model: Model } {
@@ -249,9 +265,12 @@ export function readQueue(path: string): QueueFile {
     }
     const endLine = j - 1;
     const blob = blobParts.join(' ');
-    const tags = parseTags(blob);
+    const { tags, duplicates } = parseTags(blob);
 
     const invalidTags: ParsedTask['invalidTags'] = [];
+    for (const dup of duplicates) {
+      invalidTags.push({ tag: dup, raw: `duplicate tag: ${tags[dup] ?? ''}` });
+    }
     const t = parseType(tags['type']);
     if (!t.valid) invalidTags.push({ tag: 'type', raw: tags['type'] ?? '' });
     const defaults = defaultsForType(t.value);

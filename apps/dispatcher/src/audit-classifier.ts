@@ -262,9 +262,9 @@ const PATTERNS: Pattern[] = [
   },
   {
     name: 'bws-secret-missing',
-    match: /(SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_JWT_SECRET|OPERATOR_AUTH_TOKEN)\s+is not defined|missing required env var/i,
+    match: /(SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_JWT_SECRET|OPERATOR_AUTH_TOKEN)\s+is not defined|missing required env var[:\s]+([A-Z0-9_]+)/i,
     build: (m) => {
-      const varName = m[1] ?? '<unknown>';
+      const varName = m[1] ?? m[2] ?? '<unknown>';
       return {
         kind: 'operator-required',
         pattern: 'bws-secret-missing',

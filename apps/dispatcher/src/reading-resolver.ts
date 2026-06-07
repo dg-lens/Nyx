@@ -121,10 +121,13 @@ function extractSection(content: string, section: string): string | null {
   let exact = headings.filter(h => headingMatches(h, needle));
   if (exact.length === 0) {
     const stripNeedle = needle.replace(/^§\s*/, '').trim();
-    exact = headings.filter(h => {
-      const stripped = h.text.replace(/^§?\s*\d+(?:\.\d+)*\s*:?\s*/, '').trim();
-      return stripped.startsWith(stripNeedle) || h.text.startsWith(needle);
-    });
+    const numericNeedle = /^\d+(?:\.\d+)*$/.test(stripNeedle);
+    if (!numericNeedle) {
+      exact = headings.filter(h => {
+        const stripped = h.text.replace(/^§?\s*\d+(?:\.\d+)*\s*:?\s*/, '').trim();
+        return stripped.startsWith(stripNeedle) || h.text.startsWith(needle);
+      });
+    }
   }
   if (exact.length === 0) return null;
   if (exact.length > 1) {

@@ -20,13 +20,23 @@ enum QueueFile {
                 continue
             }
             let rest = String(line[range.upperBound...])
-            let parts = rest.components(separatedBy: "—")
-            let id = parts.first?.trimmingCharacters(in: .whitespaces) ?? rest
-            let title = parts.count > 1
-                ? parts[1...].joined(separator: "—").trimmingCharacters(in: .whitespaces)
-                : ""
+            let id: String
+            let title: String
+            if let sep = rest.range(of: #"\s+[—-]\s+"#, options: .regularExpression) {
+                id = String(rest[..<sep.lowerBound]).trimmingCharacters(in: .whitespaces)
+                title = String(rest[sep.upperBound...]).trimmingCharacters(in: .whitespaces)
+            } else {
+                id = rest.trimmingCharacters(in: .whitespaces)
+                title = ""
+            }
 
-            let window = lines[i..<min(i + 4, lines.count)].joined(separator: "\n")
+            var end = i + 1
+            while end < lines.count,
+                  lines[end].range(of: #"^\s*-\s*\[[ x]\]\s*"#, options: .regularExpression) == nil,
+                  lines[end].range(of: #"^##\s+"#, options: .regularExpression) == nil {
+                end += 1
+            }
+            let window = lines[i..<end].joined(separator: "\n")
             let type = firstMatch(#"\[type:\s*([a-zA-Z]+)\]"#, in: window) ?? "—"
 
             items.append(QueueItem(id: id, title: title, type: type))
