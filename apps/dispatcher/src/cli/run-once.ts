@@ -24,8 +24,8 @@ import {
   createPipelineRun,
   failPipelineRun,
   getRunByTaskId,
-  resumeDecidedRuns,
 } from '../pipeline/orchestrator.js';
+import { runsAwaitingDecision } from '../pipeline/db.js';
 import { isAwaiting, isTerminal, type DecisionKind, type PipelineStatus } from '../pipeline/types.js';
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
 import { config } from '../config.js';
@@ -63,6 +63,37 @@ import { schedulingOf, type ParsedTask, type RunOutcome } from '../types.js';
 
 const COOLDOWN_MIN = 60 * 60_000;
 const STALE_THRESHOLD_HOURS = 24;
+
+/**
+ * Scrub secret values out of a spawned-claude failure log before it reaches the
+ * hash-chained audit DB or Slack. The spawned `claude -p` runs with the
+ * configured GitHub/Anthropic/Slack tokens (and `BWS_ACCESS_TOKEN`, if present)
+ * in its environment; any tool it invokes that prints those values to
+ * stderr/stdout would otherwise be persisted and broadcast verbatim. Redacting
+ * by known value is robust regardless of how the secret surfaced.
+ *
+ * `git.redactSecrets` already covers the GitHub token + the
+ * `x-access-token:…@` URL credential form; we chain it and then strip the
+ * remaining cross-cutting config secrets that the child inherits via the
+ * `process.env` spread in task-runner's spawn env.
+ *
+ * NOTE: per-task Bitwarden secret VALUES are fetched inside `buildSpawnInvocation`
+ * and never reach this module, so they are NOT redacted here. Fully closing that
+ * surface requires `invokeClaude` to return its injected `extraEnv` so the values
+ * can be added to this denylist — a task-runner change tracked separately.
+ */
+function redactClaudeOutput(s: string): string {
+  let out = git.redactSecrets(s);
+  const denylist = [
+    config.anthropicApiKey,
+    config.slackBotToken,
+    process.env['BWS_ACCESS_TOKEN'] ?? '',
+  ];
+  for (const secret of denylist) {
+    if (secret) out = out.split(secret).join('***');
+  }
+  return out;
+}
 
 /**
  * Detect a live `claude` CLI process that isn't us.
@@ -314,9 +345,11 @@ async function attemptTask(
   });
 
   if (claudeResult.exitCode !== 0) {
-    const failureLog = `claude exit ${claudeResult.exitCode}\nstderr:\n${claudeResult.stderr}\nstdout-tail:\n${claudeResult.stdout.slice(-2000)}`;
+    const failureLog = redactClaudeOutput(
+      `claude exit ${claudeResult.exitCode}\nstderr:\n${claudeResult.stderr}\nstdout-tail:\n${claudeResult.stdout.slice(-2000)}`,
+    );
     audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'claude', failure_log: failureLog });
-    await notify.claudeCrashed(task.id, claudeResult.exitCode, claudeResult.stderr);
+    await notify.claudeCrashed(task.id, claudeResult.exitCode, redactClaudeOutput(claudeResult.stderr));
     return { status: 'failed-recoverable', failureLog };
   }
 
@@ -343,11 +376,24 @@ async function attemptTask(
         : null;
       if (wisdom) {
         const { fileModified } = routeWisdomCapture(wisdom, task.id, workingDir.path);
-        audit('task.wisdom.captured', 'dispatcher', {
-          taskId: task.id,
-          target: wisdom.target,
-          ...(fileModified ? { fileModified } : {}),
-        });
+        // routeWisdomCapture returns { fileModified: null } for BOTH a legitimate
+        // `target: None` no-op AND a genuine routing failure (a non-existent
+        // T2/T3/Personality path, a Graph id that fails its regex, or any FS
+        // throw it swallows). Only `None` is a real no-op; any other target with
+        // no file written means the lesson was lost — audit it as skipped, not
+        // captured, so it doesn't masquerade as a successful capture.
+        if (wisdom.target !== 'None' && fileModified === null) {
+          audit('task.wisdom.skipped', 'dispatcher', {
+            taskId: task.id,
+            reason: `route returned no file for target ${wisdom.target}`,
+          });
+        } else {
+          audit('task.wisdom.captured', 'dispatcher', {
+            taskId: task.id,
+            target: wisdom.target,
+            ...(fileModified ? { fileModified } : {}),
+          });
+        }
       } else {
         audit('task.wisdom.skipped', 'dispatcher', {
           taskId: task.id,
@@ -468,14 +514,59 @@ function haltTask(
 }
 
 /**
+ * Drive a thrown pipeline segment to the terminal `failed` sink AND surface it
+ * to the operator. Used by BOTH tick entry points (the resume scan and the
+ * queue loop) so a throw is handled identically regardless of which path was
+ * advancing the run. Without the terminal transition the run sits at its
+ * non-terminal status and re-runs the identical doomed work every tick; without
+ * the DM the operator gets no signal a pipeline died (there is no
+ * `notify.pipelineFailed`, so we use the generic `notify.dm`).
+ */
+async function failPipelineWithNotice(taskId: string, err: Error): Promise<void> {
+  audit('pipeline.failed', 'pipeline', { taskId, error: err.stack ?? err.message });
+  // Drive the run terminal so a thrown stage doesn't leave it at a non-terminal
+  // status and retry the same doomed work every tick.
+  failPipelineRun(taskId, err.message);
+  await notify.dm(`🛑 *${taskId}* — pipeline run failed: ${err.message.slice(0, 500)}`);
+}
+
+/**
+ * Tick priority 1: advance every run parked at a gate whose operator decision
+ * arrived since the last tick, one run at a time so a throw on one run doesn't
+ * abort advancement of the others. On throw, the run is driven to the terminal
+ * `failed` sink (mirroring the queue-loop path) — leaving it at a non-terminal
+ * status would re-run the identical doomed planning/delivery segment on every
+ * tick. Returns the set of task_ids whose runs were touched this tick so the
+ * queue loop can skip re-advancing the same run a second time in one tick.
+ */
+async function resumeDecidedRunsInTick(): Promise<Set<string>> {
+  const handled = new Set<string>();
+  for (const run of runsAwaitingDecision()) {
+    handled.add(run.task_id);
+    try {
+      await advancePipeline(run);
+    } catch (err) {
+      const e = err as Error;
+      await failPipelineWithNotice(run.task_id, e);
+      console.error(`[nyx] resume: pipeline ${run.task_id} threw:`, e.stack ?? e.message);
+    }
+  }
+  return handled;
+}
+
+/**
  * Route a `[type: pipeline]` task through the stateful orchestrator. Find-or-
  * create its run, advance it as far as it goes this tick (autonomous segments
  * run synchronously, pausing only at a gate), and report whether the standing
  * task should now be marked complete.
  *
- * Runs parked at a gate with no decision are left untouched — `resumeDecidedRuns`
- * (tick priority 1) advances them once the operator answers. Terminal runs are
- * reconciled: a `done` run whose standing task is still `[ ]` gets marked.
+ * Runs parked at a gate with no decision are left untouched — `resumeDecidedRunsInTick`
+ * (tick priority 1) advances them once the operator answers. ANY terminal run
+ * (`done`/`failed`/`aborted`) whose standing task is still `[ ]` is reconciled out
+ * of the active picker — a `done` run is marked complete, a `failed`/`aborted` run
+ * is marked complete with the `[FAILED]` flag. Without this, a failed/aborted run
+ * leaves its `[ ]` task in Active forever and the picker re-selects it every tick,
+ * re-entering this branch and returning early — a runaway re-pick.
  *
  * Pipeline tasks deliberately bypass the inFlight/3-strike machinery the single-
  * spawn path uses — the run's own state table + the resume scan handle
@@ -484,23 +575,49 @@ function haltTask(
  */
 async function handlePipelineInTick(
   task: ParsedTask,
-): Promise<{ status: PipelineStatus; markComplete: boolean }> {
+  alreadyAdvanced: Set<string>,
+): Promise<{ status: PipelineStatus; markComplete: boolean; failed: boolean }> {
   const isStanding = task.slot == null && task.everyStepSlots == null;
   const existing = getRunByTaskId(task.id);
 
   if (existing && isTerminal(existing.status)) {
     // A prior tick (or the resume scan) already finished this run. Reconcile the
-    // queue: a delivered run still sitting as `[ ]` in Active gets marked done.
-    return { status: existing.status, markComplete: existing.status === 'done' && isStanding && !task.checked };
+    // queue: ANY terminal run still sitting as `[ ]` in Active gets marked so the
+    // picker stops re-selecting it. `done` → clean; `failed`/`aborted` → [FAILED].
+    return reconcileTerminal(existing.status, isStanding, task.checked);
   }
   if (existing && isAwaiting(existing.status) && !existing.operator_decision) {
     // Still waiting on the operator. Don't advance; don't mark.
-    return { status: existing.status, markComplete: false };
+    return { status: existing.status, markComplete: false, failed: false };
+  }
+  if (existing && alreadyAdvanced.has(task.id)) {
+    // The resume scan already advanced this run earlier in THIS tick. Advancing
+    // it again here would run the next phase's coders in the same tick (the
+    // resume scan ran phase-0, this would run phase-1). Reconcile only — a run
+    // that reached a terminal status in the resume scan still gets its standing
+    // task marked; a non-terminal run resumes its next segment on the next tick.
+    if (isTerminal(existing.status)) return reconcileTerminal(existing.status, isStanding, task.checked);
+    return { status: existing.status, markComplete: false, failed: false };
   }
 
   const run = existing ?? createPipelineRun(task);
   const final = await advancePipeline(run);
-  return { status: final.status, markComplete: final.status === 'done' && isStanding };
+  if (isTerminal(final.status)) return reconcileTerminal(final.status, isStanding, false);
+  return { status: final.status, markComplete: false, failed: false };
+}
+
+/**
+ * Decide how a terminal pipeline run reconciles its standing queue task. `done`
+ * marks it complete cleanly; `failed`/`aborted` mark it complete with the
+ * `[FAILED]` flag so the picker drops it (its `baseFilter` excludes `[FAILED]`).
+ */
+function reconcileTerminal(
+  status: PipelineStatus,
+  isStanding: boolean,
+  alreadyChecked: boolean,
+): { status: PipelineStatus; markComplete: boolean; failed: boolean } {
+  const shouldMark = isStanding && !alreadyChecked;
+  return { status, markComplete: shouldMark, failed: status !== 'done' };
 }
 
 async function maybeIdleOrStaleAlert(): Promise<void> {
@@ -615,10 +732,17 @@ async function main(): Promise<void> {
       pipelineDecision: (p) => {
         const runId = String(p.runId ?? '');
         if (!runId) throw new Error('pipeline_decision missing runId');
-        submitDecision(runId, p.decision as DecisionKind, {
+        // submitDecision NEVER throws — it returns { ok: false, message } for an
+        // invalid verb, a verb illegal at the current gate, a run not at a gate,
+        // or a revise/fix with no note. Discarding the result lets drainPendingActions
+        // mark the action 'applied' even though nothing was recorded, so a stale or
+        // verb-drifted desktop decision silently vanishes. Throw on rejection so the
+        // action is marked failed with the validator's message (control.action.failed).
+        const res = submitDecision(runId, p.decision as DecisionKind, {
           note: p.note ? String(p.note) : undefined,
           source: 'control',
         });
+        if (!res.ok) throw new Error(res.message);
         return `pipeline ${String(p.decision)} on ${runId}`;
       },
     },
@@ -648,16 +772,17 @@ async function main(): Promise<void> {
   // Pipeline tick priority 1: resume any run parked at a gate whose operator
   // decision arrived since the last tick. Runs that reach `done` here are
   // reconciled in the queue loop below — their standing task is still picked,
-  // sees a terminal run, and gets marked complete. Dormant in the step-1
-  // skeleton (gates auto-approve inline, so no run persists awaiting across
-  // ticks); wired now so step-2 real gates resume for free.
+  // sees a terminal run, and gets marked complete. A throw in any single run is
+  // driven terminal (see resumeDecidedRunsInTick) rather than swallowed, so a
+  // scheduled pipeline task can't re-run a doomed segment every tick.
+  let resumedTaskIds = new Set<string>();
   try {
-    const resumed = await resumeDecidedRuns();
-    if (resumed.length > 0) {
-      console.log(`[nyx] pipeline: resumed ${resumed.length} decided run(s)`);
+    resumedTaskIds = await resumeDecidedRunsInTick();
+    if (resumedTaskIds.size > 0) {
+      console.log(`[nyx] pipeline: resumed ${resumedTaskIds.size} decided run(s)`);
     }
   } catch (err) {
-    console.error('[nyx] resumeDecidedRuns threw (unexpected):', (err as Error).message);
+    console.error('[nyx] resumeDecidedRunsInTick threw (unexpected):', (err as Error).message);
   }
 
   // Within-tick state. Both sets are populated as we go.
@@ -706,24 +831,30 @@ async function main(): Promise<void> {
       firedInSlot.add(next.id);
       producedWork = true;
       try {
-        const result = await handlePipelineInTick(next);
+        const result = await handlePipelineInTick(next, resumedTaskIds);
         if (result.markComplete) {
           const run = getRunByTaskId(next.id);
           const durationMs = run ? Date.now() - run.created_at : 0;
-          markTaskCompleted(config.queuePath, next.id, { durationMs });
+          // A failed/aborted terminal run is marked with the [FAILED] flag so the
+          // picker (baseFilter excludes [FAILED]) stops re-selecting it every tick;
+          // a done run is marked cleanly.
+          markTaskCompleted(config.queuePath, next.id, { durationMs, ...(result.failed ? { failed: true } : {}) });
           // Keep task.completed in the audit chain so stale-alert + slot-window
-          // bookkeeping treat a delivered pipeline like any completed task.
-          audit('task.completed', 'dispatcher', { taskId: next.id, durationMs, type: 'pipeline' });
-          console.log(`[nyx] pipeline ${next.id} delivered (${result.status})`);
+          // bookkeeping treat a delivered pipeline like any completed task. A
+          // failed/aborted run also emits a task.failed row so the operator and
+          // stale-alert bookkeeping see the terminal failure.
+          if (result.failed) {
+            audit('task.failed', 'dispatcher', { taskId: next.id, stage: 'pipeline', failure_log: `pipeline run terminated: ${result.status}` });
+          } else {
+            audit('task.completed', 'dispatcher', { taskId: next.id, durationMs, type: 'pipeline' });
+          }
+          console.log(`[nyx] pipeline ${next.id} reconciled (${result.status})`);
         } else {
           console.log(`[nyx] pipeline ${next.id} advanced to ${result.status}`);
         }
       } catch (err) {
         const e = err as Error;
-        audit('pipeline.failed', 'pipeline', { taskId: next.id, error: e.stack ?? e.message });
-        // Drive the run terminal so a thrown stage doesn't leave it at a
-        // non-terminal status and retry the same doomed work every tick.
-        failPipelineRun(next.id, e.message);
+        await failPipelineWithNotice(next.id, e);
         console.error(`[nyx] pipeline ${next.id} threw:`, e.stack ?? e.message);
       }
       chainDepth++;

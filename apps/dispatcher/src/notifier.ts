@@ -6,6 +6,51 @@ import { emitHook } from './plugins/hooks.js';
 let cached: WebClient | null = null;
 
 /**
+ * Names of env vars whose values are secrets and may be injected into spawned
+ * subprocesses (BWS_ACCESS_TOKEN + per-project Bitwarden secrets, the Anthropic
+ * key, git/Slack tokens). When any of these has a value present in process.env,
+ * that exact value is scrubbed from outbound notifier text. Match is a prefix
+ * test so e.g. SLACK_BOT_TOKEN / SLACK_WEBHOOK_URL are covered by `SLACK_`.
+ */
+const SECRET_ENV_PREFIXES = [
+  'BWS_ACCESS_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'MARKETING_OS_ANTHROPIC_KEY',
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'SUPABASE_DB_URL',
+  'SLACK_',
+  'OPENAI_API_KEY',
+];
+
+/**
+ * Scrub secret values out of any text headed for Slack or an audit log. Two
+ * passes: (1) exact-match the live values of every injected secret env var, so a
+ * subprocess that echoes its env (set -x, a stack trace, a tool dumping
+ * process.env) can't leak them; (2) pattern-match well-known secret token
+ * shapes (sk-ant-…, ghp_…, xoxb-…) as a backstop for secrets not in this
+ * process's env. Always call this before slicing/DM/audit of subprocess output.
+ */
+export function redactSecrets(text: string): string {
+  if (!text) return text;
+  let out = text;
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!value || value.length < 8) continue;
+    const isSecret = SECRET_ENV_PREFIXES.some((p) =>
+      p.endsWith('_') ? name.startsWith(p) : name === p,
+    );
+    if (!isSecret) continue;
+    out = out.split(value).join('[REDACTED]');
+  }
+  out = out
+    .replace(/sk-ant-[A-Za-z0-9_-]{10,}/g, '[REDACTED]')
+    .replace(/\bgh[posru]_[A-Za-z0-9]{20,}/g, '[REDACTED]')
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, '[REDACTED]');
+  return out;
+}
+
+/**
  * Master switch. Production leaves it on. Tests call `_setNotificationsEnabled(false)`
  * so exercising notify-firing code paths (e.g. the pipeline orchestrator's gate
  * pings) never hits the real Slack API — otherwise `pnpm test` DMs the operator.
@@ -68,12 +113,12 @@ export async function taskCompleted(taskId: string, durationMin: number, gateSum
 }
 
 export async function taskFailed(taskId: string, stage: string, snippet: string): Promise<void> {
-  const log = snippet.slice(0, 500);
+  const log = redactSecrets(snippet).slice(0, 500);
   await dm(`❌ ${taskId} failed at ${stage}. Failure: ${log}\nWorktree preserved.`);
 }
 
 export async function taskAbandoned(taskId: string, lastFailure: string): Promise<void> {
-  await dm(`⛔ ${taskId} abandoned after 3 failures. Last failure: ${lastFailure.slice(0, 500)}`);
+  await dm(`⛔ ${taskId} abandoned after 3 failures. Last failure: ${redactSecrets(lastFailure).slice(0, 500)}`);
 }
 
 /**
@@ -87,13 +132,13 @@ export async function taskHalted(
 ): Promise<void> {
   const head = pattern ? `🛑 *${taskId}* halted (${pattern})` : `🛑 *${taskId}* halted for review`;
   const tail = `\n\nTo unblock:\n  \`nyx resume ${taskId}\``;
-  await dm(`${head}\n\n${report.slice(0, 1500)}${tail}`);
+  await dm(`${head}\n\n${redactSecrets(report).slice(0, 1500)}${tail}`);
 }
 
 export async function taskAmbiguityEscalated(taskId: string, report: string): Promise<void> {
   const head = `❓ *${taskId}* needs a design decision before it can proceed`;
   const tail = `\n\nReply in the decision context, then:\n  \`nyx resume ${taskId}\``;
-  await dm(`${head}\n\n${report.slice(0, 1500)}${tail}`);
+  await dm(`${head}\n\n${redactSecrets(report).slice(0, 1500)}${tail}`);
 }
 
 export async function prCreated(taskId: string, prUrl: string): Promise<void> {
@@ -169,7 +214,8 @@ export async function pipelineAwaitingGate(
 }
 
 export async function claudeCrashed(taskId: string, exitCode: number, stderr: string): Promise<void> {
-  const tail = stderr.trim() ? stderr.trim().slice(-500) : 'empty';
+  const scrubbed = redactSecrets(stderr).trim();
+  const tail = scrubbed ? scrubbed.slice(-500) : 'empty';
   await dm(`⚠️ Claude exited code ${exitCode} on ${taskId}. Stderr: ${tail}`);
 }
 

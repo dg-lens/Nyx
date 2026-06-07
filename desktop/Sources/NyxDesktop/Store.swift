@@ -6,6 +6,7 @@ final class Store: ObservableObject {
     @Published var state = NyxState()
     @Published var systemName = Layout.systemName
     @Published var lastDispatch = ""
+    @Published var lastDecision = ""
     @Published var ticking = false
     @Published var nextTickCountdown = "—"
 
@@ -35,19 +36,36 @@ final class Store: ObservableObject {
 
     func refresh() {
         systemName = Layout.systemName
-        var s = NyxState()
-        s.gates = Database.loadGates()
-        s.queue = Database.loadPendingQueue() + QueueFile.load()
-        s.audit = Database.loadAudit()
-        if let t = Database.lastTick() { s.lastTick = t; s.healthy = true }
-        state = s
+        // Database.* and QueueFile.load() open the WAL SQLite DB, step rows, and read
+        // brief files from disk — synchronous I/O that under dispatcher-tick contention
+        // can stall. Run it off the main actor and hand the value-type result back for
+        // assignment so the UI thread never blocks on file/DB I/O.
+        Task.detached(priority: .utility) {
+            var s = NyxState()
+            s.gates = Database.loadGates()
+            s.queue = Database.loadPendingQueue() + QueueFile.load()
+            s.audit = Database.loadAudit()
+            if let t = Database.lastTick() { s.lastTick = t; s.healthy = true }
+            let result = s
+            await MainActor.run { [weak self] in self?.state = result }
+        }
     }
 
     func decide(_ runId: String, _ decision: String, note: String?) {
         var params = ["runId": runId, "decision": decision]
         if let note, !note.isEmpty { params["note"] = note }
-        Database.enqueueAction("pipeline_decision", params: params)
-        runTick()
+        // The write can fail (SQLITE_BUSY past the busy_timeout while the dispatcher
+        // holds the WAL write lock). Don't pretend success: a dropped decision must
+        // stay visible and retryable. Only fire the tick once the row is actually
+        // recorded; refresh either way so the gate card persists (no operator_decision
+        // row was written, so loadGates() keeps showing it).
+        let ok = Database.enqueueAction("pipeline_decision", params: params)
+        if ok {
+            lastDecision = ""
+            runTick()
+        } else {
+            lastDecision = "Decision not recorded (DB busy). Tap again to retry."
+        }
         refresh()
     }
 

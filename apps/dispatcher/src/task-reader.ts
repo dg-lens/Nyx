@@ -3,7 +3,11 @@ import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { GateStage, Model, ParsedTask, Priority, TaskType } from './types.js';
 import { config } from './config.js';
 
-const TAG_RE = /\[([a-z]+):\s*([^\]]+)\]/g;
+// Matches only the OPENER of a tag: `[name:` plus any leading whitespace.
+// The value is then scanned manually with bracket-depth tracking so a path
+// containing a Next.js dynamic-route segment (`[slug]`, `[[...catchall]]`)
+// is captured whole instead of being truncated at the first inner `]`.
+const TAG_OPEN_RE = /\[([a-z]+):\s*/g;
 const HEADER_ACTIVE = /^##\s+Active Tasks\s*$/i;
 const HEADER_COMPLETED = /^##\s+Completed\s*$/i;
 const TASK_LINE_RE = /^- \[( |x|X)\]\s+([A-Z][A-Z0-9-]+)\s+[—-]\s+(.+?)\s*$/;
@@ -31,6 +35,19 @@ export interface QueueFile {
 /** Slot index for a given Date, in local time. 0 = 00:00, 287 = 23:55. */
 export function slotOf(d: Date = new Date()): number {
   return d.getHours() * SLOTS_PER_HOUR + Math.floor(d.getMinutes() / MINUTES_PER_SLOT);
+}
+
+/**
+ * Monotonic slot index since the Unix epoch, anchored to the local calendar day
+ * so `[every:]` cadences survive midnight wrap and multi-day periods work.
+ * globalSlot = (local days since epoch) * SLOTS_PER_DAY + slotOf(d). Because
+ * SLOTS_PER_DAY divides every hour/minute step, intra-day cadence (`every: 3h`)
+ * is unchanged, while `every: 2d` only matches every other midnight.
+ */
+export function globalSlotOf(d: Date = new Date()): number {
+  const localMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.floor(localMidnight.getTime() / (SLOTS_PER_DAY * MINUTES_PER_SLOT * 60_000));
+  return days * SLOTS_PER_DAY + slotOf(d);
 }
 
 /** Wall-clock "HH:MM" for a slot index. */
@@ -84,9 +101,30 @@ export function parseEveryStep(raw: string): number | null {
 function parseTags(blob: string): Record<string, string> {
   const tags: Record<string, string> = {};
   let m: RegExpExecArray | null;
-  TAG_RE.lastIndex = 0;
-  while ((m = TAG_RE.exec(blob))) {
-    if (m[1] && m[2]) tags[m[1]] = m[2].trim();
+  TAG_OPEN_RE.lastIndex = 0;
+  while ((m = TAG_OPEN_RE.exec(blob))) {
+    const name = m[1];
+    if (!name) continue;
+    // Scan from just past the opener, tracking nested-bracket depth so the
+    // tag only closes on a `]` at depth 0. Inner pairs from dynamic-route
+    // segments (`[slug]`, `[[...catchall]]`) keep the value intact.
+    let depth = 0;
+    let value = '';
+    let i = TAG_OPEN_RE.lastIndex;
+    let closed = false;
+    for (; i < blob.length; i++) {
+      const ch = blob[i];
+      if (ch === '[') depth++;
+      else if (ch === ']') {
+        if (depth === 0) { closed = true; break; }
+        depth--;
+      }
+      value += ch;
+    }
+    if (!closed) continue;
+    if (value.trim()) tags[name] = value.trim();
+    // Resume scanning after the closing `]` so we don't re-enter the value.
+    TAG_OPEN_RE.lastIndex = i + 1;
   }
   return tags;
 }
@@ -151,6 +189,7 @@ export function readQueue(path: string): QueueFile {
 
   let section: 'none' | 'active' | 'completed' = 'none';
   let inHtmlComment = false;
+  let inFence = false;
   const active: ParsedTask[] = [];
   const completed: ParsedTask[] = [];
 
@@ -166,6 +205,11 @@ export function readQueue(path: string): QueueFile {
       continue;
     }
 
+    // A fenced code block (```) may hold example task lines (CLAUDE.md DO/DON'T
+    // blocks). Don't parse those as real tasks — toggle and skip while inside.
+    if (line.trim().startsWith('```')) { inFence = !inFence; continue; }
+    if (inFence) continue;
+
     if (HEADER_ACTIVE.test(line)) { section = 'active'; continue; }
     if (HEADER_COMPLETED.test(line)) { section = 'completed'; continue; }
     if (/^##\s+/.test(line)) { section = 'none'; continue; }
@@ -180,12 +224,24 @@ export function readQueue(path: string): QueueFile {
     const startLine = i;
     const blobParts: string[] = [line];
     let j = i + 1;
+    let bodyInFence = false;
     while (j < lines.length) {
       const next = lines[j] ?? '';
-      if (next.match(TASK_LINE_RE)) break;
-      if (HEADER_ACTIVE.test(next) || HEADER_COMPLETED.test(next) || /^##\s+/.test(next)) break;
+      // Inside a fenced block, example task lines / headers are body content,
+      // not real task boundaries — capture them and only break once the fence
+      // closes. This keeps the parent blob (and its trailing tags) intact.
+      if (next.trim().startsWith('```')) {
+        bodyInFence = !bodyInFence;
+        blobParts.push(next);
+        j++;
+        continue;
+      }
+      if (!bodyInFence) {
+        if (next.match(TASK_LINE_RE)) break;
+        if (HEADER_ACTIVE.test(next) || HEADER_COMPLETED.test(next) || /^##\s+/.test(next)) break;
+      }
       blobParts.push(next);
-      if (next.trim() === '' && j + 1 < lines.length) {
+      if (!bodyInFence && next.trim() === '' && j + 1 < lines.length) {
         const lookahead = lines[j + 1] ?? '';
         if (lookahead.match(TASK_LINE_RE) || /^##\s+/.test(lookahead)) break;
       }
@@ -293,7 +349,8 @@ export interface PickerInput {
 /**
  * Two-phase pick:
  *   1. Slot-bound tasks (explicit `[slot: N]` matching, or `[every: K]` where
- *      `currentSlot % K === 0`). Skipped if already fired in this slot's window
+ *      `globalSlot % K === 0` — globalSlot is the monotonic since-epoch index so
+ *      multi-day cadences hold). Skipped if already fired in this slot's window
  *      or already attempted this tick.
  *   2. If no slot-bound candidates → standing list (no `[slot:]`, no `[every:]`).
  *
@@ -303,6 +360,7 @@ export interface PickerInput {
 export function pickNextTask(q: QueueFile, input: PickerInput = {}): ParsedTask | null {
   const now = input.now ?? new Date();
   const slot = slotOf(now);
+  const globalSlot = globalSlotOf(now);
   const fired = input.firedInSlot ?? new Set<string>();
   const skipped = input.skipThisTick ?? new Set<string>();
 
@@ -320,7 +378,10 @@ export function pickNextTask(q: QueueFile, input: PickerInput = {}): ParsedTask 
 
   const slotMatches = (t: ParsedTask): boolean => {
     if (t.slot != null) return t.slot === slot;
-    if (t.everyStepSlots != null) return slot % t.everyStepSlots === 0;
+    // Cadence is computed against the monotonic global slot, not the within-day
+    // index, so multi-day periods (`every: 2d`) and any non-divisor step measure
+    // a true elapsed gap instead of re-anchoring at every local midnight.
+    if (t.everyStepSlots != null) return globalSlot % t.everyStepSlots === 0;
     return false;
   };
 

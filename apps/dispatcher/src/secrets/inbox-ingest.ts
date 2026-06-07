@@ -68,10 +68,9 @@ function upsertRotation(ev: RotationEvent, fileName: string): { isNew: boolean }
   if (existing) {
     db.prepare(
       `UPDATE secret_rotations
-         SET created_at = ?, rotates_in_days = ?, owner = ?, rotation_url = ?, rotation_steps = ?, notes = ?
+         SET rotates_in_days = ?, owner = ?, rotation_url = ?, rotation_steps = ?, notes = ?
        WHERE id = ?`,
     ).run(
-      Date.now(),
       rotates,
       owner,
       ev.rotation_url ?? null,

@@ -202,7 +202,7 @@ export async function createMachineAccount(
   if (!account.id) throw new Error('createMachineAccount returned no id');
 
   // Step 2: grant project access
-  await fetch(
+  const grantRes = await fetch(
     `${config.bitwardenApiBase}/service-accounts/${account.id}/granted-policies`,
     {
       method: 'PUT',
@@ -210,6 +210,10 @@ export async function createMachineAccount(
       body: JSON.stringify([{ grantedProjectId: projectId, read: true, write: true }]),
     },
   );
+  if (!grantRes.ok) {
+    const detail = await grantRes.text().catch(() => '<unreadable>');
+    throw new Error(`grant project access for ${name} failed: ${grantRes.status} — ${detail.slice(0, 300)}`);
+  }
 
   // Step 3: mint an access token for the machine account
   const tokenRes = await fetch(

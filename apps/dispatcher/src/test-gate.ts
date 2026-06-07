@@ -46,7 +46,12 @@ interface PMContextEmpty {
   ecosystem: 'none';
   cwd: string;
 }
-type PMContext = PMContextJs | PMContextPy | PMContextEmpty;
+interface PMContextError {
+  ecosystem: 'error';
+  cwd: string;
+  error: string;
+}
+type PMContext = PMContextJs | PMContextPy | PMContextEmpty | PMContextError;
 
 function detectPM(cwd: string): PMContext {
   const pkgPath = resolve(cwd, 'package.json');
@@ -55,7 +60,13 @@ function detectPM(cwd: string): PMContext {
   const hasPyproject = existsSync(pyprojectPath);
 
   if (hasPkg) {
-    const pkg: { scripts?: Record<string, string> } = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    let pkg: { scripts?: Record<string, string> };
+    try {
+      pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ecosystem: 'error', cwd, error: `package.json is not valid JSON: ${msg}` };
+    }
     const hasPnpmLock = existsSync(resolve(cwd, 'pnpm-lock.yaml'));
     const hasNpmLock = existsSync(resolve(cwd, 'package-lock.json'));
     const hasYarnLock = existsSync(resolve(cwd, 'yarn.lock'));
@@ -87,10 +98,14 @@ function detectPM(cwd: string): PMContext {
       cwd,
       hasUv: hasUvOnPath(),
       pyprojectText,
-      hasMypyConfig: /\[tool\.mypy\]/.test(pyprojectText) || /mypy/.test(pyprojectText),
+      hasMypyConfig:
+        /\[tool\.mypy(\.|\])/.test(pyprojectText) ||
+        /["']mypy(["'\s=<>~!,;]|$)/m.test(pyprojectText),
       hasPytest:
         /\[tool\.pytest/.test(pyprojectText) || existsSync(resolve(cwd, 'tests')),
-      hasRuff: /\[tool\.ruff\]/.test(pyprojectText) || /ruff/.test(pyprojectText),
+      hasRuff:
+        /\[tool\.ruff(\.|\])/.test(pyprojectText) ||
+        /["']ruff(["'\s=<>~!,;]|$)/m.test(pyprojectText),
     };
   }
 
@@ -207,6 +222,9 @@ function stagesForPy(gates: GateStage[], pm: PMContextPy): BuiltStages {
 }
 
 function stagesFor(gates: GateStage[], pm: PMContext): BuiltStages {
+  if (pm.ecosystem === 'error') {
+    return { stages: [], error: pm.error };
+  }
   if (pm.ecosystem === 'none') {
     if (gates.length > 0) {
       return {
@@ -253,6 +271,16 @@ function runStage(stage: StageDef, cwd: string): { passed: boolean; durationMs: 
   });
   const log = `[$ ${stage.cmd} ${stage.args.join(' ')}]\n${res.stdout ?? ''}\n${res.stderr ?? ''}`.trim();
   const exitCode = res.status ?? -1;
+
+  // A spawn error (most importantly the timeout that SIGTERMs the child and
+  // returns status=null) is an unconditional fail, regardless of any pass
+  // marker in the partial stdout. Without this, judgeTests(-1, partialLog)
+  // can match a "N passed" line printed before the process hung in teardown
+  // and wrongly report the gate as passed.
+  if (res.error || (res.status === null && res.signal != null)) {
+    const reason = res.error ? res.error.message : `killed by signal ${res.signal} (likely gate stage timeout)`;
+    return { passed: false, durationMs: Date.now() - start, log: `${log}\n[spawn error: ${reason}]`.trim() };
+  }
 
   if (stage.name === 'tests' && !stage.strict) {
     const verdict = judgeTests(exitCode, log);

@@ -67,17 +67,20 @@ export function findProjectByName(name: string): ProjectRow | null {
 }
 
 export function findProjectByRepo(repo: string): ProjectRow | null {
-  // SQLite doesn't have great JSON-array searches without json1; use LIKE on the
-  // stored JSON since repo names are quoted and well-bounded.
+  // Exact-membership test against each project's parsed repos array. LIKE on the
+  // raw JSON is unsafe: SQLite treats `_`/`%` (legal in GitHub repo names) as
+  // wildcards with no ESCAPE clause, so a substring/wildcard collision could
+  // resolve a task to the wrong project — and thus inject another project's
+  // Bitwarden token + secrets. Compare in JS to remove that class entirely.
   const db = openSecretsDb();
-  const row = db
-    .prepare(
-      `SELECT * FROM bitwarden_projects
-       WHERE repos_json LIKE '%' || ? || '%'
-       LIMIT 1`,
-    )
-    .get(JSON.stringify(repo)) as Parameters<typeof rowToProject>[0] | undefined;
-  return row ? rowToProject(row) : null;
+  const rows = db
+    .prepare(`SELECT * FROM bitwarden_projects ORDER BY id ASC`)
+    .all() as unknown as Array<Parameters<typeof rowToProject>[0]>;
+  for (const r of rows) {
+    const project = rowToProject(r);
+    if (project.repos.includes(repo)) return project;
+  }
+  return null;
 }
 
 /**

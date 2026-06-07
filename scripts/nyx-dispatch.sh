@@ -12,7 +12,20 @@ LOG_FILE="${LOG_DIR}/dispatch-$(date +%Y-%m-%d).log"
 
 mkdir -p "$LOG_DIR"
 
-if mkdir "$LOCK_DIR" 2>/dev/null; then
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    return 0
+  fi
+  OWNER_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+  if [ -z "$OWNER_PID" ] || ! kill -0 "$OWNER_PID" 2>/dev/null; then
+    echo "[$(date -Iseconds)] stale nyx dispatch lock (owner ${OWNER_PID:-unknown} dead), recovering" >> "$LOG_FILE"
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+if acquire_lock; then
   trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
   echo $$ > "$LOCK_DIR/pid"
 else

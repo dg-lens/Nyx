@@ -159,6 +159,7 @@ function open(): DatabaseSync {
     mkdirSync(dirname(config.dbPath), { recursive: true });
     db = new DatabaseSync(config.dbPath);
     db.exec(`PRAGMA journal_mode = WAL;`);
+    db.exec(`PRAGMA busy_timeout = 5000;`);
   }
   db.exec(`
     CREATE TABLE IF NOT EXISTS system_audit (
@@ -172,6 +173,11 @@ function open(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_system_audit_event ON system_audit(event);
     CREATE INDEX IF NOT EXISTS idx_system_audit_at    ON system_audit(at);
+    CREATE TABLE IF NOT EXISTS system_audit_chainpoint (
+      id        INTEGER PRIMARY KEY CHECK (id = 0),
+      last_id   INTEGER NOT NULL,
+      last_hash TEXT    NOT NULL
+    );
   `);
   insertStmt = db.prepare(
     `INSERT INTO system_audit (at, event, actor, payload, row_hash, prev_hash) VALUES (?, ?, ?, ?, ?, ?)`
@@ -358,25 +364,66 @@ export interface ChainVerification {
 }
 
 /**
- * Walk the audit table from the genesis row forward, recomputing each row's
- * hash. Bails on first mismatch. Used at dispatcher startup as an integrity check.
+ * Walk the audit table forward, recomputing each row's hash and bailing on the
+ * first mismatch. Used at every dispatch tick as an integrity check.
+ *
+ * The audit table is append-only and grows without bound, so re-hashing every
+ * row on every 5-minute tick is O(n) work that scales with history. By default
+ * this verifies incrementally: a `(last_id, last_hash)` checkpoint in
+ * `system_audit_chainpoint` anchors the prev-hash, and only rows newer than the
+ * checkpoint are re-hashed. On success the checkpoint advances to the last row,
+ * so the next tick only touches rows appended since. `totalRows` is still the
+ * full row count, preserving the `dispatch.chain_verified` payload semantics.
+ *
+ * Pass `fromGenesis: true` to force a full walk from the genesis hash and ignore
+ * the checkpoint (the `nyx audit --chain` integrity command). A full walk that
+ * passes also refreshes the checkpoint.
  */
-export function verifyChain(): ChainVerification {
+export function verifyChain(opts: { fromGenesis?: boolean } = {}): ChainVerification {
   const d = open();
-  const rows = d
-    .prepare(`SELECT id, at, event, actor, payload, row_hash, prev_hash FROM system_audit ORDER BY id ASC`)
-    .all() as Array<{ id: number; at: string; event: string; actor: string; payload: string; row_hash: string; prev_hash: string }>;
 
   let expectedPrev = GENESIS_HASH;
+  let startAfterId = 0;
+  let verifiedBefore = 0;
+
+  if (!opts.fromGenesis) {
+    const cp = d
+      .prepare(`SELECT last_id, last_hash FROM system_audit_chainpoint WHERE id = 0`)
+      .get() as { last_id: number; last_hash: string } | undefined;
+    if (cp) {
+      expectedPrev = cp.last_hash;
+      startAfterId = cp.last_id;
+      verifiedBefore = cp.last_id;
+    }
+  }
+
+  const rows = d
+    .prepare(`SELECT id, at, event, actor, payload, row_hash, prev_hash FROM system_audit WHERE id > ? ORDER BY id ASC`)
+    .all(startAfterId) as Array<{ id: number; at: string; event: string; actor: string; payload: string; row_hash: string; prev_hash: string }>;
+
+  const totalRows = verifiedBefore + rows.length;
+
+  let lastId = startAfterId;
+  let lastHash = expectedPrev;
   for (const row of rows) {
     if (row.prev_hash !== expectedPrev) {
-      return { ok: false, totalRows: rows.length, firstBadRowId: row.id, reason: 'prev_hash mismatch' };
+      return { ok: false, totalRows, firstBadRowId: row.id, reason: 'prev_hash mismatch' };
     }
     const recomputed = hashRow(row.at, row.event, row.actor, row.payload, row.prev_hash);
     if (recomputed !== row.row_hash) {
-      return { ok: false, totalRows: rows.length, firstBadRowId: row.id, reason: 'row_hash mismatch' };
+      return { ok: false, totalRows, firstBadRowId: row.id, reason: 'row_hash mismatch' };
     }
     expectedPrev = row.row_hash;
+    lastId = row.id;
+    lastHash = row.row_hash;
   }
-  return { ok: true, totalRows: rows.length };
+
+  if (lastId > startAfterId) {
+    d.prepare(
+      `INSERT INTO system_audit_chainpoint (id, last_id, last_hash) VALUES (0, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET last_id = excluded.last_id, last_hash = excluded.last_hash`,
+    ).run(lastId, lastHash);
+  }
+
+  return { ok: true, totalRows };
 }

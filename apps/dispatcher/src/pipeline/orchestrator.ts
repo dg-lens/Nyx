@@ -126,6 +126,16 @@ export function createPipelineRun(task: ParsedTask): PipelineRun {
 export function failPipelineRun(taskId: string, error: string): void {
   const run = getRunByTaskId(taskId);
   if (!run || isTerminal(run.status)) return;
+  // Reclaim the run's /tmp clones, coder/diagnostic worktrees, and PLAINTEXT
+  // per-run secrets file before going terminal — the `failed` sink is the most
+  // common error exit, and without this it leaks disk + operator secrets
+  // indefinitely (only abort/delivery cleaned up before). Best-effort: a cleanup
+  // failure must never block the terminal transition.
+  try {
+    cleanupRunArtifacts(run);
+  } catch {
+    /* swallow — cleanup is best-effort; the terminal transition must still happen */
+  }
   transition(run, 'failed', { error: error.slice(0, 1000), current_stage: 'failed' });
 }
 
@@ -246,6 +256,12 @@ async function stageExecuting(run: PipelineRun, deps: ResolvedDeps): Promise<Pip
 
   audit('pipeline.stage.advanced', 'pipeline', { runId: cur.id, stage: `phase.${k}.done`, held: heldCount(cur) });
 
+  // Catastrophic short-circuits STRAIGHT to the human review gate, BEFORE the
+  // empty-held success branch — a catastrophic redux verdict can land with zero
+  // held tasks (the breakage is a cross-task hole, not a held branch), and
+  // advancing/shipping it would silently deliver a broken integration.
+  if (findingsCatastrophic(cur)) return escalateToReview(cur, 'catastrophic');
+
   if (heldCount(cur) === 0) {
     if (k + 1 < phases.length) {
       // Advance + YIELD: stay `executing`, reset the per-phase round counter.
@@ -253,7 +269,8 @@ async function stageExecuting(run: PipelineRun, deps: ResolvedDeps): Promise<Pip
     }
     return transition(cur, 'shipping', { current_stage: 'shipping' });
   }
-  return escalateToReview(cur, findingsCatastrophic(cur) ? 'catastrophic' : 'unresolved');
+  // Catastrophic is handled above; reaching here means held > 0 and recoverable.
+  return escalateToReview(cur, 'unresolved');
 }
 
 /** Park at the review gate with a brief + Slack ping. */
@@ -314,8 +331,17 @@ async function stageShipping(run: PipelineRun, deps: ResolvedDeps): Promise<Pipe
 
 /** Delivery (⑨) + terminal done. Emits the `pipeline.delivered` marker. */
 async function deliverAndFinish(run: PipelineRun, deps: ResolvedDeps, via?: string): Promise<PipelineRun> {
-  const result = await deps.deliver(run);
-  const done = transition(run, 'done', { operator_decision: null, current_stage: 'done' });
+  // Consume the operator_decision BEFORE the side-effecting deliver. If the run
+  // reached here from a gate (handleReviewDecision: proceed/accept-final) the
+  // decision is still set; clearing it first means a `deps.deliver` throw can't
+  // leave the run re-selectable by `runsAwaitingDecision` (awaiting_* AND
+  // operator_decision IS NOT NULL) for an infinite re-delivery loop. The throw
+  // instead unwinds to resumeDecidedRuns's per-run catch, which drives the run
+  // terminal via failPipelineRun. `deps.deliver` is expected to be idempotent on
+  // retry; this just guarantees the gate can't re-fire it.
+  const cleared = run.operator_decision ? (updateRun(run.id, { operator_decision: null }, now()) ?? run) : run;
+  const result = await deps.deliver(cleared);
+  const done = transition(cleared, 'done', { operator_decision: null, current_stage: 'done' });
   audit('pipeline.delivered', 'pipeline', {
     runId: done.id,
     pr_url: result.pr_url ?? null,
@@ -476,11 +502,29 @@ export async function advancePipeline(run: PipelineRun, deps: AdvanceDeps = {}):
 /**
  * Tick priority 1: advance every run parked at a gate whose decision arrived.
  * Returns the runs after advancement so the caller can reconcile the queue.
+ *
+ * Each run is advanced in its own try/catch: a thrown segment (a doomed
+ * delivery, an ExecuteError, a clone failure) drives THAT run terminal via
+ * `failPipelineRun` and the loop CONTINUES to the next decided run. Without the
+ * per-run isolation a single throw (a) propagated out to the tick-level catch
+ * which only logs — leaving the run non-terminal at e.g. `executing` (decision
+ * already consumed) or `awaiting_review` (decision STILL set → re-picked next
+ * tick → infinite re-delivery loop) — and (b) aborted every sibling decided run
+ * queued behind it for that tick. `failPipelineRun` is the same terminal sink
+ * the queue path uses.
  */
 export async function resumeDecidedRuns(deps: AdvanceDeps = {}): Promise<PipelineRun[]> {
   const out: PipelineRun[] = [];
   for (const run of runsAwaitingDecision()) {
-    out.push(await advancePipeline(run, deps));
+    try {
+      out.push(await advancePipeline(run, deps));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      audit('pipeline.failed', 'pipeline', { runId: run.id, taskId: run.task_id, stage: 'resume', error: message.slice(0, 1000) });
+      failPipelineRun(run.task_id, message);
+      const failed = getRun(run.id);
+      if (failed) out.push(failed);
+    }
   }
   return out;
 }

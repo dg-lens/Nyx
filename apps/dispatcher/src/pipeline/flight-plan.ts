@@ -148,18 +148,33 @@ export function extractJson(raw: string): unknown | null {
   } catch {
     /* fall through to bracket extraction */
   }
-  const firstObj = trimmed.indexOf('{');
-  const firstArr = trimmed.indexOf('[');
-  const start =
-    firstObj === -1 ? firstArr : firstArr === -1 ? firstObj : Math.min(firstObj, firstArr);
-  if (start === -1) return null;
-  const open = trimmed[start];
+  // Try each `{`/`[` candidate in order: a bracket can appear inside prose
+  // (e.g. He returns "the [plan]" as: {"nodes":[…]}) BEFORE the real JSON, so a
+  // single failed candidate must not abort the whole extraction. Scan a balanced
+  // block from each candidate; the first that JSON.parses wins.
+  for (let start = 0; start < trimmed.length; start++) {
+    const open = trimmed[start];
+    if (open !== '{' && open !== '[') continue;
+    const block = balancedBlock(trimmed, start, open);
+    if (block === null) continue;
+    try {
+      return JSON.parse(block);
+    } catch {
+      /* try the next candidate bracket */
+    }
+  }
+  return null;
+}
+
+/** The balanced `{...}`/`[...]` substring starting at `start` (string-aware),
+ * or null if it never closes. */
+function balancedBlock(s: string, start: number, open: '{' | '['): string | null {
   const close = open === '{' ? '}' : ']';
   let depth = 0;
   let inStr = false;
   let esc = false;
-  for (let i = start; i < trimmed.length; i++) {
-    const ch = trimmed[i];
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
     if (inStr) {
       if (esc) esc = false;
       else if (ch === '\\') esc = true;
@@ -170,13 +185,7 @@ export function extractJson(raw: string): unknown | null {
     else if (ch === open) depth++;
     else if (ch === close) {
       depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(trimmed.slice(start, i + 1));
-        } catch {
-          return null;
-        }
-      }
+      if (depth === 0) return s.slice(start, i + 1);
     }
   }
   return null;
@@ -258,8 +267,35 @@ export function parseAlignment(raw: string): Alignment {
 
 // ─── Plan freeze / thaw ───────────────────────────────────────────────────────
 
+/**
+ * Renumber phase values to a dense, contiguous, zero-based sequence so the raw
+ * `phase` number always equals its position in `groupPhases()`'s dense array.
+ * The decomposer is an LLM and `parseDag`/`parseFlightPlanContract` accept ANY
+ * non-negative integer phase (gaps, non-zero base), but the orchestrator walks
+ * `current_phase` as a dense index into `groupPhases()` while `runExecuting`/
+ * `runRedux` filter tasks by the raw `phase` number — the two only agree when
+ * phases are exactly 0,1,2,…. Normalizing at freeze time makes them coincide for
+ * every input. Pure: maps the sorted distinct phase values to 0..n-1 across both
+ * `dag.nodes` and `plans`.
+ */
+function normalizePhases(result: PlanningResult): PlanningResult {
+  const distinct = [
+    ...new Set([
+      ...result.dag.nodes.map((n) => (Number.isInteger(n.phase) && n.phase >= 0 ? n.phase : 0)),
+      ...result.plans.map((p) => (Number.isInteger(p.phase) && p.phase >= 0 ? p.phase : 0)),
+    ]),
+  ].sort((a, b) => a - b);
+  const denseOf = new Map(distinct.map((v, i) => [v, i]));
+  const remap = (phase: number): number => denseOf.get(Number.isInteger(phase) && phase >= 0 ? phase : 0) ?? 0;
+  return {
+    ...result,
+    dag: { nodes: result.dag.nodes.map((n) => ({ ...n, phase: remap(n.phase) })) },
+    plans: result.plans.map((p) => ({ ...p, phase: remap(p.phase) })),
+  };
+}
+
 export function freezePlan(result: PlanningResult): string {
-  return JSON.stringify(result);
+  return JSON.stringify(normalizePhases(result));
 }
 
 export function parsePlanJson(json: string | null): PlanningResult | null {

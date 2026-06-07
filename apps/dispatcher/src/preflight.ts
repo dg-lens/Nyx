@@ -72,6 +72,23 @@ export function runPreflight(task: ParsedTask, workingDir: string): PreflightRes
     }
   }
 
+  // ── Env-var presence ──
+  // Type-agnostic — queries Bitwarden, not the working dir — so it must run
+  // BEFORE the hasCodeProject early return. Assistant/content tasks run in an
+  // empty outputs dir and analysis clones may lack a manifest; declaring
+  // [env: NAME] on any of them must still be verified.
+  if (task.envVars && task.envVars.length > 0) {
+    const envResult = checkEnvVars(task);
+    if (!envResult.passed) {
+      audit('task.preflight.failed', 'preflight', {
+        taskId: task.id,
+        check: 'env-vars',
+        failure_log_excerpt: envResult.failureLog?.slice(0, 500),
+      });
+      return envResult;
+    }
+  }
+
   // Skip code-project checks for tasks without a working code dir
   // (assistant + content + output-only tasks).
   if (!hasCodeProject(workingDir)) {
@@ -87,19 +104,6 @@ export function runPreflight(task: ParsedTask, workingDir: string): PreflightRes
       failure_log_excerpt: installResult.failureLog?.slice(0, 500),
     });
     return installResult;
-  }
-
-  // ── Env-var presence ──
-  if (task.envVars && task.envVars.length > 0) {
-    const envResult = checkEnvVars(task);
-    if (!envResult.passed) {
-      audit('task.preflight.failed', 'preflight', {
-        taskId: task.id,
-        check: 'env-vars',
-        failure_log_excerpt: envResult.failureLog?.slice(0, 500),
-      });
-      return envResult;
-    }
   }
 
   return { passed: true };

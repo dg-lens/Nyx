@@ -95,11 +95,28 @@ final class SettingsStore: ObservableObject {
 
     func saveSettings() {
         let enc = JSONEncoder()
-        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? enc.encode(settings) {
+        guard let managedData = try? enc.encode(settings),
+              let managed = (try? JSONSerialization.jsonObject(with: managedData)) as? [String: Any] else { return }
+        var merged: [String: Any] = {
+            guard let existing = try? Data(contentsOf: Layout.settingsPath),
+                  let obj = (try? JSONSerialization.jsonObject(with: existing)) as? [String: Any] else { return [:] }
+            return obj
+        }()
+        for (k, v) in managed { merged[k] = Self.deepMerge(merged[k], v) }
+        let opts: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
+        if let data = try? JSONSerialization.data(withJSONObject: merged, options: opts) {
             try? data.write(to: Layout.settingsPath)
             flash("Saved settings.json")
         }
+    }
+
+    // Overlay `new` onto `old`, preserving keys present in `old` but absent from
+    // `new` (forward-compat with settings.json fields the desktop struct omits).
+    private static func deepMerge(_ old: Any?, _ new: Any) -> Any {
+        guard let oldDict = old as? [String: Any], let newDict = new as? [String: Any] else { return new }
+        var result = oldDict
+        for (k, v) in newDict { result[k] = deepMerge(result[k], v) }
+        return result
     }
 
     // MARK: .env
@@ -133,6 +150,7 @@ final class SettingsStore: ObservableObject {
         }
         for (k, v) in remaining where !v.isEmpty { lines.append("\(k)=\(v)") }
         try? lines.joined(separator: "\n").write(to: Layout.envPath, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Layout.envPath.path)
         for (k, v) in updates { env[k] = v }
         flash("Saved .env")
     }
@@ -184,7 +202,7 @@ final class SettingsStore: ObservableObject {
     }
 
     static func looksSecret(_ key: String) -> Bool {
-        return key.range(of: "TOKEN|KEY|SECRET|PASSWORD|PASS|CRED", options: [.regularExpression, .caseInsensitive]) != nil
+        return key.range(of: "TOKEN|KEY|SECRET|PASSWORD|PASS|CRED|URL|URI|DSN|CONN|WEBHOOK|DATABASE", options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     static func categoryFor(_ key: String) -> String {
@@ -298,6 +316,7 @@ func writeEnvVar(_ key: String, _ value: String) {
     }
     if !done { lines.append("\(key)=\(value)") }
     try? lines.joined(separator: "\n").write(to: Layout.envPath, atomically: true, encoding: .utf8)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Layout.envPath.path)
 }
 
 // Per-run pipeline secret — a custom value scoped to ONE run, separate from the
@@ -306,7 +325,10 @@ func writeEnvVar(_ key: String, _ value: String) {
 func writeRunSecret(_ runId: String, _ key: String, _ value: String) {
     guard !value.isEmpty else { return }
     let path = Layout.runSecretsPath(runId)
-    try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let dir = path.deletingLastPathComponent()
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                             attributes: [.posixPermissions: 0o700])
+    try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
     var lines = (try? String(contentsOf: path, encoding: .utf8))?.components(separatedBy: .newlines) ?? []
     var done = false
     for i in lines.indices {
@@ -320,6 +342,7 @@ func writeRunSecret(_ runId: String, _ key: String, _ value: String) {
     }
     if !done { lines.append("\(key)=\(value)") }
     try? lines.joined(separator: "\n").write(to: path, atomically: true, encoding: .utf8)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
 }
 
 // Operator gate Y/N answers for a run (threaded into the coders' context).

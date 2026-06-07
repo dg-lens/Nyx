@@ -265,8 +265,15 @@ export async function defaultRunCoder(ctx: CoderContext): Promise<CoderResult> {
   gitTry(`git add -A`, wtPath);
   const dirty = gitTry(`git status --porcelain`, wtPath);
   if (dirty && dirty.length > 0) {
+    // task_id + description are LLM-generated free text; quote the message with
+    // JSON.stringify (the canonical safe pattern — git-ops.ts commitAll) so a
+    // literal `"`, backtick, or `$(...)` can't corrupt or inject into the shell
+    // command. Escape author name/email too.
+    const name = config.gitAuthorName.replace(/"/g, '\\"');
+    const email = config.gitAuthorEmail.replace(/"/g, '\\"');
+    const message = `pipeline ${ctx.plan.task_id}: ${ctx.plan.description.slice(0, 60)}`;
     gitTry(
-      `git -c user.name="${config.gitAuthorName.replace(/"/g, '\\"')}" -c user.email="${config.gitAuthorEmail}" commit -m "pipeline ${ctx.plan.task_id}: ${ctx.plan.description.slice(0, 60)}"`,
+      `git -c user.name="${name}" -c user.email="${email}" commit -m ${JSON.stringify(message)}`,
       wtPath,
     );
   }

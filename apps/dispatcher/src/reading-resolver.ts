@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { config } from './config.js';
 
 export interface ReadingReference {
   type: 'T1' | 'T2' | 'T3' | 'T4' | 'decision' | 'playbook';
@@ -70,36 +71,70 @@ function resolveFilePath(ref: ReadingReference): string | null {
       return expandPath(ref.path);
     case 'T4':
       if (!ref.slug) return null;
-      return resolve(home, 'Nyx', 'diagnostic-memory', `${ref.slug}.md`);
+      return resolve(config.dataDir, 'diagnostic-memory', `${ref.slug}.md`);
     case 'decision':
       if (!ref.slug) return null;
-      return resolve(home, 'Nyx', 'decisions', `${ref.slug}.md`);
+      return resolve(config.dataDir, 'decisions', `${ref.slug}.md`);
     case 'playbook':
       if (!ref.slug) return null;
-      return resolve(home, 'Nyx', 'playbooks', `${ref.slug}.md`);
+      return resolve(config.dataDir, 'playbooks', `${ref.slug}.md`);
     default:
       return null;
   }
 }
 
-function extractSection(content: string, section: string): string | null {
-  const lines = content.split('\n');
-  const needle = section.toLowerCase().trim();
-  let headingLevel = 0;
-  let startIdx = -1;
+interface HeadingInfo {
+  idx: number;
+  level: number;
+  text: string;
+  number: string | null;
+}
 
+function parseHeadings(lines: string[]): HeadingInfo[] {
+  const headings: HeadingInfo[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
     const m = line.match(/^(#{1,6})\s+(.+)$/);
     if (!m) continue;
-    const text = m[2]?.toLowerCase() ?? '';
-    if (text.includes(needle) || text.includes(`§${needle}`)) {
-      headingLevel = m[1]?.length ?? 0;
-      startIdx = i;
-      break;
-    }
+    const level = m[1]?.length ?? 0;
+    const text = (m[2] ?? '').toLowerCase().trim();
+    const numMatch = text.match(/^§?\s*(\d+(?:\.\d+)*)\b/);
+    headings.push({ idx: i, level, text, number: numMatch ? (numMatch[1] ?? null) : null });
+  }
+  return headings;
+}
+
+function headingMatches(h: HeadingInfo, needle: string): boolean {
+  const numNeedle = needle.replace(/^§\s*/, '').trim();
+  if (/^\d+(?:\.\d+)*$/.test(numNeedle)) {
+    return h.number === numNeedle;
+  }
+  const stripped = h.text.replace(/^§?\s*\d+(?:\.\d+)*\s*:?\s*/, '').trim();
+  return stripped === needle || h.text === needle;
+}
+
+function extractSection(content: string, section: string): string | null {
+  const lines = content.split('\n');
+  const needle = section.toLowerCase().trim();
+  const headings = parseHeadings(lines);
+
+  let exact = headings.filter(h => headingMatches(h, needle));
+  if (exact.length === 0) {
+    const stripNeedle = needle.replace(/^§\s*/, '').trim();
+    exact = headings.filter(h => {
+      const stripped = h.text.replace(/^§?\s*\d+(?:\.\d+)*\s*:?\s*/, '').trim();
+      return stripped.startsWith(stripNeedle) || h.text.startsWith(needle);
+    });
+  }
+  if (exact.length === 0) return null;
+  if (exact.length > 1) {
+    throw new Error(
+      `[reading:] ambiguous section reference "${section}" — matched ${exact.length} headings; tighten the reference to an exact section number or full heading text`,
+    );
   }
 
+  const startIdx = exact[0]?.idx ?? -1;
+  const headingLevel = exact[0]?.level ?? 0;
   if (startIdx === -1) return null;
 
   const result: string[] = [lines[startIdx] ?? ''];

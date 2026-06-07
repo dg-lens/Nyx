@@ -35,6 +35,27 @@ export interface PrevalidateResult {
 }
 
 /**
+ * Detect a path that the tag parser (TAG_RE in task-reader.ts) truncated at an
+ * inner `]`. TAG_RE captures `[expects: ...]` with `[^\]]+`, so any value
+ * containing a Next.js dynamic-route segment (`[slug]`, `[id]`, `[[...x]]`)
+ * is cut at the first inner `]` — `src/app/blog/[slug]/page.tsx` arrives here
+ * as `src/app/blog/[slug`. The reliable signature of that truncation is an
+ * unbalanced `[` (more `[` than `]`). Such a path can never name a real file,
+ * so it must be flagged rather than silently passing prevalidation.
+ *
+ * Root-cause fix belongs in the parser (brace-balanced / quoted delimiter);
+ * this is the stopgap that prevents a false PASS until that lands.
+ */
+function hasUnbalancedBracket(p: string): boolean {
+  let open = 0;
+  for (const ch of p) {
+    if (ch === '[') open++;
+    else if (ch === ']') open--;
+  }
+  return open !== 0;
+}
+
+/**
  * Compute a smart suggestion for a missing-parent path by checking common
  * wrong-prefix patterns against what does exist in the working dir.
  */
@@ -91,6 +112,22 @@ export function prevalidateExpects(task: ParsedTask, workingDir: string): Preval
 
   const missing: PrevalidateResult['missingParents'] = [];
   for (const p of task.expects) {
+    // A path with an unbalanced `[` was truncated by TAG_RE at an inner `]`
+    // (Next.js dynamic-route segment). It can never name a real file; flag it
+    // before segment checks, which would otherwise PASS on the surviving prefix.
+    if (hasUnbalancedBracket(p)) {
+      missing.push({
+        expectsPath: p,
+        parentDir: p,
+        suggestion:
+          'this path was truncated at an inner "]" by the [expects:] tag parser ' +
+          '(a Next.js dynamic-route segment like [slug] or [id]). Declare the parent ' +
+          'directory instead of the bracketed leaf path, or omit dynamic-route files ' +
+          'from [expects:] and rely on the gate + content-quality check.',
+      });
+      continue;
+    }
+
     const segments = p.split('/').filter((s) => s.length > 0);
     if (segments.length <= 1) continue; // file at repo root — always valid
 

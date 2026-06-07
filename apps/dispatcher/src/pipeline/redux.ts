@@ -274,12 +274,28 @@ function parseP1(raw: string, plan: FlightPlanContract): P1Finding {
 }
 
 function parseP2(raw: string, plans: FlightPlanContract[]): P2Result {
-  const j = (extractJson(raw) as Record<string, unknown> | null) ?? {};
+  const parsed = extractJson(raw) as Record<string, unknown> | null;
+  // P2 is the FINAL arbiter. If it returned no usable JSON (timed out, crashed,
+  // or emitted prose only), that is "arbiter UNAVAILABLE" — NOT "no objection."
+  // Defaulting an absent arbiter to fits_whole=true silently merges
+  // semantically-broken cross-task integration. Instead HOLD every task so the
+  // phase stays held → diagnostics/review gate, never an auto-merge on a verdict
+  // that was never rendered.
+  if (parsed === null) {
+    return {
+      system_findings: [{ detail: 'P2 arbiter returned no usable verdict (timeout/crash/no JSON) — holding all tasks pending review.', involved: plans.map((p) => p.task_id) }],
+      per_task: plans.map((p): P2PerTask => ({ task_id: p.task_id, fits_whole: false, reason: 'P2 arbiter unavailable — held, not approved' })),
+      remediation: [],
+      catastrophic: false,
+      catastrophic_reason: '',
+    };
+  }
+  const j = parsed;
   const arr = (v: unknown): Array<Record<string, unknown>> => (Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object') : []);
   const str = (v: unknown): string => (typeof v === 'string' ? v : '');
   const sarr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
   const perTask = arr(j.per_task).map((t): P2PerTask => ({ task_id: str(t.task_id), fits_whole: t.fits_whole === true, reason: str(t.reason) }));
-  // Any plan the judge didn't mention defaults to fits_whole=true (no objection).
+  // The judge DID render a verdict: a plan it didn't single out is "no objection."
   const named = new Set(perTask.map((t) => t.task_id));
   for (const p of plans) if (!named.has(p.task_id)) perTask.push({ task_id: p.task_id, fits_whole: true, reason: 'no objection from P2' });
   return {

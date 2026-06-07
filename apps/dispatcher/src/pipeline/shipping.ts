@@ -136,13 +136,21 @@ export function interpretSmoke(stdout: string, dirty: string): SmokeResult {
  * landed AND didn't stray — this stops a non-compliant diagnostic from being
  * re-merged blindly (the "R1 made it worse" oscillation).
  */
+function normalizeRepoPath(p: string): string {
+  return p
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
+}
+
 export function classifyDiagnosticFix(
   changed: string[],
   allowedFiles: string[],
 ): { landed: boolean; strayed: string[] } {
   const landed = changed.length > 0;
-  const allowed = new Set(allowedFiles.filter(Boolean));
-  const strayed = allowed.size > 0 ? changed.filter((f) => !allowed.has(f)) : [];
+  const allowed = new Set(allowedFiles.filter(Boolean).map(normalizeRepoPath));
+  const strayed = allowed.size > 0 ? changed.filter((f) => !allowed.has(normalizeRepoPath(f))) : [];
   return { landed, strayed };
 }
 
@@ -199,7 +207,8 @@ export function buildReviewBrief(run: PipelineRun, reason: ShipReason, smoke: Sm
   L.push(`**${reviewRecommendation(run, reason, smoke)}**`);
   L.push('');
   L.push('```');
-  L.push(`nyx pipeline proceed ${run.id}        # accept + ship what merged`);
+  L.push(`nyx pipeline accept ${run.id}        # merge held task(s) + CONTINUE the build`);
+  L.push(`nyx pipeline proceed ${run.id}       # ship ONLY what merged + STOP (PR now)`);
   L.push(`nyx pipeline fix ${run.id} --note "..."   # corrective wave`);
   L.push(`nyx pipeline rollback ${run.id}      # replan from scratch`);
   L.push(`nyx pipeline abort ${run.id}`);
@@ -320,7 +329,9 @@ export async function runDiagnosticRound(run: PipelineRun, round: number): Promi
   const rem = parseRemediation(run);
   const plan = parsePlanJson(run.plan_json);
   const planByTask = new Map((plan?.plans ?? []).map((p) => [p.task_id, p]));
-  const coders = run.coder_results ? (JSON.parse(run.coder_results) as Array<{ task_id: string; branch: string }>) : [];
+  const coders = run.coder_results
+    ? (JSON.parse(run.coder_results) as Array<{ task_id: string; branch: string; status: string; commit: string | null; files_changed: string[] }>)
+    : [];
 
   let adopted = false;
   for (const taskId of held) {
@@ -355,7 +366,14 @@ export async function runDiagnosticRound(run: PipelineRun, round: number): Promi
     const allowed = contract ? [...contract.creates.map((c) => c.file), ...contract.modifies] : [];
     const { landed, strayed } = classifyDiagnosticFix(changed, allowed);
     if (landed && strayed.length === 0) {
-      coder.branch = fixBranch; // adopt — redux re-trials the clean fix
+      // adopt — redux re-trials the clean fix. Refresh the WHOLE record, not just
+      // the branch: stale `status`/`commit` from the discarded attempt make
+      // harvestFacts emit empty facts (redux.ts:145) and force a 'failed' P1
+      // verdict (redux.ts:417), so the repaired branch would be held forever.
+      coder.branch = fixBranch;
+      coder.status = 'committed';
+      coder.commit = (gitTry(`git rev-parse "${fixBranch}"`, base) ?? '').trim() || null;
+      coder.files_changed = changed;
       adopted = true;
       audit('pipeline.diagnostic.fix.verified', 'pipeline.shipping', { runId: run.id, round, taskId, files: changed.length });
     } else {

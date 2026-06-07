@@ -363,7 +363,23 @@ export async function runDecompose(
       `decompose produced no usable DAG (exit ${res.exitCode}). stderr: ${res.stderr.slice(-400)}`,
     );
   }
-  return dag;
+  return normalizePhases(dag);
+}
+
+/**
+ * Renumber declared phases to a DENSE, contiguous 0..n sequence (ascending).
+ * The decomposer may assign free-form, non-contiguous phase numbers (e.g.
+ * {0, 5}); downstream, `groupPhases` collapses gaps into a dense array indexed
+ * by the orchestrator via `current_phase`, while execute.ts/redux.ts select the
+ * current phase by the LITERAL declared number. The two only agree when phases
+ * are contiguous from 0 — so we make them contiguous here, at the single source
+ * (the DAG). Flight plans copy `node.phase`, so this propagates everywhere.
+ * Order within a phase and across phases is preserved.
+ */
+function normalizePhases(dag: TaskDag): TaskDag {
+  const sorted = [...new Set(dag.nodes.map((n) => n.phase))].sort((a, b) => a - b);
+  const dense = new Map(sorted.map((p, i) => [p, i]));
+  return { nodes: dag.nodes.map((n) => ({ ...n, phase: dense.get(n.phase) ?? 0 })) };
 }
 
 export async function runFlightPlans(

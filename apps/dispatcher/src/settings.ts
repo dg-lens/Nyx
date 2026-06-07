@@ -35,6 +35,18 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
   plugins: { disabled: [] },
 };
 
+/**
+ * Clamp a hand-edited numeric setting to [min, max], falling back to `fallback`
+ * for non-finite values (NaN, Infinity) or non-numbers. settings.json is a plain
+ * file an operator can edit directly and JSON.parse accepts any number, so a 0 or
+ * negative taskTimeoutMs/concurrentCap would otherwise disable every spawn or
+ * stall dispatch. Bounds mirror the desktop Steppers in SettingsView.swift.
+ */
+function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
 export function loadSettings(dataDir: string): NyxSettings {
   const path = resolve(dataDir, 'settings.json');
   if (!existsSync(path)) return SETTINGS_DEFAULTS;
@@ -42,10 +54,16 @@ export function loadSettings(dataDir: string): NyxSettings {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<NyxSettings>;
     const d = SETTINGS_DEFAULTS;
     return {
-      pipeline: { ...d.pipeline, ...(raw.pipeline ?? {}) },
+      pipeline: {
+        ...d.pipeline,
+        ...(raw.pipeline ?? {}),
+        concurrentCap: clampNumber(raw.pipeline?.concurrentCap, d.pipeline.concurrentCap, 1, 16),
+      },
       dispatcher: {
         ...d.dispatcher,
         ...(raw.dispatcher ?? {}),
+        maxChainDepth: clampNumber(raw.dispatcher?.maxChainDepth, d.dispatcher.maxChainDepth, 1, 10),
+        taskTimeoutMs: clampNumber(raw.dispatcher?.taskTimeoutMs, d.dispatcher.taskTimeoutMs, 60_000, 120 * 60_000),
         defaultModels: { ...d.dispatcher.defaultModels, ...(raw.dispatcher?.defaultModels ?? {}) },
       },
       plugins: { disabled: Array.isArray(raw.plugins?.disabled) ? raw.plugins!.disabled : [] },

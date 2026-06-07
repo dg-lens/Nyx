@@ -13,6 +13,10 @@ enum Database {
         // (SQLITE_CANTOPEN), so every read would return empty after a tick.
         guard sqlite3_open_v2(Layout.dbPath.path, &handle, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_close(handle) }
+        // WAL writers (dispatcher tick) can return SQLITE_BUSY to a concurrent
+        // reader; block-and-retry for up to 3s instead of returning [] and
+        // flickering the UI to empty mid-tick.
+        sqlite3_busy_timeout(handle, 3000)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
@@ -35,12 +39,15 @@ enum Database {
 
     static func loadGates() -> [Gate] {
         let sql = """
-        SELECT id, status, current_stage, prompt, repo, bz_brief_path, plan_json
+        SELECT id, status, current_stage, prompt, repo, bz_brief_path, plan_json, operator_decision
         FROM pipeline_runs
         WHERE status IN ('awaiting_preview', 'awaiting_review')
         ORDER BY updated_at DESC
         """
-        return query(sql).map { r in
+        // A run can sit in awaiting_* with a decision already recorded (up to one
+        // tick / ~5 min) before the tick consumes it. Drop those: re-showing live
+        // action buttons invites a double-submit that overwrites the first answer.
+        return query(sql).filter { ($0["operator_decision"] ?? "").isEmpty }.map { r in
             let gate = (r["status"] == "awaiting_review") ? "review" : "preview"
             var summary = r["prompt"] ?? ""
             let brief = r["bz_brief_path"] ?? ""
@@ -129,7 +136,7 @@ enum Database {
     }
 
     static func lastTick() -> String? {
-        let rows = query("SELECT at FROM system_audit WHERE event LIKE 'tick.%' ORDER BY id DESC LIMIT 1")
+        let rows = query("SELECT at FROM system_audit WHERE event = 'dispatch.tick' ORDER BY id DESC LIMIT 1")
         guard let at = rows.first?["at"], !at.isEmpty else { return nil }
         return shortTime(at)
     }
@@ -158,6 +165,10 @@ enum Database {
         guard sqlite3_open_v2(Layout.dbPath.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK
         else { return false }
         defer { sqlite3_close(handle) }
+        // WAL allows one writer at a time; a tick holding a write transaction
+        // makes a second writer return SQLITE_BUSY. Block-and-retry for up to 3s
+        // so an operator decision isn't silently lost on contention.
+        sqlite3_busy_timeout(handle, 3000)
         sqlite3_exec(handle, """
         CREATE TABLE IF NOT EXISTS pending_actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, params TEXT NOT NULL,

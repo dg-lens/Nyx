@@ -125,7 +125,12 @@ function isWisdomMeta(v: unknown): v is WisdomMeta {
   if (obj['kind'] !== undefined && obj['kind'] !== null && typeof obj['kind'] !== 'string') return false;
   if (obj['summary'] !== undefined && obj['summary'] !== null && typeof obj['summary'] !== 'string') return false;
   if (obj['title'] !== undefined && obj['title'] !== null && typeof obj['title'] !== 'string') return false;
-  if (obj['scope'] !== undefined && obj['scope'] !== null && !Array.isArray(obj['scope'])) return false;
+  if (
+    obj['scope'] !== undefined &&
+    obj['scope'] !== null &&
+    (!Array.isArray(obj['scope']) || !obj['scope'].every((s) => typeof s === 'string'))
+  )
+    return false;
 
   // Graph nodes need a valid kebab-case id; without it we can't write the node.
   if (obj['target'] === 'Graph') {

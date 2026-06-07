@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { config } from './config.js';
@@ -11,8 +11,45 @@ export interface WorkingDir {
   cleanup(): void;
 }
 
+/**
+ * Strip any secret value from a string before it can reach a log sink. execSync
+ * throws an Error whose `.message` is `Command failed: <full argv>\n<stderr>` —
+ * for a clone whose URL embeds `x-access-token:<TOKEN>@github.com`, the token is
+ * in that message verbatim. That message flows into the hash-chained audit DB
+ * and Slack, so it MUST be scrubbed at the throw site. Redacts the configured
+ * GitHub token + the `x-access-token:…@` URL credential form generically.
+ */
+export function redactSecrets(s: string): string {
+  let out = s.replace(/(x-access-token:)[^@/\s]+(@)/g, '$1***$2');
+  if (config.githubToken) out = out.split(config.githubToken).join('***');
+  return out;
+}
+
+// Hard cap on any single git/gh invocation. A stalled fetch/push/PR-create
+// (network hang) would otherwise block the single-threaded dispatcher
+// synchronously and indefinitely. On timeout execSync throws (SIGTERM), which
+// `run`/`tryRun` already turn into a deterministic failure for the audit phase.
+const GIT_TIMEOUT_MS = 120_000;
+
 function run(cmd: string, cwd?: string): string {
-  return execSync(cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }).trim();
+  try {
+    return execSync(cmd, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      timeout: GIT_TIMEOUT_MS,
+      // GIT_TERMINAL_PROMPT=0 + GCM_INTERACTIVE=never: never block on an
+      // interactive credential prompt (empty/expired PAT on a private HTTPS
+      // repo) — fail fast instead of wedging the dispatcher waiting on stdin.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+    }).trim();
+  } catch (err) {
+    const e = err as Error & { stdout?: Buffer | string; stderr?: Buffer | string };
+    const scrubbed = new Error(redactSecrets(e.message ?? String(e)));
+    if (e.stdout != null) (scrubbed as Error & { stdout?: string }).stdout = redactSecrets(e.stdout.toString());
+    if (e.stderr != null) (scrubbed as Error & { stderr?: string }).stderr = redactSecrets(e.stderr.toString());
+    throw scrubbed;
+  }
 }
 
 function tryRun(cmd: string, cwd?: string): string | null {
@@ -45,11 +82,33 @@ function readSentinel(dir: string): Sentinel | null {
   }
 }
 
+/**
+ * Keep the liveness sentinel out of the committed diff. `commitAll` runs
+ * `git add -A`, which would otherwise stage `.nyx-task.pid` into EXTERNAL clones
+ * (whose own `.gitignore` does not list it — only ~/Nyx's does). Add it to the
+ * clone's `.git/info/exclude` so it's ignored regardless of the repo's tracked
+ * `.gitignore`. Guarded: a linked worktree's `.git` is a FILE pointing at the
+ * parent repo's gitdir (whose exclude already lists the sentinel via ~/Nyx),
+ * so only act when `<workDir>/.git` is a real directory (a clone or fresh repo).
+ */
+function excludeSentinelFromCommit(workDir: string): void {
+  try {
+    const gitPath = resolve(workDir, '.git');
+    if (!existsSync(gitPath) || !statSync(gitPath).isDirectory()) return;
+    const excludePath = resolve(gitPath, 'info', 'exclude');
+    mkdirSync(resolve(gitPath, 'info'), { recursive: true });
+    const current = existsSync(excludePath) ? readFileSync(excludePath, 'utf8') : '';
+    if (current.split('\n').some(l => l.trim() === SENTINEL_FILE)) return;
+    appendFileSync(excludePath, `${current.endsWith('\n') || current === '' ? '' : '\n'}${SENTINEL_FILE}\n`, 'utf8');
+  } catch { /* swallow — best-effort; sentinel-leak prevention is non-fatal */ }
+}
+
 export function writeLivenessSentinel(workDir: string, taskId: string): void {
   const sentinel: Sentinel = { pid: process.pid, taskId, startedAt: new Date().toISOString() };
   try {
     writeFileSync(resolve(workDir, SENTINEL_FILE), JSON.stringify(sentinel), 'utf8');
   } catch { /* swallow — missing sentinel is treated as stale, not crash */ }
+  excludeSentinelFromCommit(workDir);
 }
 
 // Test seam: override the worktrees dir so unit tests don't touch the real repo.
@@ -106,7 +165,25 @@ export function createLocalWorktree(taskId: string): WorkingDir {
  * throwaway planning dir deletes itself; the durable project base does not.
  */
 export function createGreenfieldDir(path: string): WorkingDir {
-  if (existsSync(path)) rmSync(path, { recursive: true, force: true });
+  if (existsSync(path)) {
+    // Durable deliverable dirs live under config.projectsDir and are NOT
+    // throwaway. Distinct task_ids can sanitize to the same path (e.g. "My/Proj"
+    // and "My_Proj" both -> "my_proj"), so a second greenfield run could wipe a
+    // prior delivered project — a standalone repo with no remote, unrecoverable.
+    // Refuse to clobber a non-empty durable project dir; the throwaway planning
+    // dir (under cloneRootPrefix) still gets wiped for a clean slate on retry.
+    const resolvedPath = resolve(path);
+    const isDurable = resolvedPath === resolve(config.projectsDir) ||
+      resolvedPath.startsWith(resolve(config.projectsDir) + '/');
+    if (isDurable && readdirSync(path).length > 0) {
+      throw new Error(
+        `createGreenfieldDir refusing to wipe existing non-empty project dir ${resolvedPath}: ` +
+          `another greenfield run's task_id sanitizes to this path. ` +
+          `Use a distinct task_id or remove the prior deliverable manually.`,
+      );
+    }
+    rmSync(path, { recursive: true, force: true });
+  }
   mkdirSync(path, { recursive: true });
   run('git init -b main', path);
   configureGitIdentity(path);
@@ -332,19 +409,60 @@ export function detectMainBranch(): string {
 export interface MergeSnapshot {
   mainBranch: string;
   preMergeSha: string;
+  stashed: boolean;
 }
 
 export function mergeBranchIntoMain(branch: string): MergeSnapshot {
   const mainBranch = detectMainBranch();
+  // The operator may be actively editing config.root (the LIVE ~/Nyx repo).
+  // A self-task worktree branch that touches the same tracked files git would
+  // refuse the `checkout`/`merge` outright ("local changes would be
+  // overwritten"). Stash the operator's uncommitted work (tracked + untracked)
+  // first, restore it after; never auto-commit it.
+  // [T4 2026-05-28-cortana-self-task-merge-local-changes]
+  const dirty = (tryRun('git status --porcelain', config.root) ?? '').trim().length > 0;
+  let stashed = false;
+  if (dirty) {
+    const out = tryRun('git stash push --include-untracked -m "nyx: pre-merge operator stash"', config.root);
+    stashed = out !== null && !/No local changes to save/.test(out);
+  }
   run(`git checkout ${mainBranch}`, config.root);
   const preMergeSha = run('git rev-parse HEAD', config.root);
-  run(`git merge --no-ff ${branch} -m "nyx: merge ${branch}"`, config.root);
-  return { mainBranch, preMergeSha };
+  try {
+    run(`git merge --no-ff ${branch} -m "nyx: merge ${branch}"`, config.root);
+  } catch (err) {
+    // A conflicting merge leaves config.root mid-merge (MERGE_HEAD set, conflict
+    // markers in tracked files). Abort + hard-reset to the pre-merge sha so the
+    // live repo is always clean before the exception propagates, then re-throw
+    // with err.stdout (where git writes the CONFLICT notices) folded into the
+    // message so the audit-classifier's merge-conflict pattern can match it.
+    tryRun('git merge --abort', config.root);
+    tryRun(`git reset --hard ${preMergeSha}`, config.root);
+    // Restore the operator's stashed working tree before propagating — the live
+    // repo must be returned to exactly the state we found it in on failure.
+    if (stashed) tryRun('git stash pop', config.root);
+    const e = err as Error & { stdout?: Buffer | string };
+    const stdout = e.stdout ? e.stdout.toString() : '';
+    throw new Error(stdout ? `${stdout}\n${e.message}` : e.message);
+  }
+  // Merge succeeded — restore the operator's pending edits on top of the merge.
+  if (stashed) tryRun('git stash pop', config.root);
+  return { mainBranch, preMergeSha, stashed };
 }
 
 export function resetMainTo(snapshot: MergeSnapshot): void {
   run(`git checkout ${snapshot.mainBranch}`, config.root);
   run(`git reset --hard ${snapshot.preMergeSha}`, config.root);
+}
+
+/**
+ * Best-effort abort of any in-progress merge in config.root. Safe no-op when no
+ * merge is underway (`git merge --abort` exits non-zero, swallowed by tryRun).
+ * Used by finalizeCodeLocal's rollback path so the live repo is never left in a
+ * conflicted mid-merge state across ticks.
+ */
+export function abortMergeIfAny(cwd: string = config.root): void {
+  tryRun('git merge --abort', cwd);
 }
 
 /**
@@ -391,8 +509,12 @@ export function pushBranchAndOpenPR(
   if (!out) return null;
   const urlMatch = out.match(/https?:\/\/\S+/);
   const prUrl = urlMatch?.[0] ?? out.trim();
-  if (prUrl) {
-    tryRun(`gh pr merge --auto --squash --delete-branch ${JSON.stringify(prUrl)}`, cwd);
+  // Opt-in auto-merge only — matches the pipeline delivery contract
+  // (delivery.ts: "the operator reviews + merges"). Default is OFF; a code
+  // task's PR is terminal-A PR-ready, not auto-shipped. GitHub still waits for
+  // required checks/approvals when auto-merge is enabled on the repo.
+  if (prUrl && config.settings.pipeline.autoMerge) {
+    tryRun(`gh pr merge --auto --squash ${JSON.stringify(prUrl)}`, cwd);
   }
   return prUrl;
 }

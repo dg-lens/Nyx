@@ -182,9 +182,15 @@ function applyAutofix(cwd: string, hint: AutofixHint): void {
       return;
     }
     case 'rebase-against-main': {
-      execSync('git fetch origin', { cwd, stdio: 'pipe' });
+      const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+      execSync('git fetch origin', { cwd, stdio: 'pipe', timeout: 60_000, env: gitEnv });
       // Caller already aborted the merge, so this is a clean re-rebase.
-      execSync('git rebase origin/main || git rebase --abort', { cwd, stdio: 'pipe' });
+      execSync('git rebase origin/main || git rebase --abort', {
+        cwd,
+        stdio: 'pipe',
+        timeout: 60_000,
+        env: gitEnv,
+      });
       return;
     }
     case 'add-mypy-plugin': {
