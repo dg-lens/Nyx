@@ -85,7 +85,7 @@ function open(): DatabaseSync {
     `INSERT INTO flight_plans (task_id, drafted_at, schema_version, plan_json, created_at) VALUES (?, ?, ?, ?, ?)`,
   );
   getLatestFlightPlanStmt = db.prepare(
-    `SELECT plan_json FROM flight_plans WHERE task_id = ? ORDER BY drafted_at DESC LIMIT 1`,
+    `SELECT plan_json FROM flight_plans WHERE task_id = ? ORDER BY id DESC LIMIT 1`,
   );
   insertRunStmt = db.prepare(
     `INSERT INTO composer_runs (id, task_id, ancestor_task_ids_json, model, duration_ms, raw_response, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,

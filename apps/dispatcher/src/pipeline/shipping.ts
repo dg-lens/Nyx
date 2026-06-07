@@ -136,13 +136,21 @@ export function interpretSmoke(stdout: string, dirty: string): SmokeResult {
  * landed AND didn't stray — this stops a non-compliant diagnostic from being
  * re-merged blindly (the "R1 made it worse" oscillation).
  */
+function normalizeRepoPath(p: string): string {
+  return p
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
+}
+
 export function classifyDiagnosticFix(
   changed: string[],
   allowedFiles: string[],
 ): { landed: boolean; strayed: string[] } {
   const landed = changed.length > 0;
-  const allowed = new Set(allowedFiles.filter(Boolean));
-  const strayed = allowed.size > 0 ? changed.filter((f) => !allowed.has(f)) : [];
+  const allowed = new Set(allowedFiles.filter(Boolean).map(normalizeRepoPath));
+  const strayed = allowed.size > 0 ? changed.filter((f) => !allowed.has(normalizeRepoPath(f))) : [];
   return { landed, strayed };
 }
 
@@ -199,7 +207,8 @@ export function buildReviewBrief(run: PipelineRun, reason: ShipReason, smoke: Sm
   L.push(`**${reviewRecommendation(run, reason, smoke)}**`);
   L.push('');
   L.push('```');
-  L.push(`nyx pipeline proceed ${run.id}        # accept + ship what merged`);
+  L.push(`nyx pipeline accept ${run.id}        # merge held task(s) + CONTINUE the build`);
+  L.push(`nyx pipeline proceed ${run.id}       # ship ONLY what merged + STOP (PR now)`);
   L.push(`nyx pipeline fix ${run.id} --note "..."   # corrective wave`);
   L.push(`nyx pipeline rollback ${run.id}      # replan from scratch`);
   L.push(`nyx pipeline abort ${run.id}`);

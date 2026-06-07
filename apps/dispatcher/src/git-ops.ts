@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { config } from './config.js';
@@ -25,9 +25,24 @@ export function redactSecrets(s: string): string {
   return out;
 }
 
+// Hard cap on any single git/gh invocation. A stalled fetch/push/PR-create
+// (network hang) would otherwise block the single-threaded dispatcher
+// synchronously and indefinitely. On timeout execSync throws (SIGTERM), which
+// `run`/`tryRun` already turn into a deterministic failure for the audit phase.
+const GIT_TIMEOUT_MS = 120_000;
+
 function run(cmd: string, cwd?: string): string {
   try {
-    return execSync(cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }).trim();
+    return execSync(cmd, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      timeout: GIT_TIMEOUT_MS,
+      // GIT_TERMINAL_PROMPT=0 + GCM_INTERACTIVE=never: never block on an
+      // interactive credential prompt (empty/expired PAT on a private HTTPS
+      // repo) — fail fast instead of wedging the dispatcher waiting on stdin.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+    }).trim();
   } catch (err) {
     const e = err as Error & { stdout?: Buffer | string; stderr?: Buffer | string };
     const scrubbed = new Error(redactSecrets(e.message ?? String(e)));
@@ -67,11 +82,33 @@ function readSentinel(dir: string): Sentinel | null {
   }
 }
 
+/**
+ * Keep the liveness sentinel out of the committed diff. `commitAll` runs
+ * `git add -A`, which would otherwise stage `.nyx-task.pid` into EXTERNAL clones
+ * (whose own `.gitignore` does not list it — only ~/Nyx's does). Add it to the
+ * clone's `.git/info/exclude` so it's ignored regardless of the repo's tracked
+ * `.gitignore`. Guarded: a linked worktree's `.git` is a FILE pointing at the
+ * parent repo's gitdir (whose exclude already lists the sentinel via ~/Nyx),
+ * so only act when `<workDir>/.git` is a real directory (a clone or fresh repo).
+ */
+function excludeSentinelFromCommit(workDir: string): void {
+  try {
+    const gitPath = resolve(workDir, '.git');
+    if (!existsSync(gitPath) || !statSync(gitPath).isDirectory()) return;
+    const excludePath = resolve(gitPath, 'info', 'exclude');
+    mkdirSync(resolve(gitPath, 'info'), { recursive: true });
+    const current = existsSync(excludePath) ? readFileSync(excludePath, 'utf8') : '';
+    if (current.split('\n').some(l => l.trim() === SENTINEL_FILE)) return;
+    appendFileSync(excludePath, `${current.endsWith('\n') || current === '' ? '' : '\n'}${SENTINEL_FILE}\n`, 'utf8');
+  } catch { /* swallow — best-effort; sentinel-leak prevention is non-fatal */ }
+}
+
 export function writeLivenessSentinel(workDir: string, taskId: string): void {
   const sentinel: Sentinel = { pid: process.pid, taskId, startedAt: new Date().toISOString() };
   try {
     writeFileSync(resolve(workDir, SENTINEL_FILE), JSON.stringify(sentinel), 'utf8');
   } catch { /* swallow — missing sentinel is treated as stale, not crash */ }
+  excludeSentinelFromCommit(workDir);
 }
 
 // Test seam: override the worktrees dir so unit tests don't touch the real repo.
@@ -372,10 +409,23 @@ export function detectMainBranch(): string {
 export interface MergeSnapshot {
   mainBranch: string;
   preMergeSha: string;
+  stashed: boolean;
 }
 
 export function mergeBranchIntoMain(branch: string): MergeSnapshot {
   const mainBranch = detectMainBranch();
+  // The operator may be actively editing config.root (the LIVE ~/Nyx repo).
+  // A self-task worktree branch that touches the same tracked files git would
+  // refuse the `checkout`/`merge` outright ("local changes would be
+  // overwritten"). Stash the operator's uncommitted work (tracked + untracked)
+  // first, restore it after; never auto-commit it.
+  // [T4 2026-05-28-cortana-self-task-merge-local-changes]
+  const dirty = (tryRun('git status --porcelain', config.root) ?? '').trim().length > 0;
+  let stashed = false;
+  if (dirty) {
+    const out = tryRun('git stash push --include-untracked -m "nyx: pre-merge operator stash"', config.root);
+    stashed = out !== null && !/No local changes to save/.test(out);
+  }
   run(`git checkout ${mainBranch}`, config.root);
   const preMergeSha = run('git rev-parse HEAD', config.root);
   try {
@@ -388,11 +438,16 @@ export function mergeBranchIntoMain(branch: string): MergeSnapshot {
     // message so the audit-classifier's merge-conflict pattern can match it.
     tryRun('git merge --abort', config.root);
     tryRun(`git reset --hard ${preMergeSha}`, config.root);
+    // Restore the operator's stashed working tree before propagating — the live
+    // repo must be returned to exactly the state we found it in on failure.
+    if (stashed) tryRun('git stash pop', config.root);
     const e = err as Error & { stdout?: Buffer | string };
     const stdout = e.stdout ? e.stdout.toString() : '';
     throw new Error(stdout ? `${stdout}\n${e.message}` : e.message);
   }
-  return { mainBranch, preMergeSha };
+  // Merge succeeded — restore the operator's pending edits on top of the merge.
+  if (stashed) tryRun('git stash pop', config.root);
+  return { mainBranch, preMergeSha, stashed };
 }
 
 export function resetMainTo(snapshot: MergeSnapshot): void {
@@ -454,8 +509,12 @@ export function pushBranchAndOpenPR(
   if (!out) return null;
   const urlMatch = out.match(/https?:\/\/\S+/);
   const prUrl = urlMatch?.[0] ?? out.trim();
-  if (prUrl) {
-    tryRun(`gh pr merge --auto --squash --delete-branch ${JSON.stringify(prUrl)}`, cwd);
+  // Opt-in auto-merge only — matches the pipeline delivery contract
+  // (delivery.ts: "the operator reviews + merges"). Default is OFF; a code
+  // task's PR is terminal-A PR-ready, not auto-shipped. GitHub still waits for
+  // required checks/approvals when auto-merge is enabled on the repo.
+  if (prUrl && config.settings.pipeline.autoMerge) {
+    tryRun(`gh pr merge --auto --squash ${JSON.stringify(prUrl)}`, cwd);
   }
   return prUrl;
 }

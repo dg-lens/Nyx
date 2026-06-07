@@ -57,10 +57,16 @@ function open(): DatabaseSync {
 }
 
 function rowToAction(r: Record<string, unknown>): PendingAction {
+  let params: Record<string, unknown> = {};
+  try {
+    params = JSON.parse((r.params as string) ?? '{}') as Record<string, unknown>;
+  } catch {
+    params = {};
+  }
   return {
     id: Number(r.id),
     action: r.action as ActionKind,
-    params: JSON.parse((r.params as string) ?? '{}') as Record<string, unknown>,
+    params,
     source: r.source as string,
     status: r.status as ActionStatus,
     result: (r.result as string | null) ?? null,

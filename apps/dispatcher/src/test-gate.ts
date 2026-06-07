@@ -46,7 +46,12 @@ interface PMContextEmpty {
   ecosystem: 'none';
   cwd: string;
 }
-type PMContext = PMContextJs | PMContextPy | PMContextEmpty;
+interface PMContextError {
+  ecosystem: 'error';
+  cwd: string;
+  error: string;
+}
+type PMContext = PMContextJs | PMContextPy | PMContextEmpty | PMContextError;
 
 function detectPM(cwd: string): PMContext {
   const pkgPath = resolve(cwd, 'package.json');
@@ -55,7 +60,13 @@ function detectPM(cwd: string): PMContext {
   const hasPyproject = existsSync(pyprojectPath);
 
   if (hasPkg) {
-    const pkg: { scripts?: Record<string, string> } = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    let pkg: { scripts?: Record<string, string> };
+    try {
+      pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ecosystem: 'error', cwd, error: `package.json is not valid JSON: ${msg}` };
+    }
     const hasPnpmLock = existsSync(resolve(cwd, 'pnpm-lock.yaml'));
     const hasNpmLock = existsSync(resolve(cwd, 'package-lock.json'));
     const hasYarnLock = existsSync(resolve(cwd, 'yarn.lock'));
@@ -87,10 +98,14 @@ function detectPM(cwd: string): PMContext {
       cwd,
       hasUv: hasUvOnPath(),
       pyprojectText,
-      hasMypyConfig: /\[tool\.mypy\]/.test(pyprojectText) || /mypy/.test(pyprojectText),
+      hasMypyConfig:
+        /\[tool\.mypy(\.|\])/.test(pyprojectText) ||
+        /["']mypy(["'\s=<>~!,;]|$)/m.test(pyprojectText),
       hasPytest:
         /\[tool\.pytest/.test(pyprojectText) || existsSync(resolve(cwd, 'tests')),
-      hasRuff: /\[tool\.ruff\]/.test(pyprojectText) || /ruff/.test(pyprojectText),
+      hasRuff:
+        /\[tool\.ruff(\.|\])/.test(pyprojectText) ||
+        /["']ruff(["'\s=<>~!,;]|$)/m.test(pyprojectText),
     };
   }
 
@@ -207,6 +222,9 @@ function stagesForPy(gates: GateStage[], pm: PMContextPy): BuiltStages {
 }
 
 function stagesFor(gates: GateStage[], pm: PMContext): BuiltStages {
+  if (pm.ecosystem === 'error') {
+    return { stages: [], error: pm.error };
+  }
   if (pm.ecosystem === 'none') {
     if (gates.length > 0) {
       return {

@@ -331,8 +331,17 @@ async function stageShipping(run: PipelineRun, deps: ResolvedDeps): Promise<Pipe
 
 /** Delivery (⑨) + terminal done. Emits the `pipeline.delivered` marker. */
 async function deliverAndFinish(run: PipelineRun, deps: ResolvedDeps, via?: string): Promise<PipelineRun> {
-  const result = await deps.deliver(run);
-  const done = transition(run, 'done', { operator_decision: null, current_stage: 'done' });
+  // Consume the operator_decision BEFORE the side-effecting deliver. If the run
+  // reached here from a gate (handleReviewDecision: proceed/accept-final) the
+  // decision is still set; clearing it first means a `deps.deliver` throw can't
+  // leave the run re-selectable by `runsAwaitingDecision` (awaiting_* AND
+  // operator_decision IS NOT NULL) for an infinite re-delivery loop. The throw
+  // instead unwinds to resumeDecidedRuns's per-run catch, which drives the run
+  // terminal via failPipelineRun. `deps.deliver` is expected to be idempotent on
+  // retry; this just guarantees the gate can't re-fire it.
+  const cleared = run.operator_decision ? (updateRun(run.id, { operator_decision: null }, now()) ?? run) : run;
+  const result = await deps.deliver(cleared);
+  const done = transition(cleared, 'done', { operator_decision: null, current_stage: 'done' });
   audit('pipeline.delivered', 'pipeline', {
     runId: done.id,
     pr_url: result.pr_url ?? null,
@@ -493,11 +502,29 @@ export async function advancePipeline(run: PipelineRun, deps: AdvanceDeps = {}):
 /**
  * Tick priority 1: advance every run parked at a gate whose decision arrived.
  * Returns the runs after advancement so the caller can reconcile the queue.
+ *
+ * Each run is advanced in its own try/catch: a thrown segment (a doomed
+ * delivery, an ExecuteError, a clone failure) drives THAT run terminal via
+ * `failPipelineRun` and the loop CONTINUES to the next decided run. Without the
+ * per-run isolation a single throw (a) propagated out to the tick-level catch
+ * which only logs — leaving the run non-terminal at e.g. `executing` (decision
+ * already consumed) or `awaiting_review` (decision STILL set → re-picked next
+ * tick → infinite re-delivery loop) — and (b) aborted every sibling decided run
+ * queued behind it for that tick. `failPipelineRun` is the same terminal sink
+ * the queue path uses.
  */
 export async function resumeDecidedRuns(deps: AdvanceDeps = {}): Promise<PipelineRun[]> {
   const out: PipelineRun[] = [];
   for (const run of runsAwaitingDecision()) {
-    out.push(await advancePipeline(run, deps));
+    try {
+      out.push(await advancePipeline(run, deps));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      audit('pipeline.failed', 'pipeline', { runId: run.id, taskId: run.task_id, stage: 'resume', error: message.slice(0, 1000) });
+      failPipelineRun(run.task_id, message);
+      const failed = getRun(run.id);
+      if (failed) out.push(failed);
+    }
   }
   return out;
 }

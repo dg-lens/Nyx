@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -13,7 +13,7 @@ import {
   getOrgAccessToken,
   loadOrgCreds,
 } from './bitwarden-client.js';
-import { registerProject } from './project-registry.js';
+import { findProjectByName, registerProject } from './project-registry.js';
 
 /**
  * Built-in dispatcher handler for `BW-SPAWN-PROJECT-<NAME>` tasks.
@@ -40,8 +40,20 @@ import { registerProject } from './project-registry.js';
  *   8. Audit bitwarden.project.created (id + machineAccountId, NEVER the token).
  *   9. Slack DM the operator with file location and rotation deadline.
  *
- * Any step's failure produces `task.failed` audit + Slack failure DM and the
- * task stays in Active for the 3-strike retry semantics to take over.
+ * Failure handling is split by where it happens, because a STANDING
+ * `BW-SPAWN-PROJECT-*` task that returns `status: 'failed'` is re-picked on the
+ * next tick:
+ *   - BEFORE the machine account is minted (parse/config/creds/oauth through
+ *     createProject): return `task.failed` — a re-pick safely retries with no
+ *     orphaned state.
+ *   - AFTER createMachineAccount succeeds (token write, registerProject): a
+ *     re-pick would mint ANOTHER service account + live token (Bitwarden does not
+ *     dedup by name). Those steps instead emit `task.halted_for_review` so
+ *     `isTaskHalted` blocks re-dispatch until `nyx resume`.
+ *   - The post-register notify is best-effort: completion is audited first, so a
+ *     dead Slack never re-drives provisioning.
+ * On re-pick, an idempotency short-circuit returns `completed` when the project
+ * is already registered AND its token file is persisted with 0600 perms.
  */
 
 const TASK_ID_PREFIX = 'BW-SPAWN-PROJECT-';
@@ -78,6 +90,40 @@ function expandUser(p: string): string {
   return p;
 }
 
+/** A token file counts as "persisted" only if it exists with strict 0600 perms. */
+function tokenFilePersisted(tokenPath: string): boolean {
+  if (!existsSync(tokenPath)) return false;
+  try {
+    return (statSync(tokenPath).mode & 0o777) === 0o600;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Halt the task for operator review instead of returning a re-pickable
+ * `status: 'failed'`. Used for any failure AFTER a Bitwarden machine account has
+ * been minted: a plain failure leaves a STANDING `BW-SPAWN-PROJECT-*` task `[ ]`
+ * in Active, so the next tick re-runs `handleSpawnProject` from the top and mints
+ * ANOTHER orphaned, fully-privileged service account + live token (Bitwarden does
+ * not dedup by name). Emitting `task.halted_for_review` makes `isTaskHalted` skip
+ * the task until `nyx resume`, so partial state is never re-driven.
+ */
+function haltAfterPartialProvision(
+  taskId: string,
+  startedAt: number,
+  info: { failureLog: string; bwProjectId: string; operatorReport: string },
+): RunOutcome {
+  audit('task.halted_for_review', 'dispatcher', {
+    taskId,
+    pattern: 'bitwarden-partial-provision',
+    operator_report: info.operatorReport,
+    bw_project_id: info.bwProjectId,
+  });
+  void notify.taskHalted(taskId, 'bitwarden-partial-provision', info.operatorReport);
+  return { taskId, status: 'failed', durationMs: Date.now() - startedAt, failureLog: info.failureLog };
+}
+
 export async function handleSpawnProject(task: ParsedTask): Promise<RunOutcome> {
   const startedAt = Date.now();
   audit('task.started', 'dispatcher', { taskId: task.id, route: 'bitwarden.spawn-project' });
@@ -97,6 +143,25 @@ export async function handleSpawnProject(task: ParsedTask): Promise<RunOutcome> 
     audit('task.failed', 'dispatcher', { taskId: task.id, failure_log: failureLog });
     await notify.taskFailed(task.id, 'config', failureLog);
     return { taskId: task.id, status: 'failed', durationMs: Date.now() - startedAt, failureLog };
+  }
+
+  // Idempotency short-circuit: if a project of this name is already registered
+  // AND its token file is persisted with 0600 perms, the prior run fully
+  // provisioned it (registerProject + token write both succeeded). Re-running
+  // the org-admin sequence would mint a duplicate machine account + token, so
+  // treat this as a completed no-op. Catches the case where a prior tick
+  // succeeded through step 4 but failed in the post-register notify/audit step.
+  const existing = findProjectByName(name);
+  if (existing && tokenFilePersisted(existing.token_path)) {
+    audit('task.completed', 'dispatcher', {
+      taskId: task.id,
+      durationMs: Date.now() - startedAt,
+      bw_project_id: existing.bw_project_id,
+      bw_machine_account_id: existing.bw_machine_account_id,
+      token_path: existing.token_path,
+      already_provisioned: true,
+    });
+    return { taskId: task.id, status: 'completed', durationMs: Date.now() - startedAt };
   }
 
   let creds;
@@ -168,9 +233,17 @@ export async function handleSpawnProject(task: ParsedTask): Promise<RunOutcome> 
     chmodSync(tokenPath, 0o600); // belt-and-braces in case umask interfered
   } catch (err) {
     const failureLog = `write token to ${tokenPath} failed: ${(err as Error).message}`;
-    audit('task.failed', 'dispatcher', { taskId: task.id, failure_log: failureLog });
-    await notify.taskFailed(task.id, 'write-token', failureLog);
-    return { taskId: task.id, status: 'failed', durationMs: Date.now() - startedAt, failureLog };
+    return haltAfterPartialProvision(task.id, startedAt, {
+      failureLog,
+      bwProjectId: projectId,
+      operatorReport:
+        `BW-SPAWN-PROJECT halted after minting a machine account but FAILING to persist its token.\n\n` +
+        `${failureLog}\n\n` +
+        `A live access token was created for machine account ${machineAccountId} (project ${projectId}) ` +
+        `but was never written to disk — it is now unrecoverable. Revoke that machine account in the ` +
+        `Bitwarden web vault, fix the write error (e.g. perms/disk on ${tokenPath}), then \`nyx resume ${task.id}\`. ` +
+        `Resuming re-runs the full provision (the orphaned account must be revoked first to avoid accumulation).`,
+    });
   }
 
   // Step 4: register in the project-registry table (audits internally).
@@ -186,16 +259,36 @@ export async function handleSpawnProject(task: ParsedTask): Promise<RunOutcome> 
     });
   } catch (err) {
     const failureLog = `registerProject(${name}) failed: ${(err as Error).message}`;
-    audit('task.failed', 'dispatcher', {
-      taskId: task.id,
-      failure_log: failureLog,
-      bw_project_id: projectId,
+    return haltAfterPartialProvision(task.id, startedAt, {
+      failureLog,
+      bwProjectId: projectId,
+      operatorReport:
+        `BW-SPAWN-PROJECT halted after minting a machine account + writing its token, but FAILING to ` +
+        `register the project in the registry DB.\n\n` +
+        `${failureLog}\n\n` +
+        `Machine account ${machineAccountId} (project ${projectId}) is live and its token is at ${tokenPath}. ` +
+        `Either repair the DB and register the row by hand, or revoke the account and start over, then ` +
+        `\`nyx resume ${task.id}\`. Do NOT just re-pick: the registry row is missing, so a re-run would mint a ` +
+        `duplicate machine account.`,
     });
-    await notify.taskFailed(task.id, 'register-project', failureLog);
-    return { taskId: task.id, status: 'failed', durationMs: Date.now() - startedAt, failureLog };
   }
 
-  // Step 5: tell the operator. NEVER include the access token itself.
+  // Step 5: record completion + tell the operator. Provisioning is fully done at
+  // this point (machine account minted, token persisted, registry row written),
+  // so the task is complete regardless of whether the Slack DM lands. Emitting a
+  // re-pickable failure here would re-drive the org-admin sequence on the next
+  // tick and mint a duplicate machine account just because Slack was down — the
+  // exact leak this handler must avoid. Audit the completion first; the DM is
+  // best-effort. NEVER include the access token itself.
+  audit('task.completed', 'dispatcher', {
+    taskId: task.id,
+    durationMs: Date.now() - startedAt,
+    bw_project_id: projectId,
+    bw_machine_account_id: machineAccountId,
+    token_path: tokenPath,
+    repos,
+  });
+
   try {
     const rotateAt = new Date(Date.now() + config.bitwardenDefaultRotationDays * 86_400_000);
     const reposNote = repos.length ? ` Repos: ${repos.join(', ')}.` : '';
@@ -204,24 +297,8 @@ export async function handleSpawnProject(task: ParsedTask): Promise<RunOutcome> 
         `Token at \`${tokenPath}\` (chmod 600).${reposNote} ` +
         `Rotate by ${rotateAt.toISOString().slice(0, 10)}.`,
     );
-
-    audit('task.completed', 'dispatcher', {
-      taskId: task.id,
-      durationMs: Date.now() - startedAt,
-      bw_project_id: projectId,
-      bw_machine_account_id: machineAccountId,
-      token_path: tokenPath,
-      repos,
-    });
-  } catch (err) {
-    const failureLog = `spawn-project notify/audit (post-register) failed: ${(err as Error).message}`;
-    audit('task.failed', 'dispatcher', {
-      taskId: task.id,
-      failure_log: failureLog,
-      bw_project_id: projectId,
-    });
-    await notify.taskFailed(task.id, 'finalize', failureLog);
-    return { taskId: task.id, status: 'failed', durationMs: Date.now() - startedAt, failureLog };
+  } catch {
+    /* DM is best-effort — provisioning already succeeded and was audited above. */
   }
 
   return {

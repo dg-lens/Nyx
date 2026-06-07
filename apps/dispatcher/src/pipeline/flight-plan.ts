@@ -148,18 +148,33 @@ export function extractJson(raw: string): unknown | null {
   } catch {
     /* fall through to bracket extraction */
   }
-  const firstObj = trimmed.indexOf('{');
-  const firstArr = trimmed.indexOf('[');
-  const start =
-    firstObj === -1 ? firstArr : firstArr === -1 ? firstObj : Math.min(firstObj, firstArr);
-  if (start === -1) return null;
-  const open = trimmed[start];
+  // Try each `{`/`[` candidate in order: a bracket can appear inside prose
+  // (e.g. He returns "the [plan]" as: {"nodes":[…]}) BEFORE the real JSON, so a
+  // single failed candidate must not abort the whole extraction. Scan a balanced
+  // block from each candidate; the first that JSON.parses wins.
+  for (let start = 0; start < trimmed.length; start++) {
+    const open = trimmed[start];
+    if (open !== '{' && open !== '[') continue;
+    const block = balancedBlock(trimmed, start, open);
+    if (block === null) continue;
+    try {
+      return JSON.parse(block);
+    } catch {
+      /* try the next candidate bracket */
+    }
+  }
+  return null;
+}
+
+/** The balanced `{...}`/`[...]` substring starting at `start` (string-aware),
+ * or null if it never closes. */
+function balancedBlock(s: string, start: number, open: '{' | '['): string | null {
   const close = open === '{' ? '}' : ']';
   let depth = 0;
   let inStr = false;
   let esc = false;
-  for (let i = start; i < trimmed.length; i++) {
-    const ch = trimmed[i];
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
     if (inStr) {
       if (esc) esc = false;
       else if (ch === '\\') esc = true;
@@ -170,13 +185,7 @@ export function extractJson(raw: string): unknown | null {
     else if (ch === open) depth++;
     else if (ch === close) {
       depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(trimmed.slice(start, i + 1));
-        } catch {
-          return null;
-        }
-      }
+      if (depth === 0) return s.slice(start, i + 1);
     }
   }
   return null;

@@ -65,7 +65,7 @@ export function checkDocUpdatesSpecMalformed(taskSpecBody: string): string | nul
 
   for (const bullet of bullets) {
     if (isFuzzyTierReference(bullet)) {
-      const excerpt = bullet.replace(/^[-\s]+/, '').slice(0, 120).trim();
+      const excerpt = bullet.replace(/^[-*+\s]+/, '').slice(0, 120).trim();
       return (
         `## Doc updates contains a fuzzy tier reference without a concrete file path: "${excerpt}". ` +
         `Replace with an explicit path like "T3 apps/foo/CLAUDE.md: ..." and re-queue.`
@@ -88,15 +88,24 @@ function extractDocUpdateBullets(body: string): string[] | null {
   const stopMatch = /^\s*(?:##|\[[a-z])/m.exec(rest);
   const section = stopMatch ? rest.slice(0, stopMatch.index) : rest;
 
-  return section.split('\n').filter((line) => line.trim().startsWith('-'));
+  return section.split('\n').filter((line) => /^\s*[-*+]\s/.test(line));
 }
 
 function isFuzzyTierReference(bullet: string): boolean {
-  const content = bullet.replace(/^[-\s]+/, '').trim();
-  // "T2 of the affected repo", "T3 in the relevant sub-app", etc.
-  if (/^T[234]\s+(of\s+the|in\s+the|for\s+the|from\s+the)/i.test(content)) return true;
-  // Bare "T3:" or "T3 —" with no path
-  if (/^T[234](?:\s*:|:\s*$|\s*—|\s*$)/.test(content)) return true;
+  const content = bullet.replace(/^[-*+\s]+/, '').trim();
+
+  // T1 references are exempt — outside any working dir's git scope, never verified.
+  if (/^T1(\s|§|$)/i.test(content)) return false;
+  // Advisory T4 lines — "write a T4 entry per the protocol", etc. — not malformed.
+  if (/write\s+a?\s*T4\s+entry/i.test(content)) return false;
+  if (/^T4\s+(entry|per\s+the|if\s+)/i.test(content)) return false;
+
+  // A bullet that names a tier obligation (T2/T3/T4 token anywhere) but yields no
+  // concrete extractable path is a fuzzy reference — e.g. "T3 of the affected repo",
+  // "Document this in the affected repo's T2", "Add to T3 of the marketing sub-app".
+  if (/\bT[234]\b/i.test(content) && extractPathsFromBullet(content).length === 0) {
+    return true;
+  }
   return false;
 }
 
@@ -104,7 +113,7 @@ function extractVerifiablePaths(bullets: string[]): string[] {
   const paths: string[] = [];
 
   for (const bullet of bullets) {
-    const content = bullet.replace(/^[-\s]+/, '').trim();
+    const content = bullet.replace(/^[-*+\s]+/, '').trim();
 
     // T1 — ~/.claude/CLAUDE.md, outside any working dir's git scope
     if (/^T1(\s|§|$)/i.test(content)) continue;
@@ -113,40 +122,58 @@ function extractVerifiablePaths(bullets: string[]): string[] {
     if (/write\s+a?\s*T4\s+entry/i.test(content)) continue;
     if (/^T4\s+(entry|per\s+the|if\s+)/i.test(content)) continue;
 
-    // T2/T3 with path in parens: T2 (~/Nyx/CLAUDE.md) or T3 (apps/foo/CLAUDE.md)
-    const tierParenMatch = /^T[23]\s*\(([^)]+)\)/i.exec(content);
-    if (tierParenMatch?.[1]) {
-      const p = cleanPath(tierParenMatch[1]);
-      if (p) { paths.push(normalizePath(p)); continue; }
-    }
-
-    // T2/T3 with path directly (no parens): T3 apps/foo/CLAUDE.md or T2 ~/Nyx/CLAUDE.md
-    const tierPathMatch = /^T[23]\s+([\w~/][^\s:—\n]*\.md)/i.exec(content);
-    if (tierPathMatch?.[1]) {
-      const p = cleanPath(tierPathMatch[1]);
-      if (p) { paths.push(normalizePath(p)); continue; }
-    }
-
-    // Ad-hoc paths in parens: (apps/foo/CLAUDE.md) or (apps/foo/CLAUDE.md — description)
-    const parenPathMatch = /\(([^)]+\.md[^)]*)\)/i.exec(content);
-    if (parenPathMatch?.[1]) {
-      const p = cleanPath(parenPathMatch[1]);
-      if (p && (p.includes('/') || p === 'CLAUDE.md') && !paths.includes(normalizePath(p))) {
-        paths.push(normalizePath(p));
-        continue;
-      }
-    }
-
-    // Backtick-quoted paths with at least one slash and ending in .md: `apps/foo/CLAUDE.md`
-    for (const m of content.matchAll(/`([^`]*\/[^`]*\.md)`/g)) {
-      if (m[1]) {
-        const p = normalizePath(m[1]);
-        if (!paths.includes(p)) paths.push(p);
-      }
+    for (const p of extractPathsFromBullet(content)) {
+      if (!paths.includes(p)) paths.push(p);
     }
   }
 
   return [...new Set(paths)];
+}
+
+/**
+ * Extract concrete, normalized doc paths from a single bullet's content
+ * (leading marker already stripped). Used both to gather verifiable paths and,
+ * by isFuzzyTierReference, to decide whether a tier-mentioning bullet is fuzzy.
+ */
+function extractPathsFromBullet(content: string): string[] {
+  const out: string[] = [];
+  const push = (p: string): void => {
+    const n = normalizePath(p);
+    if (!out.includes(n)) out.push(n);
+  };
+
+  // T2/T3 with path in parens (anywhere): T2 (~/Nyx/CLAUDE.md) or T3 (apps/foo/CLAUDE.md)
+  const tierParenMatch = /T[23]\s*\(([^)]+)\)/i.exec(content);
+  if (tierParenMatch?.[1]) {
+    const p = cleanPath(tierParenMatch[1]);
+    if (p && isPathToken(p)) push(p);
+  }
+
+  // T2/T3 with path directly (anywhere): T3 apps/foo/CLAUDE.md or T2 ~/Nyx/CLAUDE.md
+  const tierPathMatch = /T[23]\s+([\w~/][^\s:—\n]*\.md)/i.exec(content);
+  if (tierPathMatch?.[1]) {
+    const p = cleanPath(tierPathMatch[1]);
+    if (p && isPathToken(p)) push(p);
+  }
+
+  // Ad-hoc paths in parens: (apps/foo/CLAUDE.md) or (apps/foo/CLAUDE.md — description)
+  const parenPathMatch = /\(([^)]+\.md[^)]*)\)/i.exec(content);
+  if (parenPathMatch?.[1]) {
+    const p = cleanPath(parenPathMatch[1]);
+    if (p && isPathToken(p) && (p.includes('/') || p === 'CLAUDE.md')) push(p);
+  }
+
+  // Backtick-quoted paths with at least one slash and ending in .md: `apps/foo/CLAUDE.md`
+  for (const m of content.matchAll(/`([^`]*\/[^`]*\.md)`/g)) {
+    if (m[1] && isPathToken(m[1])) push(m[1]);
+  }
+
+  return out;
+}
+
+// A real path token has no internal whitespace and matches a path-like shape ending in .md.
+function isPathToken(s: string): boolean {
+  return /^[\w./~-]+\.md$/.test(s);
 }
 
 function cleanPath(raw: string): string | null {
@@ -177,6 +204,10 @@ function isPathInDiff(declaredPath: string, diffFiles: string[]): boolean {
   // Exact match
   if (diffFiles.includes(declaredPath)) return true;
 
-  // Suffix match handles cases where diffFiles entries have a longer prefix
+  // Suffix match handles cases where diffFiles entries have a longer prefix.
+  // Only apply it to paths that already contain a slash — a bare root-level
+  // file like `CLAUDE.md` must match exactly, otherwise it would spuriously
+  // satisfy against any nested `*/CLAUDE.md` (e.g. a sub-app's T3 doc).
+  if (!declaredPath.includes('/')) return false;
   return diffFiles.some((f) => f.endsWith('/' + declaredPath));
 }

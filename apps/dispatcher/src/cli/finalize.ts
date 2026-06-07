@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -54,6 +55,54 @@ function runDocSweep(task: ParsedTask, workingDirPath: string): string | null {
 }
 
 /**
+ * Count commits on `branch` not reachable from `baseBranch`, evaluated in
+ * config.root (where both refs live for a self-task worktree). Returns 0 when
+ * git is unavailable or either ref can't be resolved. Never throws.
+ *
+ * Used by finalizeCodeLocal to distinguish a real "Claude produced nothing"
+ * no-op from a prior attempt that committed to the worktree branch but crashed
+ * before merging — the latter is still a successful task whose only remaining
+ * action is the merge, not a failure that should re-enter the audit pipeline.
+ */
+function commitsAheadOfMain(branch: string, baseBranch: string): number {
+  try {
+    const out = execSync(`git rev-list "${baseBranch}".."${branch}" --count`, {
+      cwd: config.root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    }).trim();
+    const n = Number.parseInt(out, 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Resolve a git ref (e.g. `origin/dev`) to its current commit SHA in the given
+ * working dir. Returns null if git is unavailable or the ref doesn't exist.
+ * Never throws.
+ *
+ * Used to snapshot the deploy base SHA BEFORE a direct push: pushDirectToBranch
+ * updates the local remote-tracking ref `origin/<target>` to equal HEAD on a
+ * successful push, so diffing against the live `origin/<target>` ref afterwards
+ * always yields an empty diff. Capturing the pre-push SHA preserves the real
+ * base so the deploy-detection diff reflects exactly what shipped.
+ */
+function resolveRefSha(workingDirPath: string, ref: string): string | null {
+  try {
+    const out = execSync(`git rev-parse --verify "${ref}"`, {
+      cwd: workingDirPath,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Emit `task.production.deploy_required` when the task's committed diff touches
  * files that require a manual production deploy step. This is observational only
  * — it does NOT block task completion. The event payload names the matched files
@@ -94,8 +143,40 @@ export async function finalizeCodeLocal(ctx: FinalizeContext): Promise<RunOutcom
 
     const message = `nyx(${task.id}): ${task.description}`;
     const didCommit = git.commitAll(workingDir.path, message);
-    if (didCommit) audit('task.committed', 'dispatcher', { taskId: task.id });
-    if (didCommit && workingDir.branch) {
+
+    // Mirror finalizeCodeExternal's no-changes handling. When Claude produced no
+    // new file changes there are two sub-cases:
+    //   1. A prior attempt committed to the worktree branch but crashed before
+    //      merging — the branch has commits not yet in main. The work IS done;
+    //      fall through to the merge. Don't burn another audit cycle.
+    //   2. Nothing was ever committed and the branch has no commits ahead of
+    //      main — a real "Claude produced nothing" failure. Route to audit
+    //      instead of silently reporting success.
+    let priorAttemptCommit = false;
+    if (!didCommit) {
+      const mainBranch = git.detectMainBranch();
+      priorAttemptCommit =
+        !!workingDir.branch && commitsAheadOfMain(workingDir.branch, mainBranch) > 0;
+      if (!priorAttemptCommit) {
+        return {
+          taskId: task.id,
+          status: 'failed',
+          durationMs,
+          failureLog: 'claude produced no file changes — nothing to commit or merge',
+        };
+      }
+    }
+
+    if (didCommit) {
+      audit('task.committed', 'dispatcher', { taskId: task.id });
+    } else {
+      audit('task.committed', 'dispatcher', {
+        taskId: task.id,
+        source: 'prior-attempt',
+        note: 'no new changes this attempt; merging existing branch commit(s)',
+      });
+    }
+    if ((didCommit || priorAttemptCommit) && workingDir.branch) {
       let snapshot: git.MergeSnapshot | null = null;
       try {
         snapshot = git.mergeBranchIntoMain(workingDir.branch);
@@ -201,6 +282,15 @@ export async function finalizeCodeExternal(ctx: FinalizeContext): Promise<RunOut
       };
     }
 
+    // Snapshot the deploy base SHA BEFORE the push. pushDirectToBranch updates
+    // the local `origin/<baseBranch>` tracking ref to equal HEAD on success, so
+    // diffing against the live ref afterwards is always empty. Falling back to
+    // the live ref name (null capture) preserves prior behavior for the case
+    // where the ref can't be resolved pre-push.
+    const deployBaseRef =
+      resolveRefSha(workingDir.path, `origin/${target.baseBranch}`) ??
+      `origin/${target.baseBranch}`;
+
     const branchUrl = git.pushDirectToBranch(workingDir.path, target.baseBranch, task.repo);
     if (!branchUrl) {
       // v0.8.x: do NOT cleanup() on failure here. The dispatchOne audit loop
@@ -226,11 +316,12 @@ export async function finalizeCodeExternal(ctx: FinalizeContext): Promise<RunOut
     });
     // Detect whether the diff touches files that need a manual production deploy.
     // Fires after the successful push so the event reflects exactly what shipped.
-    // baseRef is origin/<baseBranch> — the same ref the rebase was based on.
+    // baseRef is the SHA captured BEFORE the push (deployBaseRef) — the live
+    // origin/<baseBranch> tracking ref now equals HEAD post-push and would diff empty.
     maybeEmitDeployRequired(
       task,
       workingDir.path,
-      `origin/${target.baseBranch}`,
+      deployBaseRef,
       target.deployPatterns ?? [],
       target.deployTargets ?? [],
     );

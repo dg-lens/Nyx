@@ -228,7 +228,15 @@ export function updateRun(id: string, patch: Partial<PipelineRun>, now: number):
   return getRun(id);
 }
 
-/** Runs not in a terminal status. The tick scan reads these. */
+/**
+ * Runs not in a terminal status. Intended as an independent tick-scan resume
+ * source, but NOT yet wired into the production tick — `handlePipelineInTick`
+ * (run-once.ts) advances runs via the standing queue task and
+ * `runsAwaitingDecision()` only. Until activeRuns() is consumed by the tick, a
+ * run in 'executing'/'shipping'/'planning'/'replanning' depends on its standing
+ * queue-task entry persisting for its whole lifetime, or it stalls. Currently
+ * exercised only by the test suite.
+ */
 export function activeRuns(): PipelineRun[] {
   const d = open();
   const rows = d

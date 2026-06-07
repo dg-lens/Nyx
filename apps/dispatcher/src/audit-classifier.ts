@@ -210,7 +210,7 @@ const PATTERNS: Pattern[] = [
   // --- auto-fixable: mypy plugin missing (Python repos) ---
   {
     name: 'mypy-untyped-decorator-sqlalchemy',
-    match: /Untyped decorator makes function .* untyped.*sqlalchemy/is,
+    match: /Untyped decorator makes function [\s\S]*? untyped[\s\S]*?sqlalchemy/i,
     build: () => ({
       kind: 'auto-fixable',
       pattern: 'mypy-untyped-decorator-sqlalchemy',
@@ -262,7 +262,7 @@ const PATTERNS: Pattern[] = [
   },
   {
     name: 'bws-secret-missing',
-    match: /(SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_JWT_SECRET|OPERATOR_AUTH_TOKEN|ANTHROPIC_API_KEY)\s+is not defined|missing required env var/i,
+    match: /(SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_JWT_SECRET|OPERATOR_AUTH_TOKEN)\s+is not defined|missing required env var/i,
     build: (m) => {
       const varName = m[1] ?? '<unknown>';
       return {

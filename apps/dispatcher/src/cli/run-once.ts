@@ -376,11 +376,24 @@ async function attemptTask(
         : null;
       if (wisdom) {
         const { fileModified } = routeWisdomCapture(wisdom, task.id, workingDir.path);
-        audit('task.wisdom.captured', 'dispatcher', {
-          taskId: task.id,
-          target: wisdom.target,
-          ...(fileModified ? { fileModified } : {}),
-        });
+        // routeWisdomCapture returns { fileModified: null } for BOTH a legitimate
+        // `target: None` no-op AND a genuine routing failure (a non-existent
+        // T2/T3/Personality path, a Graph id that fails its regex, or any FS
+        // throw it swallows). Only `None` is a real no-op; any other target with
+        // no file written means the lesson was lost — audit it as skipped, not
+        // captured, so it doesn't masquerade as a successful capture.
+        if (wisdom.target !== 'None' && fileModified === null) {
+          audit('task.wisdom.skipped', 'dispatcher', {
+            taskId: task.id,
+            reason: `route returned no file for target ${wisdom.target}`,
+          });
+        } else {
+          audit('task.wisdom.captured', 'dispatcher', {
+            taskId: task.id,
+            target: wisdom.target,
+            ...(fileModified ? { fileModified } : {}),
+          });
+        }
       } else {
         audit('task.wisdom.skipped', 'dispatcher', {
           taskId: task.id,
@@ -548,8 +561,12 @@ async function resumeDecidedRunsInTick(): Promise<Set<string>> {
  * task should now be marked complete.
  *
  * Runs parked at a gate with no decision are left untouched — `resumeDecidedRunsInTick`
- * (tick priority 1) advances them once the operator answers. Terminal runs are
- * reconciled: a `done` run whose standing task is still `[ ]` gets marked.
+ * (tick priority 1) advances them once the operator answers. ANY terminal run
+ * (`done`/`failed`/`aborted`) whose standing task is still `[ ]` is reconciled out
+ * of the active picker — a `done` run is marked complete, a `failed`/`aborted` run
+ * is marked complete with the `[FAILED]` flag. Without this, a failed/aborted run
+ * leaves its `[ ]` task in Active forever and the picker re-selects it every tick,
+ * re-entering this branch and returning early — a runaway re-pick.
  *
  * Pipeline tasks deliberately bypass the inFlight/3-strike machinery the single-
  * spawn path uses — the run's own state table + the resume scan handle
@@ -559,31 +576,48 @@ async function resumeDecidedRunsInTick(): Promise<Set<string>> {
 async function handlePipelineInTick(
   task: ParsedTask,
   alreadyAdvanced: Set<string>,
-): Promise<{ status: PipelineStatus; markComplete: boolean }> {
+): Promise<{ status: PipelineStatus; markComplete: boolean; failed: boolean }> {
   const isStanding = task.slot == null && task.everyStepSlots == null;
   const existing = getRunByTaskId(task.id);
 
   if (existing && isTerminal(existing.status)) {
     // A prior tick (or the resume scan) already finished this run. Reconcile the
-    // queue: a delivered run still sitting as `[ ]` in Active gets marked done.
-    return { status: existing.status, markComplete: existing.status === 'done' && isStanding && !task.checked };
+    // queue: ANY terminal run still sitting as `[ ]` in Active gets marked so the
+    // picker stops re-selecting it. `done` → clean; `failed`/`aborted` → [FAILED].
+    return reconcileTerminal(existing.status, isStanding, task.checked);
   }
   if (existing && isAwaiting(existing.status) && !existing.operator_decision) {
     // Still waiting on the operator. Don't advance; don't mark.
-    return { status: existing.status, markComplete: false };
+    return { status: existing.status, markComplete: false, failed: false };
   }
   if (existing && alreadyAdvanced.has(task.id)) {
     // The resume scan already advanced this run earlier in THIS tick. Advancing
     // it again here would run the next phase's coders in the same tick (the
     // resume scan ran phase-0, this would run phase-1). Reconcile only — a run
-    // that reached `done` in the resume scan still gets its standing task marked;
-    // a non-terminal run resumes its next segment on the following tick.
-    return { status: existing.status, markComplete: existing.status === 'done' && isStanding && !task.checked };
+    // that reached a terminal status in the resume scan still gets its standing
+    // task marked; a non-terminal run resumes its next segment on the next tick.
+    if (isTerminal(existing.status)) return reconcileTerminal(existing.status, isStanding, task.checked);
+    return { status: existing.status, markComplete: false, failed: false };
   }
 
   const run = existing ?? createPipelineRun(task);
   const final = await advancePipeline(run);
-  return { status: final.status, markComplete: final.status === 'done' && isStanding };
+  if (isTerminal(final.status)) return reconcileTerminal(final.status, isStanding, false);
+  return { status: final.status, markComplete: false, failed: false };
+}
+
+/**
+ * Decide how a terminal pipeline run reconciles its standing queue task. `done`
+ * marks it complete cleanly; `failed`/`aborted` mark it complete with the
+ * `[FAILED]` flag so the picker drops it (its `baseFilter` excludes `[FAILED]`).
+ */
+function reconcileTerminal(
+  status: PipelineStatus,
+  isStanding: boolean,
+  alreadyChecked: boolean,
+): { status: PipelineStatus; markComplete: boolean; failed: boolean } {
+  const shouldMark = isStanding && !alreadyChecked;
+  return { status, markComplete: shouldMark, failed: status !== 'done' };
 }
 
 async function maybeIdleOrStaleAlert(): Promise<void> {
@@ -698,10 +732,17 @@ async function main(): Promise<void> {
       pipelineDecision: (p) => {
         const runId = String(p.runId ?? '');
         if (!runId) throw new Error('pipeline_decision missing runId');
-        submitDecision(runId, p.decision as DecisionKind, {
+        // submitDecision NEVER throws — it returns { ok: false, message } for an
+        // invalid verb, a verb illegal at the current gate, a run not at a gate,
+        // or a revise/fix with no note. Discarding the result lets drainPendingActions
+        // mark the action 'applied' even though nothing was recorded, so a stale or
+        // verb-drifted desktop decision silently vanishes. Throw on rejection so the
+        // action is marked failed with the validator's message (control.action.failed).
+        const res = submitDecision(runId, p.decision as DecisionKind, {
           note: p.note ? String(p.note) : undefined,
           source: 'control',
         });
+        if (!res.ok) throw new Error(res.message);
         return `pipeline ${String(p.decision)} on ${runId}`;
       },
     },
@@ -794,11 +835,20 @@ async function main(): Promise<void> {
         if (result.markComplete) {
           const run = getRunByTaskId(next.id);
           const durationMs = run ? Date.now() - run.created_at : 0;
-          markTaskCompleted(config.queuePath, next.id, { durationMs });
+          // A failed/aborted terminal run is marked with the [FAILED] flag so the
+          // picker (baseFilter excludes [FAILED]) stops re-selecting it every tick;
+          // a done run is marked cleanly.
+          markTaskCompleted(config.queuePath, next.id, { durationMs, ...(result.failed ? { failed: true } : {}) });
           // Keep task.completed in the audit chain so stale-alert + slot-window
-          // bookkeeping treat a delivered pipeline like any completed task.
-          audit('task.completed', 'dispatcher', { taskId: next.id, durationMs, type: 'pipeline' });
-          console.log(`[nyx] pipeline ${next.id} delivered (${result.status})`);
+          // bookkeeping treat a delivered pipeline like any completed task. A
+          // failed/aborted run also emits a task.failed row so the operator and
+          // stale-alert bookkeeping see the terminal failure.
+          if (result.failed) {
+            audit('task.failed', 'dispatcher', { taskId: next.id, stage: 'pipeline', failure_log: `pipeline run terminated: ${result.status}` });
+          } else {
+            audit('task.completed', 'dispatcher', { taskId: next.id, durationMs, type: 'pipeline' });
+          }
+          console.log(`[nyx] pipeline ${next.id} reconciled (${result.status})`);
         } else {
           console.log(`[nyx] pipeline ${next.id} advanced to ${result.status}`);
         }

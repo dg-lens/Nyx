@@ -36,6 +36,7 @@ export interface PlanSpawnResult {
   durationMs: number;
   exitCode: number;
   stderr: string;
+  killedByTimeout?: boolean;
 }
 
 function buildPlanPrompt(task: ParsedTask): string {
@@ -168,23 +169,23 @@ export async function runPlanSpawn(task: ParsedTask, workingDir: string): Promis
   }, PLAN_TIMEOUT_MS);
 
   const durationMs = Date.now() - start;
+  const killedByTimeout = spawnResult.killedByTimeout;
 
-  if (spawnResult.exitCode !== 0) {
-    return {
-      status: 'spawn_failed',
-      durationMs,
-      exitCode: spawnResult.exitCode,
-      stderr: spawnResult.stderr,
-    };
-  }
-
+  // A non-zero exit (especially exitCode 124 from a wall-clock timeout) does NOT
+  // mean the plan is unusable. The planning agent's whole job is to write
+  // `.nyx/flight-plan.json` and exit; a slow exit (tool grandchildren keeping
+  // pipes open, or drift after the write) trips the timeout even though a
+  // complete, valid plan is already on disk. Mirror the audit-pass salvage
+  // protocol: inspect the artifact before discarding. Only report spawn_failed
+  // when the process failed AND no plan artifact was produced.
   const planPath = resolve(workingDir, PLAN_FILE);
   if (!existsSync(planPath)) {
     return {
-      status: 'missing',
+      status: spawnResult.exitCode !== 0 ? 'spawn_failed' : 'missing',
       durationMs,
       exitCode: spawnResult.exitCode,
       stderr: spawnResult.stderr,
+      killedByTimeout,
     };
   }
 
@@ -200,6 +201,7 @@ export async function runPlanSpawn(task: ParsedTask, workingDir: string): Promis
         durationMs,
         exitCode: spawnResult.exitCode,
         stderr: spawnResult.stderr,
+        killedByTimeout,
       };
     }
     return {
@@ -209,6 +211,7 @@ export async function runPlanSpawn(task: ParsedTask, workingDir: string): Promis
       durationMs,
       exitCode: spawnResult.exitCode,
       stderr: spawnResult.stderr,
+      killedByTimeout,
     };
   } catch (err) {
     return {
@@ -218,6 +221,7 @@ export async function runPlanSpawn(task: ParsedTask, workingDir: string): Promis
       durationMs,
       exitCode: spawnResult.exitCode,
       stderr: spawnResult.stderr,
+      killedByTimeout,
     };
   }
 }
