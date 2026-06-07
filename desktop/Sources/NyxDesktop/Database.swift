@@ -57,8 +57,13 @@ enum Database {
             let decisions = gate == "preview"
                 ? parseDecisions(r["plan_json"] ?? "", saved: loadSavedAnswers(runId))
                 : []
+            // Preflight requirements (env vars / toolchain) are planning-time and
+            // are provisioned at the PREVIEW gate. Their frozen plan_json status is
+            // stale by the review gate (e.g. ADMIN_TOKEN still shows "missing" after
+            // you set it), so don't re-show them — the review gate is the built result.
+            let preflight = gate == "preview" ? parsePreflight(r["plan_json"] ?? "") : []
             return Gate(id: runId, gate: gate, summary: summary, repo: r["repo"] ?? "",
-                        preflight: parsePreflight(r["plan_json"] ?? ""),
+                        preflight: preflight,
                         decisions: decisions)
         }
     }
