@@ -2,7 +2,7 @@ app = "lens-arachne"
 primary_region = "ord"
 
 [build]
-  dockerfile = "apps/arachne-server/Dockerfile"
+  dockerfile = "Dockerfile"
 
 [env]
   PORT = "8088"
