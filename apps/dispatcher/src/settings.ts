@@ -18,7 +18,11 @@ export interface NyxSettings {
   dispatcher: {
     maxChainDepth: number;
     taskTimeoutMs: number;
-    concurrencyGuard: boolean;
+    // 'global' = skip a tick if ANY claude CLI is running (single-tenant box).
+    // 'own'    = skip only if a NYX-spawned claude is still live (multi-tenant: a
+    //            box also running another agent system, e.g. a pm2 claude swarm).
+    // 'off'    = never skip; rely on the dispatch lockfile alone.
+    concurrencyGuard: 'global' | 'own' | 'off';
     defaultModels: Record<string, string>;
   };
   plugins: { disabled: string[] };
@@ -29,7 +33,7 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
   dispatcher: {
     maxChainDepth: 2,
     taskTimeoutMs: 30 * 60_000,
-    concurrencyGuard: true,
+    concurrencyGuard: 'global',
     defaultModels: { code: 'sonnet', analysis: 'opus', content: 'sonnet', assistant: 'haiku', pipeline: 'opus' },
   },
   plugins: { disabled: [] },
@@ -45,6 +49,14 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
+}
+
+/** Coerce concurrencyGuard, accepting the legacy boolean (true→global, false→off). */
+function coerceGuard(value: unknown, fallback: 'global' | 'own' | 'off'): 'global' | 'own' | 'off' {
+  if (value === true) return 'global';
+  if (value === false) return 'off';
+  if (value === 'global' || value === 'own' || value === 'off') return value;
+  return fallback;
 }
 
 export function loadSettings(dataDir: string): NyxSettings {
@@ -64,6 +76,7 @@ export function loadSettings(dataDir: string): NyxSettings {
         ...(raw.dispatcher ?? {}),
         maxChainDepth: clampNumber(raw.dispatcher?.maxChainDepth, d.dispatcher.maxChainDepth, 1, 10),
         taskTimeoutMs: clampNumber(raw.dispatcher?.taskTimeoutMs, d.dispatcher.taskTimeoutMs, 60_000, 120 * 60_000),
+        concurrencyGuard: coerceGuard(raw.dispatcher?.concurrencyGuard, d.dispatcher.concurrencyGuard),
         defaultModels: { ...d.dispatcher.defaultModels, ...(raw.dispatcher?.defaultModels ?? {}) },
       },
       plugins: { disabled: Array.isArray(raw.plugins?.disabled) ? raw.plugins!.disabled : [] },
