@@ -1,0 +1,22 @@
+app = "lens-arachne"
+primary_region = "ord"
+
+[build]
+  dockerfile = "apps/arachne-server/Dockerfile"
+
+[env]
+  PORT = "8088"
+
+[http_service]
+  internal_port = 8088
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
