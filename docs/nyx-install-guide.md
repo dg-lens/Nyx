@@ -13,11 +13,20 @@ workloads** (e.g. a pm2 swarm). Nyx and the existing workers ignore each other.
 - `node` + `pnpm` are installed automatically by the formula.
 
 ## 1. Install
+The repo is **private**, so authenticate first; Homebrew's git clone then uses your
+GitHub credentials:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dg-lens/Nyx/main/scripts/install.sh | bash
+gh auth login            # sign in to the GitHub account that has repo access
+gh auth setup-git        # let git + Homebrew use that auth
+brew tap dg-lens/nyx https://github.com/dg-lens/Nyx
+brew install --HEAD dg-lens/nyx/nyx
+nyx bootstrap
 ```
-This taps the repo, `brew install --HEAD` (clones + builds Core into the Homebrew
-keg), and runs `nyx bootstrap` — which creates the sibling data layout:
+(The `curl … raw.githubusercontent … install.sh | bash` one-liner only works once
+the repo is **public** — `raw.githubusercontent.com` won't serve a private file
+anonymously. On a private repo, use the steps above.)
+
+`nyx bootstrap` creates the sibling data layout:
 ```
 ~/Nyx/Data      nyx.md, settings.json, .env, data/ (SQLite), logs/, projects/, memory/
 ~/Nyx/Plugins   your custom plugins (optional; stock plugins ship inside Core)
