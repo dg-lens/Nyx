@@ -18,9 +18,11 @@ class Nyx < Formula
   homepage "https://github.com/dg-lens/Nyx"
   license "MIT"
 
-  # HEAD-only formula installed from the local Core git repo (the three-sibling
-  # layout: ~/Nyx/Core is the git repo; ~/Nyx/Data and ~/Nyx/Plugins are siblings).
-  head "file://#{Dir.home}/Nyx/Core", using: :git, branch: "main"
+  # HEAD-only formula installed from the canonical GitHub repo so it works on any
+  # machine. `nyx bootstrap` then creates the sibling Data/ + Plugins/ dirs. (To
+  # build local uncommitted changes instead, override: `brew install --HEAD --build-from-source`
+  # against a local-path tap, or push first — the daemon always runs committed main.)
+  head "https://github.com/dg-lens/Nyx.git", using: :git, branch: "main"
 
   depends_on "node"
   depends_on "pnpm"
