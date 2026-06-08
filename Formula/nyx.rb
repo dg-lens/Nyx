@@ -28,8 +28,9 @@ class Nyx < Formula
   depends_on "pnpm"
 
   def install
-    # Install Core source to libexec (git-ignored dist/, node_modules/ excluded).
-    libexec.install Dir["*"]
+    # Install Core source to libexec. Dir["*"] excludes dotfiles, so .env.example
+    # (which `nyx bootstrap` copies to Data/.env on first run) is added explicitly.
+    libexec.install Dir["*", ".env.example"]
 
     # Install deps and compile all TypeScript workspaces inside libexec.
     cd libexec do

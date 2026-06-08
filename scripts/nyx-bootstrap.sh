@@ -24,9 +24,12 @@ echo "  data + plugin dirs ready"
 
 if [[ -f "$NYX_DATA_DIR/.env" ]]; then
   echo "  .env exists (left as-is)"
-else
+elif [[ -f "$NYX_REPO_ROOT/.env.example" ]]; then
   cp "$NYX_REPO_ROOT/.env.example" "$NYX_DATA_DIR/.env"
   echo "  .env created from .env.example — edit it before 'nyx up'"
+else
+  printf 'NAME=nyx\nOPERATOR_NAME=\nGIT_AUTHOR_NAME=\nGIT_AUTHOR_EMAIL=\nANTHROPIC_API_KEY=\nGITHUB_TOKEN=\n' > "$NYX_DATA_DIR/.env"
+  echo "  .env.example not found in Core — wrote a minimal .env; fill it in before 'nyx up'"
 fi
 
 if [[ -f "$NYX_DATA_DIR/nyx.md" ]]; then
