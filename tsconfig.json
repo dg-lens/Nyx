@@ -4,6 +4,7 @@
   "references": [
     { "path": "./apps/dispatcher" },
     { "path": "./apps/assistant" },
-    { "path": "./apps/analyzer" }
+    { "path": "./apps/analyzer" },
+    { "path": "./apps/arachne-server" }
   ]
 }
