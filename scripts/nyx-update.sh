@@ -8,7 +8,12 @@ for a in "$@"; do
   [ "$a" = "--check" ] && exec bash "$(dirname "$0")/nyx-update-check.sh"
 done
 
-if [ ! -d "$NYX_REPO_ROOT/.git" ]; then
+IS_SOURCE_CHECKOUT=0
+if [ -d "$NYX_REPO_ROOT/.git" ] && git -C "$NYX_REPO_ROOT" remote get-url origin >/dev/null 2>&1; then
+  IS_SOURCE_CHECKOUT=1
+fi
+
+if [ "$IS_SOURCE_CHECKOUT" = "0" ]; then
   if ! command -v brew >/dev/null 2>&1; then
     echo "Nyx core at $NYX_REPO_ROOT is a Homebrew keg but 'brew' is not on PATH." >&2
     echo "Update manually:  brew uninstall nyx && brew install --HEAD dg-lens/nyx/nyx" >&2
