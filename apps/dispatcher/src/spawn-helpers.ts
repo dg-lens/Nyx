@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { registerClaude, deregisterClaude } from './claude-registry.js';
 
 export interface SpawnWithTimeoutOptions {
   cwd: string;
@@ -57,6 +58,7 @@ export function spawnWithTimeout(
       stdio: ['ignore', options.captureStdout ? 'pipe' : 'ignore', 'pipe'],
       detached: true,
     });
+    if (child.pid !== undefined) registerClaude(child.pid);
 
     let stdout = '';
     let stderr = '';
@@ -86,6 +88,7 @@ export function spawnWithTimeout(
 
     child.on('close', (code) => {
       clearTimeout(timer);
+      if (child.pid !== undefined) deregisterClaude(child.pid);
       if (sigkillTimer !== null) {
         clearTimeout(sigkillTimer);
         sigkillTimer = null;
@@ -103,6 +106,7 @@ export function spawnWithTimeout(
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      if (child.pid !== undefined) deregisterClaude(child.pid);
       if (sigkillTimer !== null) {
         clearTimeout(sigkillTimer);
         sigkillTimer = null;

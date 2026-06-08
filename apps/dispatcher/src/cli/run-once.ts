@@ -29,6 +29,7 @@ import { runsAwaitingDecision } from '../pipeline/db.js';
 import { isAwaiting, isTerminal, type DecisionKind, type PipelineStatus } from '../pipeline/types.js';
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
 import { config } from '../config.js';
+import { liveOwnClaudeCount } from '../claude-registry.js';
 import { emitHook, initPlugins } from '../plugins/index.js';
 import { drainPendingActions, insertUnderActiveTasks } from '../control/actions.js';
 import { listPending, markApplied, markFailed } from '../control/db.js';
@@ -808,10 +809,14 @@ async function main(): Promise<void> {
   );
   if (controlApplied > 0) console.log(`[nyx] control actions applied: ${controlApplied}`);
 
-  if (config.settings.dispatcher.concurrencyGuard && hasLiveClaude()) {
-    audit('task.skipped.concurrent_claude', 'dispatcher', {});
-    console.log('[nyx] concurrent claude detected. exit 0.');
-    process.exit(0);
+  const guard = config.settings.dispatcher.concurrencyGuard;
+  if (guard !== 'off') {
+    const busy = guard === 'own' ? liveOwnClaudeCount() > 0 : hasLiveClaude();
+    if (busy) {
+      audit('task.skipped.concurrent_claude', 'dispatcher', { mode: guard });
+      console.log(`[nyx] concurrent claude detected (${guard}). exit 0.`);
+      process.exit(0);
+    }
   }
 
   await auditInvalidTagged(config.queuePath);
