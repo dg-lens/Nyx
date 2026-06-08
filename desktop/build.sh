@@ -52,6 +52,9 @@ if [ -n "$SRC" ]; then
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns" >/dev/null 2>&1 || true
 fi
 
+REPO_ROOT_BAKE="$(cd "$HERE/.." && pwd)"
+PLUGINS_BAKE="${NYX_PLUGINS_DIR:-$HOME/Nyx/Plugins}"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -66,6 +69,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>LSEnvironment</key>
+    <dict>
+        <key>NYX_REPO_ROOT</key><string>$REPO_ROOT_BAKE</string>
+        <key>NYX_DATA_DIR</key><string>$DATA_DIR</string>
+        <key>NYX_PLUGINS_DIR</key><string>$PLUGINS_BAKE</string>
+    </dict>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

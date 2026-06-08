@@ -5,15 +5,20 @@ struct RootView: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
-        TabView {
-            GatesView()
-                .tabItem { Label("Gates", systemImage: "checkmark.seal") }
-            DispatchView()
-                .tabItem { Label("Dispatch", systemImage: "paperplane") }
-            MonitorView()
-                .tabItem { Label("Monitor", systemImage: "waveform.path.ecg") }
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
+        VStack(spacing: 0) {
+            if store.updateAvailable {
+                updateBanner
+            }
+            TabView {
+                GatesView()
+                    .tabItem { Label("Gates", systemImage: "checkmark.seal") }
+                DispatchView()
+                    .tabItem { Label("Dispatch", systemImage: "paperplane") }
+                MonitorView()
+                    .tabItem { Label("Monitor", systemImage: "waveform.path.ecg") }
+                SettingsView()
+                    .tabItem { Label("Settings", systemImage: "gearshape") }
+            }
         }
         .padding(12)
         .toolbar {
@@ -47,5 +52,30 @@ struct RootView: View {
                     .help("Reload state")
             }
         }
+    }
+
+    private var updateBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.up.circle.fill").foregroundStyle(.blue)
+            Text("Update available — \(store.updateLocal) → \(store.updateRemote)")
+                .font(.callout)
+            Spacer()
+            Button {
+                store.applyUpdate()
+            } label: {
+                if store.updating {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Updating…") }
+                } else {
+                    Text("Update now")
+                }
+            }
+            .disabled(store.updating)
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.blue.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.bottom, 8)
     }
 }

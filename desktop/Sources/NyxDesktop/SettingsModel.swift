@@ -46,10 +46,16 @@ struct PluginSettings: Codable {
     var disabled: [String] = []
 }
 
+struct UpdatesSettings: Codable {
+    var check: Bool = true
+    var autoApply: Bool = false
+}
+
 struct NyxSettings: Codable {
     var pipeline = PipelineSettings()
     var dispatcher = DispatcherSettings()
     var plugins = PluginSettings()
+    var updates = UpdatesSettings()
 }
 
 struct PluginInfo: Identifiable {

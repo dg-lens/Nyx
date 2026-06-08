@@ -18,6 +18,8 @@ enum Layout {
     static var dbPath: URL { dataDir.appendingPathComponent("data/nyx.db") }
     static var queuePath: URL { dataDir.appendingPathComponent("nyx.md") }
     static var tickScript: URL { repoRoot.appendingPathComponent("scripts/nyx-tick.sh") }
+    static var updateCheckScript: URL { repoRoot.appendingPathComponent("scripts/nyx-update-check.sh") }
+    static var updateScript: URL { repoRoot.appendingPathComponent("scripts/nyx-update.sh") }
     static var pluginsDir: URL {
         if let e = env("NYX_PLUGINS_DIR") { return URL(fileURLWithPath: e) }
         return home.appendingPathComponent("Nyx/Plugins")
