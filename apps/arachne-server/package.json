@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -b",
     "start": "node dist/server.js",
+    "admin": "node dist/admin.js",
     "test": "node --import tsx --test __tests__/*.test.ts"
   },
   "dependencies": {

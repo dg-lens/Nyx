@@ -1,0 +1,9 @@
+.git
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+desktop/*.app
+Data
+Plugins
+**/.DS_Store
+*.log
