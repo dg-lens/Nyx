@@ -31,22 +31,18 @@ gh auth login            # sign in to the GitHub account that has repo access
 gh auth setup-git        # let git + Homebrew use that auth
 brew tap dg-lens/nyx https://github.com/dg-lens/Nyx
 brew install --HEAD dg-lens/nyx/nyx
-nyx bootstrap            # creates ~/Nyx/Data (config, db, logs) + ~/Nyx/Plugins
+nyx bootstrap            # creates ~/Nyx/Data + ~/Nyx/Plugins AND builds the desktop app
 ```
 (The `curl … raw.githubusercontent … | bash` one-liner only works once the repo is
 **public** — on a private repo use the steps above.)
 
-## 2. Install the desktop app
-```bash
-nyx app
-```
-Builds the SwiftUI app from the installed source, copies it to **`/Applications/Nyx.app`**,
-and launches it. Re-run `nyx app` any time to rebuild (e.g. after an update). Everything
-from here on is in the app.
+`nyx bootstrap` builds the SwiftUI app into **`/Applications/Nyx.app`** as its last step
+(needs Xcode CLT — `xcode-select --install`; on a headless box it skips this with a note).
+Open it — everything from here on is in the app. To rebuild it later, `nyx app`.
 
 ---
 
-## 3. First-run setup — all in the **Settings** tab
+## 2. First-run setup — all in the **Settings** tab
 Open the **Settings** tab. Work top to bottom; each section has a Save button.
 
 - **Identity** — set your **Operator name** → *Save identity*.
@@ -62,12 +58,12 @@ Open the **Settings** tab. Work top to bottom; each section has a Save button.
   Anthropic rate limit). Turn **Slack notifications** off unless you've wired Slack.
   Leave **Auto-merge** off (review + merge stays yours).
 
-## 4. Start the daemon
+## 3. Start the daemon
 **Settings → Daemon → Start.** Status flips to “Running (5-min ticks)” and the health
 dot in the toolbar goes green; the toolbar shows a live **next-tick** countdown. The
 daemon restarts on reboot.
 
-## 5. Queue a pipeline run — **Dispatch** tab
+## 4. Queue a pipeline run — **Dispatch** tab
 1. Type the feature idea in the text box.
 2. **Type** → `pipeline`.
 3. **Repo** → `org/name` for an existing GitHub repo (clone + PR at the end). Leave
@@ -77,7 +73,7 @@ daemon restarts on reboot.
 
 The next tick (≤5 min) starts planning, or hit the toolbar **Tick** button to start now.
 
-## 6. Approve at the gates — **Gates** tab
+## 5. Approve at the gates — **Gates** tab
 A run pauses here when it needs you. The tab shows a plain go/no-go recommendation plus
 any Yes/No decisions.
 
@@ -91,18 +87,19 @@ any Yes/No decisions.
 A clean run stops **once** (preview), then delivers a PR (for `org/name`) or a local
 project. It **never auto-merges** — review + merge is yours, and deploy is a manual step.
 
-## 7. Watch a run
+## 6. Watch a run
 - **Monitor** tab — live run + queue status.
 - **Settings → Daemon → Open logs** — the raw tick logs if you want detail.
 
 ---
 
-## 8. Update later
+## 7. Update later
 ```bash
-brew uninstall nyx && brew install --HEAD dg-lens/nyx/nyx && nyx app
+nyx update            # self-drives the Homebrew reinstall; logs to ~/Nyx/Data/logs/update.log
+nyx update --app      # also rebuild the desktop app
 ```
 Your `~/Nyx/Data` (config, queue, db, logs) and `~/Nyx/Plugins` are untouched — only
-Core code + the app are replaced.
+Core code is replaced. The daemon picks up the new code on its next tick automatically.
 
 ---
 

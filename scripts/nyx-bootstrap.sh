@@ -57,8 +57,23 @@ echo "  host plist generated → $HOST_PLIST"
 echo "  building (pnpm install + build)…"
 (cd "$NYX_REPO_ROOT" && pnpm install --prefer-offline && pnpm -r build)
 
+APP_OK=0
+echo "  building desktop app…"
+if NYX_REPO_ROOT="$NYX_REPO_ROOT" NYX_DATA_DIR="$NYX_DATA_DIR" bash "$NYX_REPO_ROOT/scripts/nyx-app.sh" --no-open; then
+  APP_OK=1
+else
+  echo "  desktop app skipped — install Xcode CLT (xcode-select --install), then run 'nyx app'"
+fi
+
 echo
-echo "Bootstrap complete. Next:"
+echo "Bootstrap complete."
+if [ "$APP_OK" = "1" ]; then
+  echo
+  echo "Desktop app → /Applications. Open it and use the Settings tab to set secrets,"
+  echo "choose the concurrency guard, and start the daemon — no terminal needed."
+fi
+echo
+echo "CLI alternative:"
 echo "  1. Edit $NYX_DATA_DIR/.env — set GIT_AUTHOR_NAME/EMAIL; set ANTHROPIC_API_KEY"
 echo "     for pay-per-token billing, or leave empty to use the host's ~/.claude OAuth."
 echo "  2. nyx up        (load the dispatcher into launchd)"
