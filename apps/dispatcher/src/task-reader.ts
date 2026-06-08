@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 
 import type { GateStage, Model, ParsedTask, Priority, TaskType } from './types.js';
 import { config } from './config.js';
@@ -200,6 +200,11 @@ function parseGate(raw: string | undefined, fallback: GateStage[] | 'none'): Par
 // ─── Queue I/O ───────────────────────────────────────────────────────────────
 
 export function readQueue(path: string): QueueFile {
+  // A missing queue file is an empty queue, not a crash. The daemon can be started
+  // (e.g. `brew services start`) before `nyx bootstrap` seeds nyx.md; an unguarded
+  // read would throw ENOENT, bubble to the top-level catch, and log a misleading
+  // task.failed. Treat absent as idle instead.
+  if (!existsSync(path)) return { raw: '', lines: [], active: [], completed: [] };
   const raw = readFileSync(path, 'utf8');
   const lines = raw.split('\n');
 
