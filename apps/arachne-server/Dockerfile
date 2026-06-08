@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:22-slim
 RUN corepack enable
 WORKDIR /repo
 COPY . .
