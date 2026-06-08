@@ -178,7 +178,7 @@ export async function pipelineDelivered(
  * CLI (`nyx pipeline …`). The message lists the actual, copy-pasteable
  * commands for this gate. (The portal approval UI is not built yet, so this
  * deliberately does NOT link the portal — adding it back is part of the portal
- * `pipeline_decision` work; see [T5 scaffold/prompt-to-product-pipeline.md].)
+ * `pipeline_decision` work; see the moc-nyx-pipeline node.)
  */
 export async function pipelineAwaitingGate(
   runId: string,

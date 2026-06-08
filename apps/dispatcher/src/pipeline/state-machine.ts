@@ -1,6 +1,6 @@
 /**
  * Pipeline state machine — the legal-transition table from
- * scaffold/prompt-to-product-pipeline.md, encoded as data.
+ * moc-nyx-pipeline (Arachne), encoded as data.
  *
  * Pure. No I/O. The orchestrator calls `assertTransition` before every
  * `updateRun` so an illegal transition (a stage bug) throws loudly instead of

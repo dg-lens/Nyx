@@ -1,7 +1,7 @@
 /**
  * Pre-validate [expects:] paths at dispatch time, before any compute is spent.
  *
- * Closes the recurring [T4 apps-web-decomposer-guess] failure mode: the
+ * Closes the recurring the apps-web-decomposer-guess node failure mode: the
  * dispatch-mode decomposer writes [expects:] paths from convention/memory
  * without inspecting the actual target repo, and the mismatch surfaces only
  * after the post-gate expects-verifier — after preflight, claude exec, and
@@ -175,7 +175,7 @@ export function buildPrevalidateFailureLog(result: PrevalidateResult): string {
     if (suggestion) lines.push(`      suggestion: ${suggestion}`);
   }
   lines.push('');
-  lines.push('This is the [T4 apps-web-decomposer-guess] pattern — the dispatch-mode decomposer wrote');
+  lines.push('This is the the apps-web-decomposer-guess node pattern — the dispatch-mode decomposer wrote');
   lines.push('paths from convention without inspecting the actual repo layout. Fix the [expects:] tag');
   lines.push('in the task spec to use paths that match the real repo, then `nyx resume <TASK-ID>`.');
   return lines.join('\n');

@@ -81,7 +81,7 @@ export type AuditEvent =
   | 'composer.skipped'
   // Pipeline orchestrator (`[type: pipeline]`). Append-only lifecycle record;
   // mutable run state lives in the pipeline_runs table. See
-  // scaffold/prompt-to-product-pipeline.md + apps/dispatcher/src/pipeline/.
+  // moc-nyx-pipeline (Arachne) + apps/dispatcher/src/pipeline/.
   | 'pipeline.run.started'
   | 'pipeline.decision.submitted'
   | 'pipeline.stage.advanced'

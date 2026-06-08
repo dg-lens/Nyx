@@ -2,7 +2,7 @@
  * Pipeline shipping stage (⑦⑧) — drive the held tasks to green, or escalate to
  * the review gate.
  *
- * Flow (scaffold/prompt-to-product-pipeline.md):
+ * Flow (moc-nyx-pipeline (Arachne)):
  *   - Composer redux flagged the catastrophic short-circuit → straight to the
  *     review gate (skip R1/R2). The human decides; the agent only escalated.
  *   - Otherwise: smoke (the project gate, run by an INDEPENDENT supervisor —
