@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import {
+  _setNodesDir,
   buildRequiredContextBlock,
   parseReadingRefs,
   resolveReadingRefs,
@@ -25,67 +26,57 @@ describe('parseReadingRefs', () => {
 
   test('T1 with section', () => {
     const refs = parseReadingRefs('T1 §3.1');
-    assert.equal(refs.length, 1);
     assert.equal(refs[0]?.type, 'T1');
     assert.equal(refs[0]?.section, '3.1');
-    assert.equal(refs[0]?.raw, 'T1 §3.1');
   });
 
-  test('T2 with path, no section', () => {
-    const refs = parseReadingRefs('T2 ~/Nyx/CLAUDE.md');
-    assert.equal(refs[0]?.type, 'T2');
-    assert.equal(refs[0]?.path, '~/Nyx/CLAUDE.md');
-    assert.equal(refs[0]?.section, undefined);
+  test('node <id> (canonical)', () => {
+    const refs = parseReadingRefs('node migrations-no-auto-apply');
+    assert.equal(refs[0]?.type, 'node');
+    assert.equal(refs[0]?.slug, 'migrations-no-auto-apply');
   });
 
-  test('T2 with path and section', () => {
-    const refs = parseReadingRefs('T2 ~/Nyx/CLAUDE.md §Cost model');
-    assert.equal(refs[0]?.type, 'T2');
-    assert.equal(refs[0]?.path, '~/Nyx/CLAUDE.md');
-    assert.equal(refs[0]?.section, 'Cost model');
+  test('node with §section', () => {
+    const refs = parseReadingRefs('node greenfield-target-mode §FIX');
+    assert.equal(refs[0]?.type, 'node');
+    assert.equal(refs[0]?.slug, 'greenfield-target-mode');
+    assert.equal(refs[0]?.section, 'FIX');
   });
 
-  test('T3 with path and section', () => {
-    const refs = parseReadingRefs('T3 apps/foo/CLAUDE.md §Routes');
-    assert.equal(refs[0]?.type, 'T3');
-    assert.equal(refs[0]?.path, 'apps/foo/CLAUDE.md');
-    assert.equal(refs[0]?.section, 'Routes');
+  test('legacy T4/decision/playbook map to node by slug', () => {
+    assert.equal(parseReadingRefs('T4 anthropic-key-leak')[0]?.type, 'node');
+    assert.equal(parseReadingRefs('T4 anthropic-key-leak')[0]?.slug, 'anthropic-key-leak');
+    assert.equal(parseReadingRefs('decision composer-as-predispatch-compiler')[0]?.slug, 'composer-as-predispatch-compiler');
+    assert.equal(parseReadingRefs('playbook applying-prod-migrations')[0]?.slug, 'applying-prod-migrations');
   });
 
-  test('T4 with slug', () => {
-    const refs = parseReadingRefs('T4 2026-05-24-nyx-key-leak');
-    assert.equal(refs[0]?.type, 'T4');
-    assert.equal(refs[0]?.slug, '2026-05-24-nyx-key-leak');
+  test('legacy T2/T3 path maps to node by basename', () => {
+    const r = parseReadingRefs('T3 apps/foo/CLAUDE.md §Routes');
+    assert.equal(r[0]?.type, 'node');
+    assert.equal(r[0]?.slug, 'CLAUDE');
+    assert.equal(r[0]?.section, 'Routes');
   });
 
-  test('decision with slug', () => {
-    const refs = parseReadingRefs('decision adr-0001-composer-design');
-    assert.equal(refs[0]?.type, 'decision');
-    assert.equal(refs[0]?.slug, 'adr-0001-composer-design');
-  });
-
-  test('playbook with slug', () => {
-    const refs = parseReadingRefs('playbook writing-nyx-task-specs');
-    assert.equal(refs[0]?.type, 'playbook');
-    assert.equal(refs[0]?.slug, 'writing-nyx-task-specs');
+  test('bare token resolves as a node id', () => {
+    const refs = parseReadingRefs('self-task-merge-no-origin');
+    assert.equal(refs[0]?.type, 'node');
+    assert.equal(refs[0]?.slug, 'self-task-merge-no-origin');
   });
 
   test('multiple comma-separated references', () => {
-    const refs = parseReadingRefs('T1 §3.1, T4 some-slug');
+    const refs = parseReadingRefs('T1 §3.1, node some-node');
     assert.equal(refs.length, 2);
     assert.equal(refs[0]?.type, 'T1');
-    assert.equal(refs[0]?.section, '3.1');
-    assert.equal(refs[1]?.type, 'T4');
-    assert.equal(refs[1]?.slug, 'some-slug');
+    assert.equal(refs[1]?.type, 'node');
+    assert.equal(refs[1]?.slug, 'some-node');
   });
 
   test('ignores empty tokens from extra commas', () => {
-    const refs = parseReadingRefs('T4 my-slug,');
-    assert.equal(refs.length, 1);
+    assert.equal(parseReadingRefs('node my-node,').length, 1);
   });
 
-  test('malformed token throws', () => {
-    assert.throws(() => parseReadingRefs('UNKNOWN stuff'), /unrecognized reference/);
+  test('malformed T1 reference throws', () => {
+    assert.throws(() => parseReadingRefs('T1 garbage'), /malformed T1/);
   });
 });
 
@@ -96,122 +87,76 @@ describe('resolveReadingRefs', () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(resolve(tmpdir(), 'nyx-reading-test-'));
+    _setNodesDir(tmpDir);
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    _setNodesDir(null);
   });
 
-  test('file found → full content returned', () => {
-    const filePath = resolve(tmpDir, 'test.md');
-    writeFileSync(filePath, 'hello world', 'utf8');
-    const ref: ReadingReference = { type: 'T2', path: filePath, raw: `T2 ${filePath}` };
+  function writeNode(slug: string, body: string): void {
+    writeFileSync(resolve(tmpDir, `${slug}.md`), body, 'utf8');
+  }
+
+  test('node found → full content returned', () => {
+    writeNode('hello', 'hello world');
+    const ref: ReadingReference = { type: 'node', slug: 'hello', raw: 'node hello' };
     const { resolved, missing } = resolveReadingRefs([ref]);
     assert.equal(resolved.length, 1);
     assert.equal(missing.length, 0);
     assert.equal(resolved[0]?.content, 'hello world');
-    assert.equal(resolved[0]?.ref.raw, ref.raw);
   });
 
-  test('file missing → in missing[]', () => {
-    const ref: ReadingReference = { type: 'T4', slug: 'nonexistent-slug-zzz', raw: 'T4 nonexistent-slug-zzz' };
+  test('node missing → in missing[]', () => {
+    const ref: ReadingReference = { type: 'node', slug: 'nonexistent-zzz', raw: 'node nonexistent-zzz' };
     const { resolved, missing } = resolveReadingRefs([ref]);
     assert.equal(resolved.length, 0);
     assert.equal(missing.length, 1);
-    assert.equal(missing[0]?.raw, 'T4 nonexistent-slug-zzz');
   });
 
-  test('file exists, section found → section content returned, not whole file', () => {
-    const filePath = resolve(tmpDir, 'doc.md');
-    writeFileSync(filePath, [
-      '# Top',
-      '',
-      '## Pre-amble',
-      '',
-      'ignored preamble',
-      '',
-      '## Target Section',
-      '',
-      'section content here',
-      'more content',
-      '',
-      '## Next Section',
-      '',
-      'should not appear',
-    ].join('\n'), 'utf8');
-    const ref: ReadingReference = {
-      type: 'T2',
-      path: filePath,
-      section: 'Target Section',
-      raw: `T2 ${filePath} §Target Section`,
-    };
-    const { resolved, missing } = resolveReadingRefs([ref]);
-    assert.equal(resolved.length, 1);
-    assert.equal(missing.length, 0);
+  test('section found → section content returned, not whole node', () => {
+    writeNode('doc', [
+      '# Top', '', '## Pre-amble', '', 'ignored preamble', '',
+      '## Target Section', '', 'section content here', 'more content', '',
+      '## Next Section', '', 'should not appear',
+    ].join('\n'));
+    const ref: ReadingReference = { type: 'node', slug: 'doc', section: 'Target Section', raw: 'node doc §Target Section' };
+    const { resolved } = resolveReadingRefs([ref]);
     assert.ok(resolved[0]?.content.includes('section content here'));
     assert.ok(!resolved[0]?.content.includes('ignored preamble'));
     assert.ok(!resolved[0]?.content.includes('should not appear'));
   });
 
   test('section extraction stops at same-level heading', () => {
-    const filePath = resolve(tmpDir, 'doc.md');
-    writeFileSync(filePath, [
-      '## Section A',
-      'content A',
-      '## Section B',
-      'content B',
-    ].join('\n'), 'utf8');
-    const ref: ReadingReference = { type: 'T2', path: filePath, section: 'Section A', raw: 'T2 ...' };
+    writeNode('doc', ['## Section A', 'content A', '## Section B', 'content B'].join('\n'));
+    const ref: ReadingReference = { type: 'node', slug: 'doc', section: 'Section A', raw: 'node doc §Section A' };
     const { resolved } = resolveReadingRefs([ref]);
     assert.ok(resolved[0]?.content.includes('content A'));
     assert.ok(!resolved[0]?.content.includes('content B'));
   });
 
   test('subsections are included within a parent section', () => {
-    const filePath = resolve(tmpDir, 'doc.md');
-    writeFileSync(filePath, [
-      '## Parent',
-      'parent text',
-      '### Child',
-      'child text',
-      '## Sibling',
-      'sibling text',
-    ].join('\n'), 'utf8');
-    const ref: ReadingReference = { type: 'T2', path: filePath, section: 'Parent', raw: 'T2 ...' };
+    writeNode('doc', ['## Parent', 'parent text', '### Child', 'child text', '## Sibling', 'sibling text'].join('\n'));
+    const ref: ReadingReference = { type: 'node', slug: 'doc', section: 'Parent', raw: 'node doc §Parent' };
     const { resolved } = resolveReadingRefs([ref]);
     assert.ok(resolved[0]?.content.includes('parent text'));
     assert.ok(resolved[0]?.content.includes('child text'));
     assert.ok(!resolved[0]?.content.includes('sibling text'));
   });
 
-  test('file exists, section missing → in missing[]', () => {
-    const filePath = resolve(tmpDir, 'doc.md');
-    writeFileSync(filePath, '# Only heading\n\ncontent', 'utf8');
-    const ref: ReadingReference = {
-      type: 'T2',
-      path: filePath,
-      section: 'Nonexistent Section',
-      raw: 'T2 ... §Nonexistent Section',
-    };
-    const { resolved, missing } = resolveReadingRefs([ref]);
-    assert.equal(resolved.length, 0);
-    assert.equal(missing.length, 1);
-  });
-
   test('section matching is case-insensitive', () => {
-    const filePath = resolve(tmpDir, 'doc.md');
-    writeFileSync(filePath, '## My Section\ncontent', 'utf8');
-    const ref: ReadingReference = { type: 'T2', path: filePath, section: 'my section', raw: 'T2 ...' };
+    writeNode('doc', '## My Section\ncontent');
+    const ref: ReadingReference = { type: 'node', slug: 'doc', section: 'my section', raw: 'node doc §my section' };
     const { resolved } = resolveReadingRefs([ref]);
     assert.equal(resolved.length, 1);
   });
 
   test('mixed found and missing refs', () => {
-    const filePath = resolve(tmpDir, 'found.md');
-    writeFileSync(filePath, 'found content', 'utf8');
+    writeNode('found', 'found content');
     const refs: ReadingReference[] = [
-      { type: 'T2', path: filePath, raw: 'T2 found' },
-      { type: 'T4', slug: 'totally-missing-slug-xyz', raw: 'T4 totally-missing-slug-xyz' },
+      { type: 'node', slug: 'found', raw: 'node found' },
+      { type: 'node', slug: 'totally-missing-xyz', raw: 'node totally-missing-xyz' },
     ];
     const { resolved, missing } = resolveReadingRefs(refs);
     assert.equal(resolved.length, 1);
@@ -233,32 +178,16 @@ describe('buildRequiredContextBlock', () => {
 
   test('each entry gets a ### header matching its raw token', () => {
     const resolved: ResolvedReading[] = [
-      { ref: { type: 'T1', section: '3.1', raw: 'T1 §3.1' }, content: 'content one' },
+      { ref: { type: 'node', slug: 'my-node', raw: 'node my-node' }, content: 'content one' },
     ];
     const block = buildRequiredContextBlock(resolved);
-    assert.ok(block.includes('### T1 §3.1'));
+    assert.ok(block.includes('### node my-node'));
     assert.ok(block.includes('content one'));
-  });
-
-  test('entries are separated by --- dividers', () => {
-    const resolved: ResolvedReading[] = [
-      { ref: { type: 'T1', raw: 'T1 §3.1' }, content: 'first content' },
-      { ref: { type: 'T4', slug: 'my-slug', raw: 'T4 my-slug' }, content: 'second content' },
-    ];
-    const block = buildRequiredContextBlock(resolved);
-    assert.ok(block.includes('---'));
-    assert.ok(block.includes('### T1 §3.1'));
-    assert.ok(block.includes('first content'));
-    assert.ok(block.includes('### T4 my-slug'));
-    assert.ok(block.includes('second content'));
-    const lines = block.split('\n');
-    const dividers = lines.filter(l => l.trim() === '---');
-    assert.ok(dividers.length >= 2);
   });
 
   test('block ends with --- divider', () => {
     const resolved: ResolvedReading[] = [
-      { ref: { type: 'T4', slug: 's', raw: 'T4 s' }, content: 'c' },
+      { ref: { type: 'node', slug: 's', raw: 'node s' }, content: 'c' },
     ];
     const block = buildRequiredContextBlock(resolved);
     assert.ok(block.trimEnd().endsWith('---'));

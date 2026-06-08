@@ -5,7 +5,7 @@ import { config } from './config.js';
 
 export const WISDOM_FILE = 'NYX_WISDOM.md';
 
-export type WisdomTarget = 'Graph' | 'T4' | 'T2' | 'T3' | 'Personality' | 'None';
+export type WisdomTarget = 'Graph' | 'Personality' | 'None';
 
 export interface WisdomCapture {
   paragraph: string;
@@ -22,13 +22,8 @@ export interface WisdomCapture {
   title?: string;
 }
 
-let diagMemoryDirOverride: string | null = null;
 let developerPersonalityPathOverride: string | null = null;
 let memoryNodesDirOverride: string | null = null;
-
-export function _setDiagMemoryDir(dir: string | null): void {
-  diagMemoryDirOverride = dir;
-}
 
 export function _setDeveloperPersonalityPath(path: string | null): void {
   developerPersonalityPathOverride = path;
@@ -41,11 +36,6 @@ export function _setMemoryNodesDir(dir: string | null): void {
 function getMemoryNodesDir(): string {
   if (memoryNodesDirOverride) return memoryNodesDirOverride;
   return resolve(config.dataDir, 'memory', 'nodes');
-}
-
-function getDiagMemoryDir(): string {
-  if (diagMemoryDirOverride) return diagMemoryDirOverride;
-  return resolve(config.dataDir, 'diagnostic-memory');
 }
 
 function getDeveloperPersonalityPath(): string {
@@ -115,7 +105,7 @@ function isWisdomMeta(v: unknown): v is WisdomMeta {
   if (typeof v !== 'object' || v === null) return false;
   const obj = v as Record<string, unknown>;
 
-  const VALID_TARGETS: WisdomTarget[] = ['Graph', 'T4', 'T2', 'T3', 'Personality', 'None'];
+  const VALID_TARGETS: WisdomTarget[] = ['Graph', 'Personality', 'None'];
   if (!VALID_TARGETS.includes(obj['target'] as WisdomTarget)) return false;
 
   if (obj['slug'] !== undefined && obj['slug'] !== null && typeof obj['slug'] !== 'string') return false;
@@ -145,13 +135,11 @@ function isWisdomMeta(v: unknown): v is WisdomMeta {
 export function routeWisdomCapture(
   wisdom: WisdomCapture,
   taskId: string,
-  workingDir: string,
+  _workingDir: string,
 ): { fileModified: string | null } {
   if (wisdom.target === 'None') return { fileModified: null };
 
   if (wisdom.target === 'Graph') return routeToGraph(wisdom, taskId);
-  if (wisdom.target === 'T4') return routeToT4(wisdom, taskId);
-  if (wisdom.target === 'T2' || wisdom.target === 'T3') return routeToTierDoc(wisdom, taskId, workingDir);
   if (wisdom.target === 'Personality') return routeToPersonality(wisdom, taskId);
 
   return { fileModified: null };
@@ -219,75 +207,6 @@ function routeToGraph(wisdom: WisdomCapture, taskId: string): { fileModified: st
   } catch {
     return { fileModified: null };
   }
-}
-
-function routeToT4(wisdom: WisdomCapture, taskId: string): { fileModified: string | null } {
-  const now = new Date().toISOString();
-  const dateStr = now.slice(0, 10);
-  const rawSlug = wisdom.slug
-    ? `${wisdom.slug.replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`
-    : `wisdom-${taskId.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-  const slug = `${dateStr}-${rawSlug}`;
-
-  const diagDir = getDiagMemoryDir();
-  const filePath = resolve(diagDir, `${slug}.md`);
-
-  const content = [
-    '---',
-    `id: ${slug}`,
-    `first_seen_at: ${now}`,
-    `last_seen_at: ${now}`,
-    `occurrences: 1`,
-    `status: resolved`,
-    `tags: []`,
-    `related_task: ${taskId}`,
-    `pattern_signature: ""`,
-    '---',
-    '',
-    `# ${slug}`,
-    '',
-    `## Lesson`,
-    '',
-    wisdom.paragraph,
-    '',
-    `<!-- captured by wisdom-capture from ${taskId} -->`,
-    '',
-  ].join('\n');
-
-  try {
-    mkdirSync(diagDir, { recursive: true });
-    writeFileSync(filePath, content, 'utf8');
-
-    const indexPath = resolve(diagDir, 'INDEX.md');
-    const summary = wisdom.paragraph.slice(0, 80).replace(/\n/g, ' ');
-    const indexLine = `- [${slug}](./${slug}.md) — ${summary} (from ${taskId})\n`;
-    appendFileSync(indexPath, indexLine, 'utf8');
-
-    return { fileModified: filePath };
-  } catch {
-    return { fileModified: null };
-  }
-}
-
-function routeToTierDoc(
-  wisdom: WisdomCapture,
-  taskId: string,
-  workingDir: string,
-): { fileModified: string | null } {
-  if (!wisdom.path) return { fileModified: null };
-
-  let absPath: string;
-  if (wisdom.path.startsWith('~/')) {
-    absPath = resolve(homedir(), wisdom.path.slice(2));
-  } else if (wisdom.path.startsWith('/')) {
-    absPath = wisdom.path;
-  } else {
-    absPath = resolve(workingDir, wisdom.path);
-  }
-
-  if (!existsSync(absPath)) return { fileModified: null };
-
-  return appendWithReviewMarker(absPath, wisdom.paragraph, taskId);
 }
 
 function routeToPersonality(wisdom: WisdomCapture, taskId: string): { fileModified: string | null } {

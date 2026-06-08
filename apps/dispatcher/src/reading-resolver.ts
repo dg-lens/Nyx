@@ -1,11 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { config } from './config.js';
 
 export interface ReadingReference {
-  type: 'T1' | 'T2' | 'T3' | 'T4' | 'decision' | 'playbook';
-  path?: string;
+  type: 'T1' | 'node';
   section?: string;
   slug?: string;
   raw: string;
@@ -32,55 +31,38 @@ function parseOneRef(token: string): ReadingReference {
     throw new Error(`[reading:] malformed T1 reference — unexpected content after 'T1': "${token}"`);
   }
 
-  const t23 = token.match(/^(T[23])\s+(.+)$/);
-  if (t23) {
-    const type = t23[1] as 'T2' | 'T3';
-    const rest = t23[2] ?? '';
-    const secIdx = rest.indexOf(' §');
-    if (secIdx === -1) return { type, path: rest.trim(), raw };
-    return { type, path: rest.slice(0, secIdx).trim(), section: rest.slice(secIdx + 2).trim(), raw };
+  // Everything that isn't T1 resolves to an Arachne node. Canonical form is
+  // `node <id>`; legacy tier/category prefixes (T2/T3/T4/decision/playbook) are
+  // accepted and mapped to the node whose id is the trailing slug (path basename,
+  // sans .md) so existing [reading:] tags keep resolving against the graph.
+  let rest = token;
+  const m = token.match(/^(?:node|T2|T3|T4|decision|playbook)\s+(.+)$/i);
+  if (m) rest = m[1] ?? '';
+
+  let section: string | undefined;
+  const secIdx = rest.indexOf(' §');
+  if (secIdx !== -1) {
+    section = rest.slice(secIdx + 2).trim();
+    rest = rest.slice(0, secIdx).trim();
   }
-
-  const t4 = token.match(/^T4\s+(.+)$/);
-  if (t4) return { type: 'T4', slug: t4[1]?.trim(), raw };
-
-  const dec = token.match(/^decision\s+(.+)$/i);
-  if (dec) return { type: 'decision', slug: dec[1]?.trim(), raw };
-
-  const pb = token.match(/^playbook\s+(.+)$/i);
-  if (pb) return { type: 'playbook', slug: pb[1]?.trim(), raw };
-
-  throw new Error(`[reading:] unrecognized reference token: "${token}"`);
+  const slug = (rest.replace(/\.md$/, '').split('/').pop() ?? '').trim();
+  if (!slug) throw new Error(`[reading:] unrecognized reference token: "${token}"`);
+  return section ? { type: 'node', slug, section, raw } : { type: 'node', slug, raw };
 }
 
-function expandPath(p: string): string {
-  const home = homedir();
-  if (p.startsWith('~/')) return join(home, p.slice(2));
-  if (p.startsWith('/')) return p;
-  return join(home, p);
+let nodesDirOverride: string | null = null;
+export function _setNodesDir(dir: string | null): void {
+  nodesDirOverride = dir;
 }
 
 function resolveFilePath(ref: ReadingReference): string | null {
-  const home = homedir();
-  switch (ref.type) {
-    case 'T1':
-      return resolve(home, '.claude', 'CLAUDE.md');
-    case 'T2':
-    case 'T3':
-      if (!ref.path) return null;
-      return expandPath(ref.path);
-    case 'T4':
-      if (!ref.slug) return null;
-      return resolve(config.dataDir, 'diagnostic-memory', `${ref.slug}.md`);
-    case 'decision':
-      if (!ref.slug) return null;
-      return resolve(config.dataDir, 'decisions', `${ref.slug}.md`);
-    case 'playbook':
-      if (!ref.slug) return null;
-      return resolve(config.dataDir, 'playbooks', `${ref.slug}.md`);
-    default:
-      return null;
+  if (ref.type === 'T1') return resolve(homedir(), '.claude', 'CLAUDE.md');
+  if (ref.type === 'node') {
+    if (!ref.slug) return null;
+    const dir = nodesDirOverride ?? resolve(config.dataDir, 'memory', 'nodes');
+    return resolve(dir, `${ref.slug}.md`);
   }
+  return null;
 }
 
 interface HeadingInfo {

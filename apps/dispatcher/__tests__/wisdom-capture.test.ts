@@ -9,7 +9,6 @@ import {
   buildWisdomPrompt,
   parseWisdomFile,
   routeWisdomCapture,
-  _setDiagMemoryDir,
   _setDeveloperPersonalityPath,
   _setMemoryNodesDir,
   type WisdomCapture,
@@ -23,7 +22,6 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
-  _setDiagMemoryDir(null);
   _setDeveloperPersonalityPath(null);
   _setMemoryNodesDir(null);
 });
@@ -107,12 +105,12 @@ describe('parseWisdomFile — malformed files', () => {
   });
 
   test('returns null when slug is present but not a string', () => {
-    writeWisdom({ target: 'T4', slug: 42 }, 'Paragraph.');
+    writeWisdom({ target: 'None', slug: 42 }, 'Paragraph.');
     assert.equal(parseWisdomFile(tmpDir), null);
   });
 
   test('returns null when path is present but not a string', () => {
-    writeWisdom({ target: 'T2', path: true }, 'Paragraph.');
+    writeWisdom({ target: 'None', path: true }, 'Paragraph.');
     assert.equal(parseWisdomFile(tmpDir), null);
   });
 
@@ -132,36 +130,6 @@ describe('parseWisdomFile — valid schemas', () => {
     assert.equal(result.slug, undefined);
     assert.equal(result.path, undefined);
     assert.equal(result.agentReason, undefined);
-  });
-
-  test('parses T4 target with slug', () => {
-    writeWisdom(
-      { target: 'T4', slug: 'my-lesson', agent_reason: 'Bug was hard to debug' },
-      'The root cause was X.',
-    );
-    const result = parseWisdomFile(tmpDir);
-    assert.ok(result !== null);
-    assert.equal(result.target, 'T4');
-    assert.equal(result.slug, 'my-lesson');
-    assert.equal(result.agentReason, 'Bug was hard to debug');
-    assert.equal(result.paragraph, 'The root cause was X.');
-  });
-
-  test('parses T2 target with path', () => {
-    writeWisdom({ target: 'T2', path: 'CLAUDE.md', section: 'Env vars' }, 'A new env var was added.');
-    const result = parseWisdomFile(tmpDir);
-    assert.ok(result !== null);
-    assert.equal(result.target, 'T2');
-    assert.equal(result.path, 'CLAUDE.md');
-    assert.equal(result.section, 'Env vars');
-  });
-
-  test('parses T3 target with relative path', () => {
-    writeWisdom({ target: 'T3', path: 'apps/foo/CLAUDE.md' }, 'Sub-app lesson.');
-    const result = parseWisdomFile(tmpDir);
-    assert.ok(result !== null);
-    assert.equal(result.target, 'T3');
-    assert.equal(result.path, 'apps/foo/CLAUDE.md');
   });
 
   test('parses Personality target', () => {
@@ -195,122 +163,6 @@ describe('routeWisdomCapture — None target', () => {
   test('returns fileModified: null without touching any files', () => {
     const wisdom: WisdomCapture = { target: 'None', paragraph: 'Nothing.' };
     const result = routeWisdomCapture(wisdom, 'TEST-001', tmpDir);
-    assert.equal(result.fileModified, null);
-  });
-});
-
-// ─── routeWisdomCapture — T4 ──────────────────────────────────────────────────
-
-describe('routeWisdomCapture — T4 target', () => {
-  beforeEach(() => {
-    const diagDir = resolve(tmpDir, 'diagnostic-memory');
-    mkdirSync(diagDir, { recursive: true });
-    writeFileSync(resolve(diagDir, 'INDEX.md'), '# Index\n');
-    _setDiagMemoryDir(diagDir);
-  });
-
-  test('creates a T4 file in diagMemoryDir', () => {
-    const wisdom: WisdomCapture = {
-      target: 'T4',
-      paragraph: 'The spawn timeout was caused by grandchildren holding the pipe open.',
-      slug: 'spawn-timeout-lesson',
-    };
-    const result = routeWisdomCapture(wisdom, 'TASK-042', tmpDir);
-    assert.ok(result.fileModified !== null);
-    assert.ok(result.fileModified.includes('spawn-timeout-lesson'));
-    assert.ok(result.fileModified.endsWith('.md'));
-  });
-
-  test('T4 file includes the paragraph content', () => {
-    const wisdom: WisdomCapture = {
-      target: 'T4',
-      paragraph: 'Lesson: always use detached spawn.',
-      slug: 'spawn-lesson',
-    };
-    const result = routeWisdomCapture(wisdom, 'TASK-043', tmpDir);
-    assert.ok(result.fileModified !== null);
-    assert.ok(existsSync(result.fileModified));
-    const content = readFileSync(result.fileModified, 'utf8');
-    assert.ok(content.includes('Lesson: always use detached spawn.'));
-    assert.ok(content.includes('TASK-043'));
-  });
-
-  test('T4 route appends a row to INDEX.md', () => {
-    const diagDir = resolve(tmpDir, 'diagnostic-memory');
-    const wisdom: WisdomCapture = {
-      target: 'T4',
-      paragraph: 'Index test lesson.',
-      slug: 'index-test',
-    };
-    routeWisdomCapture(wisdom, 'TASK-044', tmpDir);
-    const index = readFileSync(resolve(diagDir, 'INDEX.md'), 'utf8');
-    assert.ok(index.includes('index-test'));
-    assert.ok(index.includes('TASK-044'));
-  });
-
-  test('T4 filename uses task id when slug is absent', () => {
-    const wisdom: WisdomCapture = { target: 'T4', paragraph: 'Auto-slug test.' };
-    const result = routeWisdomCapture(wisdom, 'MY-TASK-99', tmpDir);
-    assert.ok(result.fileModified !== null);
-    assert.ok(result.fileModified.includes('my-task-99'));
-  });
-
-  test('returns fileModified: null when diagMemoryDir cannot be written', () => {
-    _setDiagMemoryDir('/nonexistent-dir-that-cannot-be-created-ever/subdir');
-    const wisdom: WisdomCapture = { target: 'T4', paragraph: 'Will fail.', slug: 'fail' };
-    const result = routeWisdomCapture(wisdom, 'TASK-X', tmpDir);
-    assert.equal(result.fileModified, null);
-  });
-});
-
-// ─── routeWisdomCapture — T2/T3 ───────────────────────────────────────────────
-
-describe('routeWisdomCapture — T2/T3 target', () => {
-  test('appends to an existing doc at a relative path', () => {
-    const docPath = resolve(tmpDir, 'CLAUDE.md');
-    writeFileSync(docPath, '# Existing content\n');
-    const wisdom: WisdomCapture = {
-      target: 'T2',
-      path: 'CLAUDE.md',
-      paragraph: 'New T2 lesson.',
-    };
-    const result = routeWisdomCapture(wisdom, 'TASK-T2', tmpDir);
-    assert.equal(result.fileModified, docPath);
-    const content = readFileSync(docPath, 'utf8');
-    assert.ok(content.includes('# Existing content'));
-    assert.ok(content.includes('New T2 lesson.'));
-    assert.ok(content.includes('pending operator review'));
-    assert.ok(content.includes('TASK-T2'));
-  });
-
-  test('appends to T3 sub-app CLAUDE.md', () => {
-    mkdirSync(resolve(tmpDir, 'apps', 'foo'), { recursive: true });
-    const docPath = resolve(tmpDir, 'apps', 'foo', 'CLAUDE.md');
-    writeFileSync(docPath, '# Sub-app doc\n');
-    const wisdom: WisdomCapture = {
-      target: 'T3',
-      path: 'apps/foo/CLAUDE.md',
-      paragraph: 'T3 sub-app lesson.',
-    };
-    const result = routeWisdomCapture(wisdom, 'TASK-T3', tmpDir);
-    assert.equal(result.fileModified, docPath);
-    const content = readFileSync(docPath, 'utf8');
-    assert.ok(content.includes('T3 sub-app lesson.'));
-  });
-
-  test('returns fileModified: null when path is absent', () => {
-    const wisdom: WisdomCapture = { target: 'T2', paragraph: 'No path.' };
-    const result = routeWisdomCapture(wisdom, 'TASK-X', tmpDir);
-    assert.equal(result.fileModified, null);
-  });
-
-  test('returns fileModified: null when target path does not exist', () => {
-    const wisdom: WisdomCapture = {
-      target: 'T2',
-      path: 'nonexistent.md',
-      paragraph: 'Missing file.',
-    };
-    const result = routeWisdomCapture(wisdom, 'TASK-X', tmpDir);
     assert.equal(result.fileModified, null);
   });
 });
