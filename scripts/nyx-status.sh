@@ -92,6 +92,17 @@ else
   warn "audit db does not exist yet — first tick will create it"
 fi
 
+printf "\n\033[1mversion\033[0m\n"
+CHECK_OUT="$(bash "$NYX_ROOT/scripts/nyx-update-check.sh" 2>/dev/null || true)"
+CHECK_STATUS="$(echo "$CHECK_OUT" | awk '{print $1}')"
+CHECK_LOCAL="$(echo "$CHECK_OUT" | awk '{print $2}')"
+CHECK_REMOTE="$(echo "$CHECK_OUT" | awk '{print $3}')"
+case "$CHECK_STATUS" in
+  up-to-date)       ok "up to date ($CHECK_LOCAL)";;
+  update-available) warn "update available: $CHECK_LOCAL → $CHECK_REMOTE — run 'nyx update'";;
+  *)                info "installed ${CHECK_LOCAL:-?} — could not check remote (offline?)";;
+esac
+
 printf "\n\033[1mqueue\033[0m\n"
 if [[ -f "$QUEUE" ]]; then
   STATS=$(awk '

@@ -26,6 +26,13 @@ export interface NyxSettings {
     defaultModels: Record<string, string>;
   };
   plugins: { disabled: string[] };
+  updates: {
+    // check = dispatcher polls origin/main once a day and notifies when the
+    // installed keg is behind. autoApply = also run 'nyx update' automatically
+    // (off by default — auto-replacing running code is opt-in).
+    check: boolean;
+    autoApply: boolean;
+  };
 }
 
 export const SETTINGS_DEFAULTS: NyxSettings = {
@@ -37,6 +44,7 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
     defaultModels: { code: 'sonnet', analysis: 'opus', content: 'sonnet', assistant: 'haiku', pipeline: 'opus' },
   },
   plugins: { disabled: [] },
+  updates: { check: true, autoApply: false },
 };
 
 /**
@@ -80,6 +88,10 @@ export function loadSettings(dataDir: string): NyxSettings {
         defaultModels: { ...d.dispatcher.defaultModels, ...(raw.dispatcher?.defaultModels ?? {}) },
       },
       plugins: { disabled: Array.isArray(raw.plugins?.disabled) ? raw.plugins!.disabled : [] },
+      updates: {
+        check: typeof raw.updates?.check === 'boolean' ? raw.updates.check : d.updates.check,
+        autoApply: typeof raw.updates?.autoApply === 'boolean' ? raw.updates.autoApply : d.updates.autoApply,
+      },
     };
   } catch {
     return SETTINGS_DEFAULTS;
