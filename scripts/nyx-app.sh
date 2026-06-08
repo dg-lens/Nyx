@@ -2,6 +2,11 @@
 source "$(dirname "$0")/_layout.sh"
 set -euo pipefail
 
+OPEN=1
+for a in "$@"; do
+  [ "$a" = "--no-open" ] && OPEN=0
+done
+
 DESKTOP_DIR="$NYX_REPO_ROOT/desktop"
 
 if ! command -v xcrun >/dev/null 2>&1; then
@@ -37,4 +42,6 @@ xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
 
 echo "Installed $DEST"
-open "$DEST"
+if [ "$OPEN" = "1" ]; then
+  open "$DEST"
+fi

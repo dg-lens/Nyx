@@ -11,12 +11,12 @@ brew install --HEAD dg-lens/nyx/nyx
 nyx bootstrap
 
 echo
-echo "Nyx installed (Core in the keg; Data + Plugins under ~/Nyx). Next:"
-echo "  1) Auth — this box needs Claude Code logged in (Max plan) so spawned 'claude -p'"
-echo "     uses OAuth, OR set ANTHROPIC_API_KEY in ~/Nyx/Data/.env for API billing."
-echo "  2) Co-located box (already running other claude workers)? add to ~/Nyx/Data/settings.json:"
-echo '       { "dispatcher": { "concurrencyGuard": "own" } }'
-echo "  3) Desktop app (recommended UI): nyx app   (needs Xcode CLT: xcode-select --install)"
-echo "  4) Start:  brew services start dg-lens/nyx/nyx    (or: nyx up)"
-echo "  5) Verify: nyx status"
-echo "  6) Update later: brew uninstall nyx && brew install --HEAD dg-lens/nyx/nyx && nyx app"
+echo "Nyx installed: Core in the keg, Data + Plugins under ~/Nyx, desktop app in"
+echo "/Applications (built by bootstrap if Xcode CLT is present). Next — in the app:"
+echo "  1) Open Nyx (Applications). Everything below is in the Settings tab."
+echo "  2) Auth — this box needs Claude Code logged in (Max plan) so spawned 'claude -p'"
+echo "     uses OAuth, OR set ANTHROPIC_API_KEY (Settings → Environment & Secrets)."
+echo "  3) Co-located box (already running other claude workers)?"
+echo "     Settings → Dispatcher → Concurrency guard = Own."
+echo "  4) Start: Settings → Daemon → Start   (or: nyx up).  Verify: nyx status."
+echo "  5) Update later: nyx update"
