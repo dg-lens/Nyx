@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { config } from './config.js';
 
 export const WISDOM_FILE = 'NYX_WISDOM.md';
 
@@ -39,12 +40,12 @@ export function _setMemoryNodesDir(dir: string | null): void {
 
 function getMemoryNodesDir(): string {
   if (memoryNodesDirOverride) return memoryNodesDirOverride;
-  return resolve(homedir(), 'Nyx', 'memory', 'nodes');
+  return resolve(config.dataDir, 'memory', 'nodes');
 }
 
 function getDiagMemoryDir(): string {
   if (diagMemoryDirOverride) return diagMemoryDirOverride;
-  return resolve(homedir(), 'Nyx', 'diagnostic-memory');
+  return resolve(config.dataDir, 'diagnostic-memory');
 }
 
 function getDeveloperPersonalityPath(): string {
@@ -355,11 +356,11 @@ export function buildWisdomPrompt(): string {
     '',
     '## Target options',
     '',
-    'The stack\'s memory is a knowledge graph — an Obsidian vault at `~/Nyx/memory` (the `memory_*` MCP tools read it). Lessons become atomic nodes there.',
+    'The stack\'s memory is a knowledge graph — an Obsidian vault at `~/Nyx/Data/memory` (the `memory_*` MCP tools read it). Lessons become atomic nodes there.',
     '',
     '| Target | When to use | What happens |',
     '|---|---|---|',
-    '| `Graph` | **The default for any durable lesson** — a non-obvious constraint, gotcha, invariant, decision, or convention worth preserving. | Writes a node at `~/Nyx/memory/nodes/<id>.md` with `kind`/`scope`/`summary` frontmatter. If a node with that `id` already exists, your lesson is appended to it (no clobber). |',
+    '| `Graph` | **The default for any durable lesson** — a non-obvious constraint, gotcha, invariant, decision, or convention worth preserving. | Writes a node at `~/Nyx/Data/memory/nodes/<id>.md` with `kind`/`scope`/`summary` frontmatter. If a node with that `id` already exists, your lesson is appended to it (no clobber). |',
     '| `None` | Nothing worth capturing — routine task, documented pattern, or the lesson is already a node. | No-op. |',
     '',
     'Pick an `id` that reads like the existing nodes (scope-meaningful kebab, no date prefix): `nyx-…`, `outreach-…`, `portal-…`, etc. Pick `kind` by what the lesson IS (a bug+fix → `lesson`; a stable rule → `invariant`; a why-we-chose → `decision`; a how-to → `procedure`; a code-style rule → `aesthetic`).',
