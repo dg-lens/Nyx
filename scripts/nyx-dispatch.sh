@@ -39,7 +39,13 @@ if [ -f "$NYX_DATA_DIR/.env" ]; then
   set +a
 fi
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/Library/pnpm:$HOME/.claude/local:$HOME/.npm-global/bin:/usr/bin:/bin:$PATH"
+if ! command -v claude >/dev/null 2>&1; then
+  CLAUDE_PATH="$(${SHELL:-/bin/zsh} -lc 'command -v claude' 2>/dev/null | tail -1)"
+  if [ -n "$CLAUDE_PATH" ] && [ -x "$CLAUDE_PATH" ]; then
+    export PATH="$(dirname "$CLAUDE_PATH"):$PATH"
+  fi
+fi
 
 cd "$NYX_DATA_DIR" || exit 1
 
