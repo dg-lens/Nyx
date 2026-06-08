@@ -125,7 +125,7 @@ export const config = {
   maxChainDepth: int('MAX_CHAIN_DEPTH', SETTINGS.dispatcher.maxChainDepth),
   // Pipeline (`[type: pipeline]`) — max coders running concurrently in the
   // executing stage. Start at 4; raising it as rate-limit behavior is observed
-  // is essential (see scaffold/prompt-to-product-pipeline.md). Each coder runs
+  // is essential (see moc-nyx-pipeline (Arachne)). Each coder runs
   // in its own git worktree off the integration base.
   pipelineCoderConcurrency: int('PIPELINE_CODER_CONCURRENCY', SETTINGS.pipeline.concurrentCap),
   dispatchIntervalMinutes: int('DISPATCH_INTERVAL_MINUTES', 15),

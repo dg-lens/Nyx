@@ -1,7 +1,7 @@
 /**
  * Pipeline delivery stage (⑨) — terminal A: PR-ready + gate-green.
  *
- * v1 stops at PR-ready (scaffold/prompt-to-product-pipeline.md): push the
+ * v1 stops at PR-ready (moc-nyx-pipeline (Arachne)): push the
  * reconciled integration branch, open a PR (NO auto-merge — the operator
  * reviews + merges; "deploy is your manual step"), fire the existing
  * `task.production.deploy_required` detection, emit a delivery brief, and clean

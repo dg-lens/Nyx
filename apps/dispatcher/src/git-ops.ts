@@ -279,7 +279,7 @@ export function cloneExternalRepo(
           `HEAD=${headSha?.trim() ?? '<unresolved>'} ` +
           `origin/${opts.baseBranch}=${baseSha?.trim() ?? '<unresolved>'}. ` +
           `Clone may have fallen back to repo default branch. ` +
-          `[T4 2026-05-25-clone-baseBranch-cascade]`,
+          `the Arachne graph`,
       );
     }
   }
@@ -326,7 +326,7 @@ export function assertBranchOnBase(workingDir: string, expectedBase: string): vo
         `This indicates the clone was rooted on the wrong base, or the local branch ` +
         `was rebased/checked-out to a divergent state. ` +
         `Pushing now would either fail as non-FF or overwrite ${expectedBase}. ` +
-        `[T4 2026-05-25-clone-baseBranch-cascade]`,
+        `the Arachne graph`,
     );
   }
 }
@@ -446,7 +446,7 @@ export function mergeBranchIntoMain(branch: string): MergeSnapshot {
   // refuse the `checkout`/`merge` outright ("local changes would be
   // overwritten"). Stash the operator's uncommitted work (tracked + untracked)
   // first, restore it after; never auto-commit it.
-  // [T4 2026-05-28-cortana-self-task-merge-local-changes]
+  // Arachne node self-task-merge-local-changes
   const dirty = (tryRun('git status --porcelain', config.root) ?? '').trim().length > 0;
   let stashed = false;
   if (dirty) {

@@ -4,7 +4,7 @@
  * A pipeline is a single operator prompt turned into a reconciled, gate-green,
  * PR-ready feature via autonomous coding + composer self-reconciliation between
  * two human gates (preview always; review only-if-unreconciled). See
- * scaffold/prompt-to-product-pipeline.md for the full design.
+ * moc-nyx-pipeline (Arachne) for the full design.
  *
  * This file is the type backbone. `state-machine.ts` encodes legal transitions,
  * `db.ts` persists `PipelineRun` rows, `orchestrator.ts` advances a run across

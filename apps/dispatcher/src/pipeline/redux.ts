@@ -2,7 +2,7 @@
  * Composer redux (⑥) — inspect-before-merge + cross-worktree reconciliation.
  * This is composer stages 1–3 promoted into the pipeline.
  *
- * Design (scaffold/prompt-to-product-pipeline.md): **the LLM judge is primary;
+ * Design (moc-nyx-pipeline (Arachne)): **the LLM judge is primary;
  * deterministic git facts are a sensor feed, NOT a growing rule engine.**
  *   - Free universal facts (no per-project expansion): `git diff --name-only`,
  *     diff-stat, the coder's exit/commit status, and the MERGE TRIAL (try the

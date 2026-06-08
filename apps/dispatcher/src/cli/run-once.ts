@@ -409,7 +409,7 @@ async function attemptTask(
 
   // Wisdom capture (v0.15): second claude -p spawn — agent reflects on lessons
   // learned from the just-completed task and writes NYX_WISDOM.md. Routes
-  // the capture to the appropriate tier doc (T4/T2/T3/Personality) or no-ops
+  // the capture to a memory-graph node (or the Personality doc) or no-ops
   // for None. Non-fatal: any failure here is logged and skipped; it never blocks
   // dispatch or gate execution.
   if (task.type === 'code') {
