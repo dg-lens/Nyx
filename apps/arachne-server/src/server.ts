@@ -2,6 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { assemble, search, type Directive, type SearchQuery } from './assemble.js';
 import { makePool, applyMigration, loadActiveNodes, getNode, writeNode, recordUsage, type Pool, type WriteInput } from './db.js';
 import { bearer, verifyToken, type Platform } from './auth.js';
+import {
+  pushGate, inboxGates, decideGate, decidedGates, consumeGate, getGate, type GateInput,
+} from './gate-relay.js';
 
 function send(res: ServerResponse, code: number, body: unknown): void {
   const s = JSON.stringify(body);
@@ -64,6 +67,62 @@ export function makeHandler(pool: Pool) {
         const b = (await readBody(req)) as { node_ids?: string[]; cited?: boolean; outcome?: string } | null;
         await recordUsage(pool, b?.node_ids ?? [], platform.id, b?.cited ?? null, b?.outcome ?? null);
         return send(res, 200, { ok: true });
+      }
+
+      // --- gate relay (remote pipeline-gate review) ---
+      const canPush = platform.scopes.includes('gate_push');
+      const canReview = platform.scopes.includes('gate_review');
+
+      // Origin pushes a gate brief.
+      if (method === 'POST' && path === '/gate') {
+        if (!canPush) return send(res, 403, { error: 'no gate_push scope' });
+        const g = (await readBody(req)) as GateInput | null;
+        if (!g || !g.id || !g.reviewer || !g.run_id || (g.gate_kind !== 'preview' && g.gate_kind !== 'review')) {
+          return send(res, 400, { error: 'gate needs {id, reviewer, run_id, gate_kind: preview|review}' });
+        }
+        const id = await pushGate(pool, g, platform.id);
+        return send(res, 200, { ok: true, id });
+      }
+
+      // Reviewer inbox: open gates assigned to me.
+      if (method === 'GET' && path === '/gate/inbox') {
+        if (!canReview) return send(res, 403, { error: 'no gate_review scope' });
+        return send(res, 200, { gates: await inboxGates(pool, platform.id) });
+      }
+
+      // Origin poll: my decided-but-unconsumed gates.
+      if (method === 'GET' && path === '/gate/decided') {
+        if (!canPush) return send(res, 403, { error: 'no gate_push scope' });
+        return send(res, 200, { gates: await decidedGates(pool, platform.id) });
+      }
+
+      // Reviewer decides.
+      if (method === 'POST' && /^\/gate\/[^/]+\/decision$/.test(path)) {
+        if (!canReview) return send(res, 403, { error: 'no gate_review scope' });
+        const id = decodeURIComponent(path.split('/')[2] ?? '');
+        const b = (await readBody(req)) as { decision?: string; note?: string } | null;
+        if (!b || !b.decision) return send(res, 400, { error: 'decision required' });
+        const r = await decideGate(pool, id, platform.id, b.decision, b.note);
+        return r.ok ? send(res, 200, { ok: true }) : send(res, r.code, { error: r.error });
+      }
+
+      // Origin marks a decided gate consumed after applying it.
+      if (method === 'POST' && /^\/gate\/[^/]+\/consume$/.test(path)) {
+        if (!canPush) return send(res, 403, { error: 'no gate_push scope' });
+        const id = decodeURIComponent(path.split('/')[2] ?? '');
+        const ok = await consumeGate(pool, id, platform.id);
+        return send(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'not a decided gate you own' });
+      }
+
+      // Either party reads one gate.
+      if (method === 'GET' && path.startsWith('/gate/')) {
+        const id = decodeURIComponent(path.slice('/gate/'.length));
+        const gate = await getGate(pool, id);
+        if (!gate) return send(res, 404, { error: 'not found' });
+        if (gate.origin !== platform.id && gate.reviewer !== platform.id) {
+          return send(res, 403, { error: 'not a party to this gate' });
+        }
+        return send(res, 200, gate);
       }
 
       return send(res, 404, { error: 'no such route' });

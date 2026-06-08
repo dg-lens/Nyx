@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import pg from 'pg';
@@ -11,10 +11,13 @@ export function makePool(connectionString: string): Pool {
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** Apply the idempotent schema (re-run safe). Used by tests + first boot. */
+/** Apply every idempotent migration in order (re-run safe). Used by tests + first boot. */
 export async function applyMigration(pool: Pool): Promise<void> {
-  const sql = readFileSync(join(here, '..', 'migrations', '0001_init.sql'), 'utf8');
-  await pool.query(sql);
+  const dir = join(here, '..', 'migrations');
+  const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+  for (const f of files) {
+    await pool.query(readFileSync(join(dir, f), 'utf8'));
+  }
 }
 
 interface Row {

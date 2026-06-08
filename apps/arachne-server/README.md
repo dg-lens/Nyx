@@ -27,6 +27,15 @@ the service is down) · oversight/sharing is **transparent** (a #3 concern, late
 - `POST /usage`   `{node_ids[], cited?, outcome?}` → outcome feedback
 - `GET  /health`                               → liveness
 
+### Gate relay (remote pipeline-gate review across Nyx instances)
+Scopes `gate_push` (origin) and `gate_review` (reviewer), granted per platform in `platforms.scopes`.
+- `POST /gate`               `{id, reviewer, run_id, task_id?, repo?, gate_kind: preview|review, summary?, options?}` → origin pushes a gate brief (`gate_push`; idempotent upsert while open)
+- `GET  /gate/inbox`                            → reviewer's open gates (`gate_review`)
+- `POST /gate/:id/decision` `{decision, note?}` → reviewer decides (`gate_review`, must be the assigned reviewer; `revise`/`fix` require a note)
+- `GET  /gate/decided`                          → origin's decided-but-unconsumed gates (`gate_push`)
+- `POST /gate/:id/consume`                      → origin marks a decision applied (`gate_push`)
+- `GET  /gate/:id`                              → one gate (origin or reviewer only)
+
 ## Build phases
 1. **Schema** — `migrations/0001_init.sql`. ✅
 2. **Server + auth** — Fastify (matches the Python/FastAPI sub-app posture, or Node), the engine-over-Postgres, bearer middleware, the endpoints above. Local-testable against a docker Postgres.
