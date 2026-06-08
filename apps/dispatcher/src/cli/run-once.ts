@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
@@ -13,6 +13,7 @@ import {
   failureCountForTask,
   isTaskHalted,
   lastEventAt,
+  lastEventPayload,
   lastSuccessfulTaskAt,
   tasksFiredInWindow,
   verifyChain,
@@ -698,6 +699,71 @@ async function maybeIdleOrStaleAlert(): Promise<void> {
   }
 }
 
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60_000;
+
+function desktopNotify(title: string, body: string): void {
+  try {
+    execFileSync(
+      'osascript',
+      ['-e', `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`],
+      { timeout: 5_000 },
+    );
+  } catch {
+    // best-effort: non-macOS box or no GUI session
+  }
+}
+
+/**
+ * Once a day, compare the installed Core commit against origin/main and notify
+ * the operator when behind. Gated by the `dispatch.update_check` audit event so
+ * the network call runs at most once per UPDATE_CHECK_INTERVAL_MS; deduped by
+ * remote sha via `dispatch.update_available` so the same pending update isn't
+ * re-announced every day. With updates.autoApply, runs 'nyx update' instead.
+ */
+async function maybeUpdateCheck(): Promise<void> {
+  if (config.settings.updates.check === false) return;
+  const last = lastEventAt('dispatch.update_check');
+  if (last && Date.now() - new Date(last).getTime() < UPDATE_CHECK_INTERVAL_MS) return;
+
+  const script = resolve(config.repoRoot, 'scripts', 'nyx-update-check.sh');
+  if (!existsSync(script)) return;
+
+  let out = '';
+  let code = 0;
+  try {
+    out = execFileSync('bash', [script], { encoding: 'utf8', timeout: 20_000, env: process.env }).trim();
+  } catch (err) {
+    const e = err as { status?: number; stdout?: Buffer | string };
+    code = typeof e.status === 'number' ? e.status : -1;
+    out = (e.stdout ?? '').toString().trim();
+  }
+  const parts = out.split(/\s+/);
+  const status = parts[0] || 'unknown';
+  audit('dispatch.update_check', 'dispatcher', { status });
+  if (code !== 10 && status !== 'update-available') return;
+
+  const local = parts[1] ?? '?';
+  const remote = parts[2] ?? '?';
+  const prev = lastEventPayload('dispatch.update_available');
+  if (prev && prev['remote'] === remote) return;
+  audit('dispatch.update_available', 'dispatcher', { local, remote });
+
+  if (config.settings.updates.autoApply) {
+    await notify.dm(`⬆️ Nyx update available (${local} → ${remote}). Auto-applying via 'nyx update'.`);
+    try {
+      execFileSync('bash', [resolve(config.repoRoot, 'scripts', 'nyx-update.sh')], {
+        env: process.env,
+        timeout: 10_000,
+      });
+    } catch {
+      // nyx-update detaches the reinstall; a non-zero/early return here is fine
+    }
+    return;
+  }
+  await notify.dm(`⬆️ Nyx update available: ${local} → ${remote}. Run 'nyx update' to apply.`);
+  desktopNotify('Nyx update available', `${local} → ${remote} — run 'nyx update'`);
+}
+
 async function auditInvalidTagged(queuePath: string): Promise<void> {
   const queue = readQueue(queuePath);
   const flagged = tasksWithInvalidTags(queue);
@@ -1035,6 +1101,8 @@ async function main(): Promise<void> {
   if (chainDepth >= config.maxChainDepth) {
     audit('dispatch.chain_limit_reached', 'dispatcher', { depth: chainDepth });
   }
+
+  await maybeUpdateCheck();
 
   await emitHook('tick.after', { slot: slotOf(), pid: process.pid });
   lock.release();

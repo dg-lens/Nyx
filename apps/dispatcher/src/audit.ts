@@ -11,6 +11,8 @@ export type AuditEvent =
   | 'dispatch.stale'
   | 'dispatch.chain_limit_reached'
   | 'dispatch.chain_verified'
+  | 'dispatch.update_check'
+  | 'dispatch.update_available'
   | 'task.started'
   | 'task.claude.exited'
   | 'task.gate.completed'
@@ -283,6 +285,21 @@ export function lastEventAt(event: AuditEvent): string | null {
   open();
   const row = lastEventStmt!.get(event) as { at: string } | undefined;
   return row?.at ?? null;
+}
+
+/** Parsed payload of the most recent occurrence of `event`, or null. Used to
+ * dedupe repeat notifications (e.g. don't re-DM the same pending update sha). */
+export function lastEventPayload(event: AuditEvent): Record<string, unknown> | null {
+  const d = open();
+  const row = d
+    .prepare(`SELECT payload FROM system_audit WHERE event = ? ORDER BY id DESC LIMIT 1`)
+    .get(event) as { payload: string } | undefined;
+  if (!row) return null;
+  try {
+    return JSON.parse(row.payload) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 /**

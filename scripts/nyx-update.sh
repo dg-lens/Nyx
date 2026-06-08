@@ -5,6 +5,7 @@ set -euo pipefail
 WANT_APP=0
 for a in "$@"; do
   [ "$a" = "--app" ] && WANT_APP=1
+  [ "$a" = "--check" ] && exec bash "$(dirname "$0")/nyx-update-check.sh"
 done
 
 if [ ! -d "$NYX_REPO_ROOT/.git" ]; then
