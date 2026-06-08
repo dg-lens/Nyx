@@ -27,7 +27,8 @@ SUBCOMMANDS
   status      Show launchd + dispatcher status
   tick        Force one dispatch tick
   up          Start Nyx via launchctl
-  update      Update Core to stock origin/main + rebuild (Data/Plugins untouched)
+  update      Update Core to latest origin/main + rebuild; on a brew install this
+              runs the Homebrew reinstall for you (--app to also rebuild the app)
 
   Run 'nyx <sub> --help' for subcommand-specific help where supported.
 
