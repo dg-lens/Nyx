@@ -12,10 +12,34 @@ struct PipelineSettings: Codable {
 struct DispatcherSettings: Codable {
     var maxChainDepth: Int = 2
     var taskTimeoutMs: Int = 1_800_000
-    var concurrencyGuard: Bool = true
+    var concurrencyGuard: String = "global"   // "global" | "own" | "off"
     var defaultModels: [String: String] = [
         "code": "sonnet", "analysis": "opus", "content": "sonnet", "assistant": "haiku", "pipeline": "opus",
     ]
+
+    enum CodingKeys: String, CodingKey {
+        case maxChainDepth, taskTimeoutMs, concurrencyGuard, defaultModels
+    }
+
+    init() {}
+
+    // Backward-compatible decode: older settings.json stored concurrencyGuard as a
+    // Bool (true=global, false=off). Accept both so an existing config doesn't wipe.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        maxChainDepth = try c.decodeIfPresent(Int.self, forKey: .maxChainDepth) ?? 2
+        taskTimeoutMs = try c.decodeIfPresent(Int.self, forKey: .taskTimeoutMs) ?? 1_800_000
+        if let s = try? c.decode(String.self, forKey: .concurrencyGuard) {
+            concurrencyGuard = s
+        } else if let b = try? c.decode(Bool.self, forKey: .concurrencyGuard) {
+            concurrencyGuard = b ? "global" : "off"
+        } else {
+            concurrencyGuard = "global"
+        }
+        defaultModels = try c.decodeIfPresent([String: String].self, forKey: .defaultModels) ?? [
+            "code": "sonnet", "analysis": "opus", "content": "sonnet", "assistant": "haiku", "pipeline": "opus",
+        ]
+    }
 }
 
 struct PluginSettings: Codable {

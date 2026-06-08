@@ -14,6 +14,7 @@ USAGE
   nyx --help
 
 SUBCOMMANDS
+  app         Build + install the desktop app to /Applications and launch it
   audit       Verify audit chain or inspect events  (e.g. 'nyx audit --chain')
   bootstrap   First-run setup: dirs, .env, nyx.md, launchd plist, build
   dispatch    Run one dispatch tick via the wrapper script

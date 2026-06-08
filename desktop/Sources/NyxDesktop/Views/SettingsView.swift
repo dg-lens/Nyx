@@ -147,8 +147,11 @@ struct SettingsView: View {
                     value: Binding(get: { s.settings.dispatcher.taskTimeoutMs / 60_000 },
                                    set: { s.settings.dispatcher.taskTimeoutMs = $0 * 60_000; s.saveSettings() }),
                     in: 1...120)
-            Toggle("Concurrency guard (skip tick if claude is running)",
-                   isOn: saving(\.dispatcher.concurrencyGuard))
+            Picker("Concurrency guard", selection: saving(\.dispatcher.concurrencyGuard)) {
+                Text("Global — skip a tick if any claude is running").tag("global")
+                Text("Own — skip only for Nyx's own claude (co-located box)").tag("own")
+                Text("Off — never skip").tag("off")
+            }
             DisclosureGroup("Default model by type") {
                 ForEach(taskTypes, id: \.self) { t in
                     Picker(t, selection: modelBinding(t)) {

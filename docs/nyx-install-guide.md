@@ -3,16 +3,27 @@
 For running Nyx's pipeline on a machine that's **already running other `claude -p`
 workloads** (e.g. a pm2 swarm). Nyx and the existing workers ignore each other.
 
+**The flow:** a one-time terminal install, then everything else — config, queueing
+work, approving gates, watching runs — happens in the **Nyx desktop app**. You should
+not need the command line after step 3 (a CLI equivalent is in the appendix for
+headless/SSH use).
+
+---
+
 ## 0. Prerequisites
 - **macOS** with [Homebrew](https://brew.sh).
-- **Repo access** — you must be a collaborator on `dg-lens/Nyx` (it's private). Run
-  `gh auth login` (GitHub CLI) or have git credentials so Homebrew can clone it.
-- **Claude on this box** — either Claude Code logged in with a **Max plan**
-  (recommended; spawned `claude -p` inherits the OAuth), or an Anthropic **API key**.
-- **git** + **gh** authenticated (the pipeline pushes branches + opens PRs).
-- `node` + `pnpm` are installed automatically by the formula.
+- **Repo access** — your GitHub account must be a collaborator on the private
+  `dg-lens/Nyx` repo (read), **and** have write access to whatever repos your pipeline
+  will build in (it pushes branches + opens PRs there). Ask the operator to grant both.
+- **Claude on this box** — Claude Code logged in with a **Max plan** (recommended;
+  the spawned `claude -p` inherits the OAuth), or an Anthropic **API key**.
+- **Xcode Command Line Tools** — needed once to build the desktop app:
+  `xcode-select --install`.
+- **git** + **gh** authenticated. `node` + `pnpm` are installed by the formula.
 
-## 1. Install
+---
+
+## 1. Install (terminal — one time)
 The repo is **private**, so authenticate first; Homebrew's git clone then uses your
 GitHub credentials:
 ```bash
@@ -20,96 +31,101 @@ gh auth login            # sign in to the GitHub account that has repo access
 gh auth setup-git        # let git + Homebrew use that auth
 brew tap dg-lens/nyx https://github.com/dg-lens/Nyx
 brew install --HEAD dg-lens/nyx/nyx
-nyx bootstrap
+nyx bootstrap            # creates ~/Nyx/Data (config, db, logs) + ~/Nyx/Plugins
 ```
-(The `curl … raw.githubusercontent … install.sh | bash` one-liner only works once
-the repo is **public** — `raw.githubusercontent.com` won't serve a private file
-anonymously. On a private repo, use the steps above.)
+(The `curl … raw.githubusercontent … | bash` one-liner only works once the repo is
+**public** — on a private repo use the steps above.)
 
-`nyx bootstrap` creates the sibling data layout:
-```
-~/Nyx/Data      nyx.md, settings.json, .env, data/ (SQLite), logs/, projects/, memory/
-~/Nyx/Plugins   your custom plugins (optional; stock plugins ship inside Core)
-```
-(Core itself lives in the keg, not under ~/Nyx — that's intentional; updates replace it.)
-
-## 2. Configure auth + identity — `~/Nyx/Data/.env`
-Edit the generated `~/Nyx/Data/.env`:
+## 2. Install the desktop app
 ```bash
-NAME=nyx                              # display name of this instance (rename if you like)
-OPERATOR_NAME=James
-GIT_AUTHOR_NAME=James Yourlastname    # your real, GitHub-linked name
-GIT_AUTHOR_EMAIL=james@yourdomain     # the email on your GitHub account
-ANTHROPIC_API_KEY=                    # LEAVE EMPTY to use this box's Claude Max OAuth.
-                                      # Only set it if you want API-key billing instead.
-GITHUB_TOKEN=                         # optional if `gh auth login` is done; else a PAT
+nyx app
 ```
-Slack and Bitwarden vars can stay empty — Nyx runs fine without them.
+Builds the SwiftUI app from the installed source, copies it to **`/Applications/Nyx.app`**,
+and launches it. Re-run `nyx app` any time to rebuild (e.g. after an update). Everything
+from here on is in the app.
 
-## 3. Configure the co-located guard — `~/Nyx/Data/settings.json`
-Create `~/Nyx/Data/settings.json` with:
-```json
-{
-  "dispatcher": {
-    "concurrencyGuard": "own"
-  },
-  "pipeline": {
-    "concurrentCap": 4,
-    "slackNotifications": false
-  }
-}
-```
-- **`concurrencyGuard: "own"`** is the important one — Nyx then tracks only *its own*
-  spawned `claude` processes and ignores your existing swarm, so it doesn't skip ticks.
-- **`concurrentCap`** = how many pipeline coders Nyx runs at once. Size it against your
-  shared Anthropic rate-limit budget (start at 4; lower if you hit limits, raise if you have headroom).
-- Anything you omit falls back to safe defaults.
+---
 
-## 4. Start + verify
+## 3. First-run setup — all in the **Settings** tab
+Open the **Settings** tab. Work top to bottom; each section has a Save button.
+
+- **Identity** — set your **Operator name** → *Save identity*.
+- **Environment & Secrets** — manage every variable here (no need to touch any file):
+  - `ANTHROPIC_API_KEY` — **leave blank** to use this box's Claude Max OAuth. Only set
+    it if you want API-key billing instead.
+  - `GITHUB_TOKEN` — optional if `gh auth login` is done; otherwise paste a PAT.
+  - Slack vars can stay blank. → *Save environment*.
+- **Dispatcher → Concurrency guard** — set to **“Own — skip only for Nyx's own claude
+  (co-located box)”**. This is the key setting for a shared box: Nyx then tracks only its
+  *own* spawned `claude` processes and ignores your pm2 swarm, so it never skips a tick.
+- **Pipeline** — set **concurrent cap** (start at 4; size it against your shared
+  Anthropic rate limit). Turn **Slack notifications** off unless you've wired Slack.
+  Leave **Auto-merge** off (review + merge stays yours).
+
+## 4. Start the daemon
+**Settings → Daemon → Start.** Status flips to “Running (5-min ticks)” and the health
+dot in the toolbar goes green; the toolbar shows a live **next-tick** countdown. The
+daemon restarts on reboot.
+
+## 5. Queue a pipeline run — **Dispatch** tab
+1. Type the feature idea in the text box.
+2. **Type** → `pipeline`.
+3. **Repo** → `org/name` for an existing GitHub repo (clone + PR at the end). Leave
+   blank to plan against the Nyx install itself; use `local` to build a brand-new
+   project under `~/Nyx/Data/projects/`.
+4. Click **Decompose & Queue**.
+
+The next tick (≤5 min) starts planning, or hit the toolbar **Tick** button to start now.
+
+## 6. Approve at the gates — **Gates** tab
+A run pauses here when it needs you. The tab shows a plain go/no-go recommendation plus
+any Yes/No decisions.
+
+- **Preview gate (◧)** — answer the Yes/No decisions, then **Go** to start coding.
+  **Revise** (with a note) re-plans; **Abort** stops the run.
+- **Review gate (◨)** — only appears if something couldn't be auto-reconciled.
+  **Accept & continue** merges what's held and continues; **Proceed (ship merged)**
+  ships what already merged; **Fix** (with a note) does a corrective re-run;
+  **Rollback** / **Abort** as needed.
+
+A clean run stops **once** (preview), then delivers a PR (for `org/name`) or a local
+project. It **never auto-merges** — review + merge is yours, and deploy is a manual step.
+
+## 7. Watch a run
+- **Monitor** tab — live run + queue status.
+- **Settings → Daemon → Open logs** — the raw tick logs if you want detail.
+
+---
+
+## 8. Update later
 ```bash
-brew services start dg-lens/nyx/nyx     # launchd: a 5-minute tick, restarts on reboot
-nyx status                              # daemon state, audit-chain health, queue
+brew uninstall nyx && brew install --HEAD dg-lens/nyx/nyx && nyx app
 ```
-`nyx status` should show the dispatcher loaded and the queue empty.
+Your `~/Nyx/Data` (config, queue, db, logs) and `~/Nyx/Plugins` are untouched — only
+Core code + the app are replaced.
 
-## 5. Run a pipeline task
-Add a task to `~/Nyx/Data/nyx.md` under `## Active Tasks`:
-```
-- [ ] MY-FEATURE-1 — Build <one-line description of the feature>
-      [type: pipeline]
-      [repo: your-org/your-repo]
-```
-- `[repo: org/name]` targets an existing GitHub repo (clone + PR at the end).
-- `[repo: local]` builds a brand-new project locally under `~/Nyx/Data/projects/<task>`.
-- No `[repo:]` plans against the Nyx install itself.
+---
 
-The next tick (≤5 min) starts planning and pauses at the **preview gate**. Drive it:
+## Appendix — CLI equivalents (headless / SSH only)
+Everything above maps to commands, for boxes where you can't run the GUI:
 ```bash
+# config: edit ~/Nyx/Data/settings.json  →  {"dispatcher":{"concurrencyGuard":"own"},
+#                                             "pipeline":{"concurrentCap":4,"slackNotifications":false}}
+# auth/identity: edit ~/Nyx/Data/.env  (NAME, OPERATOR_NAME, GIT_AUTHOR_*, ANTHROPIC_API_KEY, GITHUB_TOKEN)
+brew services start dg-lens/nyx/nyx        # start daemon  (= Settings → Daemon → Start)
+nyx status                                 # health
+# queue: add to ~/Nyx/Data/nyx.md under "## Active Tasks":
+#   - [ ] MY-FEATURE-1 — Build <one-line>
+#         [type: pipeline]
+#         [repo: org/name]
+nyx tick                                   # force a tick now  (= toolbar Tick)
 nyx pipeline list
-nyx pipeline status <RUN-ID>
-nyx pipeline go     <RUN-ID>            # approve the plan, start coding
-nyx pipeline revise <RUN-ID> --note "…" # re-plan with a correction
-# at the review gate (only if it stops there):
-nyx pipeline accept <RUN-ID>            # merge what's held + continue
-nyx pipeline proceed <RUN-ID>           # ship what merged
-nyx pipeline fix    <RUN-ID> --note "…" # corrective re-run
-nyx pipeline abort  <RUN-ID>
+nyx pipeline status  <RUN-ID>
+nyx pipeline go      <RUN-ID>              # preview: approve
+nyx pipeline revise  <RUN-ID> --note "…"   # preview: re-plan
+nyx pipeline accept  <RUN-ID>              # review: merge held + continue
+nyx pipeline proceed <RUN-ID>             # review: ship merged
+nyx pipeline fix     <RUN-ID> --note "…"   # review: corrective re-run
+nyx pipeline abort   <RUN-ID>
+tail -f ~/Nyx/Data/logs/dispatch-*.log
 ```
-A clean run stops once (preview), then delivers a PR (for `[repo:]`) or a local
-project (for `[repo: local]`). Force a tick instead of waiting: `nyx tick`.
-
-## 6. Operate
-```bash
-nyx status                                   # health
-tail -f ~/Nyx/Data/logs/dispatch-*.log       # tick log
-brew services stop  dg-lens/nyx/nyx          # stop the daemon
-brew services start dg-lens/nyx/nyx          # start it
-# update to latest:
-brew uninstall nyx && brew install --HEAD dg-lens/nyx/nyx
-```
-
-## Notes
-- Nyx and your existing `claude` workers share one machine + one Anthropic account —
-  size `concurrentCap` so the combined concurrency stays under your rate limit.
-- The pipeline opens PRs but **never auto-merges** — review + merge is yours.
-- Deploy of whatever the pipeline builds is a manual step (it stops at PR-ready).
