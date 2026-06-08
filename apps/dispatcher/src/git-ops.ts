@@ -141,6 +141,7 @@ export function branchName(taskId: string): string {
 export function createLocalWorktree(taskId: string): WorkingDir {
   if (!existsSync(resolve(config.root, '.git'))) {
     run('git init', config.root);
+    configureGitIdentity(config.root);
     if (!tryRun('git rev-parse --verify HEAD', config.root)) {
       run('git commit --allow-empty -m "nyx: init"', config.root);
     }

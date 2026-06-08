@@ -76,8 +76,10 @@ export const config = {
   // attribute to your account, and some CI providers (Vercel commit-author SSO,
   // GitHub Actions on PR-branch pushes) may reject or silently ignore commits
   // authored as a non-account address.
-  gitAuthorName: process.env.GIT_AUTHOR_NAME ?? 'Nyx Agent',
-  gitAuthorEmail: process.env.GIT_AUTHOR_EMAIL ?? 'nyx@localhost',
+  // `||` not `??`: a blank GIT_AUTHOR_NAME= in .env is an empty string, which `??`
+  // would NOT replace — leaving git with an empty identity ("empty ident name").
+  gitAuthorName: process.env.GIT_AUTHOR_NAME || 'Nyx Agent',
+  gitAuthorEmail: process.env.GIT_AUTHOR_EMAIL || 'nyx@localhost',
 
   /**
    * Per-repo overrides for what branch Nyx targets and whether it opens a
