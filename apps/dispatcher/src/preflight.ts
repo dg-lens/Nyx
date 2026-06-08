@@ -25,7 +25,6 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { audit } from './audit.js';
-import { checkDocUpdatesSpecMalformed } from './doc-sweep-verifier.js';
 import { parseReadingRefs, resolveReadingRefs } from './reading-resolver.js';
 import { fetchProjectSecretValues } from './secrets/bitwarden-client.js';
 import { resolveProject } from './secrets/project-registry.js';
@@ -88,21 +87,6 @@ export interface PreflightResult {
 }
 
 export function runPreflight(task: ParsedTask, workingDir: string): PreflightResult {
-  // ── Doc-updates spec malformed check ──
-  // Only for code tasks. Catches fuzzy tier references ("T3 of the affected repo")
-  // without a concrete file path BEFORE burning Claude compute. Concrete-path
-  // enforcement (did the agent actually touch the declared files?) runs at finalize.
-  if (task.type === 'code') {
-    const malformed = checkDocUpdatesSpecMalformed(task.rawLines.join('\n'));
-    if (malformed) {
-      audit('task.preflight.failed', 'preflight', {
-        taskId: task.id,
-        check: 'doc_updates_spec',
-        failure_log_excerpt: malformed.slice(0, 500),
-      });
-      return { passed: false, failureLog: `Pre-flight doc-updates spec check failed:\n\n${malformed}` };
-    }
-  }
 
   // ── Reading-tag resolution check (v0.12) ──
   // Type-agnostic — runs regardless of task type or working-dir shape. Fails fast

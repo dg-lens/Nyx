@@ -446,21 +446,17 @@ ${ctx.originalPrompt}
 ${ctx.failureLog.slice(0, 4000)}
 \`\`\`
 
-## STEP 0 — Consult Tier 4 diagnostic memory BEFORE forming a hypothesis
+## STEP 0 — Consult the Arachne memory graph BEFORE forming a hypothesis
 
-\`~/Nyx/diagnostic-memory/\` is an append-only record of past failures, the fixes that worked, and the wrong fixes that were attempted along the way. Many recurring bug-classes have been documented there.
+The stack's memory is a knowledge graph at \`~/Nyx/Data/memory\` (nodes + MOCs, read via the \`memory_*\` MCP tools). \`lesson\` and \`invariant\` nodes record past failures, the fix that worked, and the wrong paths (\`ANTI:\`) tried along the way. Many recurring bug-classes are already nodes.
 
 Required before suggesting any fix:
 
-1. Read \`~/Nyx/diagnostic-memory/INDEX.md\` — table of all known patterns with tags
-2. Grep for keywords from the failure log:
-   \`\`\`bash
-   grep -rli "<keyword>" ~/Nyx/diagnostic-memory/
-   \`\`\`
-3. If you find a matching pattern, read its \`Correct fix\` AND \`Wrong fixes attempted\` sections in full
-4. If your intended approach matches a documented "Wrong fix" — **DO NOT do it again**. Pick a different approach.
+1. Query the graph for the failure: \`memory_search\` on keywords from the failure log, or grep \`~/Nyx/Data/memory/nodes/\` for the error substring.
+2. If a node matches, read its \`FIX:\` and \`ANTI:\` sections in full.
+3. If your intended approach matches a documented \`ANTI:\` (a wrong path) — **DO NOT do it again**. Pick a different approach.
 
-This is not optional. Many of today's failure classes (fly token scope, supabase ES256, CORS subdomain aliases, env var name drift) are already documented with the correct fix. Re-discovering them wastes operator time and Anthropic budget.
+This is not optional. Many failure classes (fly token scope, supabase ES256, CORS subdomain aliases, env-var name drift, double /rest/v1) are already nodes with the correct fix. Re-discovering them wastes operator time and Anthropic budget.
 
 ## STEP 1 — Diagnose + fix
 
@@ -470,17 +466,17 @@ The working directory (\`${ctx.workingDir}\`) is preserved from the failed attem
 2. If you can fix it: make the patch, then COMPLETE the original task. The work is not done — the prior agent failed before finishing. You must produce the artifacts the task description asked for. Nyx will re-run the gate after you exit; if it passes, the task is considered complete.
 3. If you cannot fix it without operator input (missing env var, broken external service, ambiguous spec, etc.): do not flail. Exit with a clear verdict.
 
-## STEP 2 — Append a Tier 4 entry if your fix is non-trivial
+## STEP 2 — Write a memory node if your fix is non-trivial
 
-If your diagnosis involved real debugging (not just "ran missing command"), create \`~/Nyx/diagnostic-memory/YYYY-MM-DD-<short-slug>.md\` documenting:
+If your diagnosis involved real debugging (not just "ran missing command"), write a \`lesson\` node to \`~/Nyx/Data/memory/nodes/<id>.md\` (scope-meaningful kebab id, no date prefix) via \`memory_write\` or directly, with the body skeleton:
 
-- Symptom (the literal error string, the user-visible behavior)
-- Cause (root cause, not surface)
-- Wrong fixes attempted (anything you tried that didn't work, OR considered but rejected)
-- Correct fix (what actually worked, with commands/snippets)
-- Tags + frontmatter (see existing entries for format)
+- \`SYMPTOM:\` the literal error string + user-visible behavior
+- \`CAUSE:\` root cause, not surface
+- \`ANTI:\` wrong fixes attempted (tried-and-failed, or considered+rejected) — the highest-value section
+- \`FIX:\` what actually worked, with commands/snippets
+- \`CHECK:\` how to verify / a regression guard
 
-Then add a row to \`INDEX.md\`. This makes your debugging permanent capacity — future agents won't repeat it.
+Set \`loc\`, \`pattern_signature\` (grep-friendly error substring), \`provenance: agent\`, \`confidence: medium\`. This makes your debugging permanent capacity — future agents won't repeat it.
 
 If your fix is trivial (typo, missing import, etc.), skip the memory entry.
 

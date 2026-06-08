@@ -4,8 +4,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 
 import { audit } from '../audit.js';
 import { config } from '../config.js';
-import { changedFiles, changedFilesWorkingTree, detectDeployRequired } from '../deploy-detector.js';
-import { verifyDocUpdates } from '../doc-sweep-verifier.js';
+import { changedFiles, detectDeployRequired } from '../deploy-detector.js';
 import * as git from '../git-ops.js';
 import * as notify from '../notifier.js';
 import type { ParsedTask, RunOutcome } from '../types.js';
@@ -29,34 +28,6 @@ function resolveOutputBase(output: string, ...extra: string[]): string | null {
   const base = resolve(config.dataDir, output.replace(/\/$/, ''), ...extra);
   const rel = relative(config.dataDir, base);
   if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return base;
-  return null;
-}
-
-/**
- * Run the doc-sweep verifier before committing. Returns a failure log string
- * if any declared doc-update path wasn't touched, null if all checks pass.
- *
- * Runs before `git.commitAll` so a failure leaves the working dir intact for
- * the audit pipeline to patch the missing docs and re-attempt.
- */
-function runDocSweep(task: ParsedTask, workingDirPath: string): string | null {
-  const specBody = task.rawLines.join('\n');
-  const diffFiles = changedFilesWorkingTree(workingDirPath);
-  const result = verifyDocUpdates(specBody, diffFiles);
-  if (!result.ok) {
-    audit('task.doc_sweep.failed', 'dispatcher', {
-      taskId: task.id,
-      declared_paths: [...result.verifiedPaths, ...result.missing],
-      missing_paths: result.missing,
-    });
-    return `Doc-sweep verifier: declared doc updates not applied: ${result.missing.join(', ')}`;
-  }
-  if (result.verifiedPaths.length > 0) {
-    audit('task.doc_sweep.passed', 'dispatcher', {
-      taskId: task.id,
-      verified_paths: result.verifiedPaths,
-    });
-  }
   return null;
 }
 
@@ -140,11 +111,6 @@ function maybeEmitDeployRequired(
 
 export async function finalizeCodeLocal(ctx: FinalizeContext): Promise<RunOutcome> {
   const { task, workingDir, durationMs } = ctx;
-  const docSweepFailure = runDocSweep(task, workingDir.path);
-  if (docSweepFailure) {
-    return { taskId: task.id, status: 'failed', durationMs, failureLog: docSweepFailure };
-  }
-
   const message = `nyx(${task.id}): ${task.description}`;
   const didCommit = git.commitAll(workingDir.path, message);
 
@@ -210,11 +176,6 @@ export async function finalizeCodeExternal(ctx: FinalizeContext): Promise<RunOut
   const { task, workingDir, durationMs } = ctx;
   if (!workingDir.branch) {
     return { taskId: task.id, status: 'failed', durationMs, failureLog: 'no branch on working dir' };
-  }
-
-  const docSweepFailure = runDocSweep(task, workingDir.path);
-  if (docSweepFailure) {
-    return { taskId: task.id, status: 'failed', durationMs, failureLog: docSweepFailure };
   }
 
   const message = `nyx(${task.id}): ${task.description}`;

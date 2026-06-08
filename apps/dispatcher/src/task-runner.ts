@@ -133,28 +133,9 @@ export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): strin
     }
 
     sections.push('');
-    sections.push('## Before you exit — doc-sweep');
+    sections.push('## Before you exit — grow the memory graph');
     sections.push('');
-    sections.push('**The doc-sweep verifier will check your diff against the `## Doc updates` section after gate passes.** If this task has a `## Doc updates` section, every concrete path listed there MUST appear in your changed files before Nyx commits. Failing to update a declared doc path will fail the task at finalize and burn additional compute on the audit-phase patch step. Update the docs as part of THIS task — do not defer.');
-    sections.push('');
-    sections.push('If your work changes anything future agents would benefit from knowing, update the appropriate CLAUDE.md tier BEFORE you finish. This closes the write-side of the doc system established in `~/.claude/CLAUDE.md` §5 — without it, every behavior change you make silently rots the docs for the next session.');
-    sections.push('');
-    sections.push('| If your change... | Update... |');
-    sections.push('|---|---|');
-    sections.push('| Adds or renames an env var that code reads at runtime | T2 (or T3) of the affected repo\'s CLAUDE.md — the section that lists env vars |');
-    sections.push('| Adds a new sub-app under `apps/` | [T1 §2] sub-app directory row AND create the new app\'s T3 `CLAUDE.md` |');
-    sections.push('| Adds a brand-new repo to the stack | [T1 §1] repo directory row AND create that repo\'s T2 `CLAUDE.md` |');
-    sections.push('| Adds a new deploy target (new Fly app, new Vercel project, etc.) | T2 (or T3) deploy section + secret-mirror procedure if applicable |');
-    sections.push('| Introduces a new third-party service / API dependency | T2 (or T3) with a one-line note + link to vendor docs |');
-    sections.push('| Adds a new route / endpoint that the portal calls | T3 of the backend that exposes it (route table or surface list) |');
-    sections.push('| Changes the auth chain, JWT verification, CORS, or any cross-component contract | T2 (or T3) of the affected repo + cite the related `[T4 <slug>]` entry if one exists |');
-    sections.push('| Resolves a non-trivial bug-class (debugging effort > trivial) | Write a [T4] entry per the protocol in `~/.claude/CLAUDE.md` §4 |');
-    sections.push('');
-    sections.push('**Default tier when unsure: T2 of the affected repo.** Hoist UP to T1 ONLY if the fact genuinely applies to ≥ 2 repos. T1 bloat is harmful — it loads for every session including ones that never touch the affected repo.');
-    sections.push('');
-    sections.push('**Compounding clause:** every doc update you make becomes context for future agents. Skipping the doc-sweep is borrowing against future sessions — DOCS-DRIFT-AUDIT (runs every 24h) will surface it as a finding, but a finding 24h later is more expensive than a one-line edit now.');
-    sections.push('');
-    sections.push('**Format note:** lower tiers may reference higher tiers via `[T1 §3.1]` syntax — grep-friendly + intent obvious. Do not duplicate facts across tiers; if you find you need to, hoist the fact up instead.');
+    sections.push('The stack\'s knowledge lives in the Arachne memory graph at `~/Nyx/Data/memory` (nodes + MOCs, read via the `memory_*` MCP), not in tiered CLAUDE.md docs. If this task surfaced a durable lesson, invariant, decision, or convention a future agent would get wrong without it, capture it as a node — the wisdom step after the gate will prompt you for exactly that, so note what\'s worth keeping now. Store what corrects, not what confirms; a routine task needs no node.');
   } else if (task.type === 'analysis') {
     sections.push('');
     sections.push('Instructions:');
