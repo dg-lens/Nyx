@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @StateObject private var s = SettingsStore()
+    @EnvironmentObject var store: Store
     @State private var logoVersion = 0
 
     private let models = ["haiku", "sonnet", "opus"]
@@ -16,6 +17,7 @@ struct SettingsView: View {
             pluginsSection
             pipelineSection
             dispatcherSection
+            updatesSection
             environmentSection
             daemonSection
             dataSection
@@ -159,6 +161,15 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var updatesSection: some View {
+        Section("Updates") {
+            Toggle("Check for updates daily", isOn: saving(\.updates.check))
+            Toggle("Auto-apply updates (runs 'nyx update' automatically)", isOn: saving(\.updates.autoApply))
+                .disabled(!s.settings.updates.check)
+            Button("Check now") { store.checkForUpdate(force: true) }.controlSize(.small)
         }
     }
 
