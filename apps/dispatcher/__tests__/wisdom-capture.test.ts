@@ -13,6 +13,7 @@ import {
   _setMemoryNodesDir,
   type WisdomCapture,
 } from '../src/wisdom-capture.js';
+import { buildIndex } from '../src/memory/arachne.js';
 
 let tmpDir: string;
 
@@ -43,6 +44,51 @@ describe('routeWisdomCapture — Graph target (memory vault)', () => {
     assert.match(raw, /summary: "x: y has a colon"/);
     assert.match(raw, /kind: lesson/);
     assert.match(raw, /The lesson body\./);
+    // H1: the node MUST carry the schema the engine reads — loc (not scope), a
+    // valid load value (not on-demand), and audience. The old scope/visibility/
+    // load:on-demand shape left every captured node invisible to retrieval.
+    assert.match(raw, /loc: \[stack\.nyx\]/);
+    assert.match(raw, /load: match/);
+    assert.match(raw, /audience: \[coder, reviewer\]/);
+    assert.doesNotMatch(raw, /^scope:/m);
+    assert.doesNotMatch(raw, /load: on-demand/);
+    assert.doesNotMatch(raw, /^visibility:/m);
+    // The decisive proof: the engine parses it with a non-empty loc → retrievable.
+    // injection/MOC/search all filter on loc; an empty loc (the H1 bug) matches none.
+    const node = buildIndex(tmpDir).find((n) => n.id === 'demo-graph-lesson');
+    assert.ok(node, 'node is indexed by the engine');
+    assert.deepEqual(node!.loc, ['stack.nyx']);
+    assert.equal(node!.load, 'match');
+    assert.ok(node!.audience.includes('coder'));
+  });
+
+  test('legacy scope token is mapped onto the canonical loc spine (back-compat)', () => {
+    const nodesDir = resolve(tmpDir, 'nodes');
+    mkdirSync(nodesDir, { recursive: true });
+    _setMemoryNodesDir(nodesDir);
+    writeWisdom(
+      { target: 'Graph', id: 'outreach-lesson', kind: 'lesson', scope: ['outreach'], summary: 's' },
+      'A lesson about outreach.',
+    );
+    routeWisdomCapture(parseWisdomFile(tmpDir) as WisdomCapture, 'TASK-3', tmpDir);
+    const node = buildIndex(tmpDir).find((n) => n.id === 'outreach-lesson');
+    assert.ok(node);
+    assert.deepEqual(node!.loc, ['stack.employee-portal.outreach-api']);
+  });
+
+  test('explicit loc + triggers are honored and indexed', () => {
+    const nodesDir = resolve(tmpDir, 'nodes');
+    mkdirSync(nodesDir, { recursive: true });
+    _setMemoryNodesDir(nodesDir);
+    writeWisdom(
+      { target: 'Graph', id: 'pipeline-lesson', kind: 'invariant', loc: ['stack.nyx.pipeline'], triggers: ['empty ident', 'git clone'], summary: 's' },
+      'A pipeline invariant.',
+    );
+    routeWisdomCapture(parseWisdomFile(tmpDir) as WisdomCapture, 'TASK-4', tmpDir);
+    const node = buildIndex(tmpDir).find((n) => n.id === 'pipeline-lesson');
+    assert.ok(node);
+    assert.deepEqual(node!.loc, ['stack.nyx.pipeline']);
+    assert.ok(node!.triggers.includes('empty ident'));
   });
 
   test('Graph on an existing id appends, does not clobber', () => {
@@ -212,9 +258,10 @@ describe('buildWisdomPrompt', () => {
     assert.ok(prompt.includes('Graph'), 'prompt should advertise the Graph target');
     assert.ok(prompt.includes('None'), 'prompt should keep the None opt-out');
     assert.ok(prompt.includes('memory/nodes'), 'prompt should point at the vault node path');
-    for (const field of ['"id"', '"kind"', '"scope"', '"summary"']) {
+    for (const field of ['"id"', '"kind"', '"loc"', '"triggers"', '"summary"']) {
       assert.ok(prompt.includes(field), `prompt should document the ${field} node field`);
     }
+    assert.ok(!prompt.includes('"scope"'), 'prompt must no longer advertise the dead scope field');
   });
 
   test('includes the json fence format example', () => {

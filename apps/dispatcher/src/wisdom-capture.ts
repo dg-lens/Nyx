@@ -17,7 +17,12 @@ export interface WisdomCapture {
   // Graph target — a node in the memory vault
   id?: string;
   kind?: string;
+  // `loc` is the canonical location-spine the engine indexes on (e.g.
+  // 'stack.nyx', 'stack.employee-portal'). `scope` is the legacy field agents
+  // used to emit; it is mapped onto `loc` for backward compatibility.
+  loc?: string[];
   scope?: string[];
+  triggers?: string[];
   summary?: string;
   title?: string;
 }
@@ -82,7 +87,9 @@ function parseWisdomContent(raw: string): WisdomCapture | null {
     ...(meta.agent_reason ? { agentReason: meta.agent_reason } : {}),
     ...(meta.id ? { id: meta.id } : {}),
     ...(meta.kind ? { kind: meta.kind } : {}),
+    ...(Array.isArray(meta.loc) ? { loc: meta.loc } : {}),
     ...(Array.isArray(meta.scope) ? { scope: meta.scope } : {}),
+    ...(Array.isArray(meta.triggers) ? { triggers: meta.triggers } : {}),
     ...(meta.summary ? { summary: meta.summary } : {}),
     ...(meta.title ? { title: meta.title } : {}),
   };
@@ -96,7 +103,9 @@ interface WisdomMeta {
   agent_reason?: string | null;
   id?: string | null;
   kind?: string | null;
+  loc?: string[] | null;
   scope?: string[] | null;
+  triggers?: string[] | null;
   summary?: string | null;
   title?: string | null;
 }
@@ -116,12 +125,15 @@ function isWisdomMeta(v: unknown): v is WisdomMeta {
   if (obj['kind'] !== undefined && obj['kind'] !== null && typeof obj['kind'] !== 'string') return false;
   if (obj['summary'] !== undefined && obj['summary'] !== null && typeof obj['summary'] !== 'string') return false;
   if (obj['title'] !== undefined && obj['title'] !== null && typeof obj['title'] !== 'string') return false;
-  if (
-    obj['scope'] !== undefined &&
-    obj['scope'] !== null &&
-    (!Array.isArray(obj['scope']) || !obj['scope'].every((s) => typeof s === 'string'))
-  )
-    return false;
+  for (const key of ['loc', 'scope', 'triggers']) {
+    const val = obj[key];
+    if (
+      val !== undefined &&
+      val !== null &&
+      (!Array.isArray(val) || !val.every((s) => typeof s === 'string'))
+    )
+      return false;
+  }
 
   // Graph nodes need a valid kebab-case id; without it we can't write the node.
   if (obj['target'] === 'Graph') {
@@ -147,26 +159,59 @@ export function routeWisdomCapture(
 
 const GRAPH_KINDS = ['lesson', 'invariant', 'decision', 'procedure', 'aesthetic'];
 
+// Legacy `scope` tokens → canonical `loc` spine. The engine indexes on `loc`
+// (stack ⊃ stack.nyx ⊃ stack.nyx.{pipeline,…}; stack.employee-portal[.…]), so a
+// node tagged with the wrong field is invisible to every retrieval path.
+const SCOPE_TO_LOC: Record<string, string> = {
+  nyx: 'stack.nyx',
+  portal: 'stack.employee-portal',
+  marketing: 'stack.employee-portal.marketing-api',
+  outreach: 'stack.employee-portal.outreach-api',
+  stack: 'stack',
+};
+
+/**
+ * Resolve the node's `loc` (the location spine the Arachne engine indexes on).
+ * Prefer the agent's explicit `loc`; fall back to mapping the legacy `scope`
+ * tokens; default to ['stack.nyx']. Never returns an empty array — an empty
+ * `loc` is exactly the H1 bug (node matches no scope, appears in no MOC, is
+ * never injected or searched).
+ */
+function wisdomLoc(wisdom: WisdomCapture): string[] {
+  const fromLoc = (wisdom.loc ?? []).map((l) => l.trim()).filter(Boolean);
+  if (fromLoc.length > 0) return fromLoc;
+  const fromScope = (wisdom.scope ?? [])
+    .map((s) => s.toLowerCase().trim())
+    .filter(Boolean)
+    .map((t) => (t.startsWith('stack') ? t : (SCOPE_TO_LOC[t] ?? `stack.${t}`)));
+  return fromScope.length > 0 ? fromScope : ['stack.nyx'];
+}
+
 function yamlQuote(v: string): string {
   return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
 
 /**
- * Writes a node into the memory vault (the graph is the source of truth now).
- * Mirrors routeToT4 but targets ~/Nyx/memory/nodes/<id>.md with graph
- * frontmatter. title/summary are always quoted so a colon can't break YAML.
- * If the node already exists, the lesson is appended to its body (never clobber)
- * — dedup/merge is the curator's job, not the wisdom spawn's.
+ * Write a captured lesson into the memory vault. The graph is the source of
+ * truth, so a new node MUST carry the exact schema the engine reads —
+ * `loc`/`audience` + a VALID `load` value (`always|entry|match|manual`).
+ * Previously this hand-rolled `scope`/`visibility`/`load: on-demand`, none of
+ * which the engine reads (it reads `loc`/`audience`, and `on-demand` is not a
+ * valid `load`), so every captured node was written but invisible to injection,
+ * MOCs, and search — the H1 defect. title/summary/triggers are yamlQuote'd so a
+ * colon in a value (e.g. an error-string summary) can't break the frontmatter.
+ * If the node already exists it is already well-formed + indexed, so the lesson
+ * is appended (never clobber) — dedup/merge is the curator's job.
  */
 function routeToGraph(wisdom: WisdomCapture, taskId: string): { fileModified: string | null } {
   if (!wisdom.id || !/^[a-z0-9][a-z0-9-]*$/.test(wisdom.id)) return { fileModified: null };
 
-  const dir = getMemoryNodesDir();
-  const filePath = resolve(dir, `${wisdom.id}.md`);
+  const nodesDir = getMemoryNodesDir();
+  const filePath = resolve(nodesDir, `${wisdom.id}.md`);
   const date = new Date().toISOString().slice(0, 10);
 
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(nodesDir, { recursive: true });
 
     if (existsSync(filePath)) {
       appendFileSync(filePath, `\n## Update (from ${taskId}, ${date})\n\n${wisdom.paragraph}\n`, 'utf8');
@@ -174,27 +219,31 @@ function routeToGraph(wisdom: WisdomCapture, taskId: string): { fileModified: st
     }
 
     const kind = wisdom.kind && GRAPH_KINDS.includes(wisdom.kind) ? wisdom.kind : 'lesson';
-    const scope = wisdom.scope && wisdom.scope.length > 0 ? wisdom.scope : ['nyx'];
+    const loc = wisdomLoc(wisdom);
     const summary = wisdom.summary ?? wisdom.paragraph.slice(0, 100).replace(/\s+/g, ' ').trim();
     const title = wisdom.title ?? wisdom.id.replace(/-/g, ' ');
+    const triggers = (wisdom.triggers ?? []).map((t) => t.trim()).filter(Boolean);
 
     const content = [
       '---',
       `id: ${wisdom.id}`,
+      `kind: ${kind}`,
       `title: ${yamlQuote(title)}`,
       `summary: ${yamlQuote(summary)}`,
-      `kind: ${kind}`,
-      `scope: [${scope.map(yamlQuote).join(', ')}]`,
-      'load: on-demand',
+      `loc: [${loc.join(', ')}]`,
+      'load: match',
+      'audience: [coder, reviewer]',
+      'weight: 4',
+      ...(triggers.length > 0 ? [`triggers: [${triggers.map(yamlQuote).join(', ')}]`] : []),
+      'provenance: agent',
+      'confidence: medium',
       'status: active',
+      'review: pending',
       `created: ${date}`,
       `updated: ${date}`,
-      'visibility: shared',
       '---',
       '',
       `# ${title}`,
-      '',
-      '<!-- pending operator review -->',
       '',
       wisdom.paragraph,
       '',
@@ -263,7 +312,8 @@ export function buildWisdomPrompt(): string {
     '  "target": "<Graph|None>",',
     '  "id": "<kebab-case node id — REQUIRED for Graph, e.g. outreach-send-gate-blackout>",',
     '  "kind": "<lesson|invariant|decision|procedure|aesthetic>",',
-    '  "scope": ["<nyx|portal|marketing|outreach|stack>"],',
+    '  "loc": ["<location spine: stack.nyx | stack.nyx.pipeline | stack.nyx.dispatch | stack.employee-portal | stack>"],',
+    '  "triggers": ["<keywords a future agent would search to surface this: error strings, symbol names, filenames>"],',
     '  "summary": "<one-line matchable hint — for a lesson: \\"<signature> — <root cause>\\">",',
     '  "title": "<optional human-readable title>",',
     '  "agent_reason": "<one sentence: why this lesson matters>"',
@@ -279,10 +329,12 @@ export function buildWisdomPrompt(): string {
     '',
     '| Target | When to use | What happens |',
     '|---|---|---|',
-    '| `Graph` | **The default for any durable lesson** — a non-obvious constraint, gotcha, invariant, decision, or convention worth preserving. | Writes a node at `~/Nyx/Data/memory/nodes/<id>.md` with `kind`/`scope`/`summary` frontmatter. If a node with that `id` already exists, your lesson is appended to it (no clobber). |',
+    '| `Graph` | **The default for any durable lesson** — a non-obvious constraint, gotcha, invariant, decision, or convention worth preserving. | Writes a node at `~/Nyx/Data/memory/nodes/<id>.md` with `kind`/`loc`/`summary`/`triggers` frontmatter. If a node with that `id` already exists, your lesson is appended to it (no clobber). |',
     '| `None` | Nothing worth capturing — routine task, documented pattern, or the lesson is already a node. | No-op. |',
     '',
-    'Pick an `id` that reads like the existing nodes (scope-meaningful kebab, no date prefix): `nyx-…`, `outreach-…`, `portal-…`, etc. Pick `kind` by what the lesson IS (a bug+fix → `lesson`; a stable rule → `invariant`; a why-we-chose → `decision`; a how-to → `procedure`; a code-style rule → `aesthetic`).',
+    'Pick an `id` that reads like the existing nodes (location-meaningful kebab, no date prefix): `nyx-…`, `outreach-…`, `portal-…`, etc. Pick `kind` by what the lesson IS (a bug+fix → `lesson`; a stable rule → `invariant`; a why-we-chose → `decision`; a how-to → `procedure`; a code-style rule → `aesthetic`).',
+    '',
+    'Set `loc` to where the lesson lives on the location spine the retriever indexes on — `stack.nyx` (or a segment: `stack.nyx.pipeline`, `stack.nyx.dispatch`, `stack.nyx.secrets`, `stack.nyx.composer`, `stack.nyx.desktop`), `stack.employee-portal[.marketing-api|.outreach-api]`, or `stack` for cross-stack. Set `triggers` to the few keywords (error strings, symbol/file names) a future agent would have in context when this lesson should resurface — this is what makes the node match-injected, not just stored.',
     '',
     '## Anti-gaming note',
     '',
