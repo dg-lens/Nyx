@@ -210,11 +210,21 @@ export function buildReviewBrief(run: PipelineRun, reason: ShipReason, smoke: Sm
   L.push(`**${reviewRecommendation(run, reason, smoke)}**`);
   L.push('');
   L.push('```');
-  L.push(`nyx pipeline accept ${run.id}        # merge held task(s) + CONTINUE the build`);
-  L.push(`nyx pipeline proceed ${run.id}       # ship ONLY what merged + STOP (PR now)`);
-  L.push(`nyx pipeline fix ${run.id} --note "..."   # corrective wave`);
-  L.push(`nyx pipeline rollback ${run.id}      # replan from scratch`);
-  L.push(`nyx pipeline abort ${run.id}`);
+  if (reason === 'base_missing') {
+    // The working base was evicted between ticks — earlier phases' merged code
+    // lived ONLY in that vanished base. accept/proceed/fix all operate against the
+    // base (merge held branches, ship what merged, re-code from the integration
+    // branch) and would all fail against a base that no longer exists. Only a full
+    // replan (rollback) or abort is actionable, so render only those.
+    L.push(`nyx pipeline rollback ${run.id}      # replan from scratch (the base is gone)`);
+    L.push(`nyx pipeline abort ${run.id}`);
+  } else {
+    L.push(`nyx pipeline accept ${run.id}        # merge held task(s) + CONTINUE the build`);
+    L.push(`nyx pipeline proceed ${run.id}       # ship ONLY what merged + STOP (PR now)`);
+    L.push(`nyx pipeline fix ${run.id} --note "..."   # corrective wave`);
+    L.push(`nyx pipeline rollback ${run.id}      # replan from scratch`);
+    L.push(`nyx pipeline abort ${run.id}`);
+  }
   L.push('```');
   L.push('');
   L.push(`Integrated: ${f.merged.length ? f.merged.join(', ') : '(none)'} · Held: ${f.held.length ? f.held.join(', ') : '(none)'}`);

@@ -453,9 +453,15 @@ async function handleReviewDecision(run: PipelineRun, deps: ResolvedDeps): Promi
     if (stillHeld.length > 0) {
       // A held branch genuinely conflicts — can't silently drop it. Re-park at the
       // review gate (clear the decision so the tick doesn't loop) with a fresh brief.
+      // This re-park does NOT change status (stays awaiting_review), so it bypasses
+      // the transition() helper's gate-arming lease clear — release the resume_lease
+      // EXPLICITLY here. The accept decision was consumed under a future-dated lease
+      // (stamped by claimRunForResume when this tick claimed the run); leaving it
+      // intact fences the operator's NEXT decision (fix/rollback/abort) out of the
+      // CAS until the lease expires (up to RESUME_LEASE_MS), stalling the run.
       const briefPath = writeBriefFile(cur.id, buildReviewBrief(cur, 'unresolved', null));
       void notify.pipelineAwaitingGate(cur.id, cur.task_id, 'review', `accept: ${stillHeld.join(', ')} conflict — needs fix/rollback`);
-      return updateRun(cur.id, { operator_decision: null, bz_brief_path: briefPath }, now()) ?? cur;
+      return updateRun(cur.id, { operator_decision: null, bz_brief_path: briefPath, resume_lease: null }, now()) ?? cur;
     }
     const plan = parsePlanJson(cur.plan_json);
     const phases = plan ? groupPhases(plan.plans) : [];
