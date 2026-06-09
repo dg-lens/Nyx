@@ -85,4 +85,12 @@ export interface RunOutcome {
   outputPath?: string;
   failureLog?: string;
   testsPassed?: number;
+  /**
+   * Non-blocking operator-review flags raised during the attempt (finding G-C:
+   * the gate ran against a diff that touched gate-controlling test-infra files).
+   * Present on a `completed` outcome — the task succeeded, but the operator
+   * should eyeball the flagged paths because the agent could have steered the
+   * gate green. Absent when nothing was flagged.
+   */
+  reviewFlags?: string[];
 }

@@ -54,6 +54,8 @@ import { redactCredentialPatterns } from '../redaction.js';
 import { buildPrompt, invokeClaude, invokeWisdomCapture } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
+import { changedFilesWorkingTree } from '../deploy-detector.js';
+import { assessGateTrust } from '../gate-trust.js';
 import {
   finalizeAnalysis,
   finalizeAssistant,
@@ -548,6 +550,30 @@ async function attemptTask(
     }
   }
 
+  // ── Gate-trust flag (finding G-C) ──
+  // The gate just ran INSIDE the worktree the agent controls. If the agent's
+  // diff touched gate-controlling test-infra (conftest.py, jest/vitest config,
+  // a CI workflow, the package.json scripts block), the green verdict could have
+  // been steered rather than earned (the SWE-bench conftest hole). CAREFUL
+  // POLICY: flag for operator review — do NOT fail. A task whose purpose IS
+  // editing test config is legitimate and must pass; we only surface the touched
+  // paths so the operator can confirm the gate wasn't gamed. Code tasks only —
+  // analysis/content/assistant tasks neither run a gate nor commit a code diff.
+  let reviewFlags: string[] | undefined;
+  if (task.type === 'code') {
+    const changed = changedFilesWorkingTree(workingDir.path);
+    const trust = assessGateTrust(workingDir.path, changed);
+    if (trust.paths.length > 0) {
+      reviewFlags = trust.paths;
+      audit('task.gate.test_infra_touched', 'dispatcher', {
+        taskId: task.id,
+        paths: trust.paths,
+        categories: [...new Set(trust.hits.map((h) => h.category))],
+      });
+      await notify.taskGateTestInfraTouched(task.id, trust.paths);
+    }
+  }
+
   const testsPassed = countTestsPassed(gate.stages.map(s => s.log).join('\n'));
   const ctx = { task, workingDir, durationMs: Date.now() - startedAt, ...(testsPassed != null ? { testsPassed } : {}) };
   let outcome: RunOutcome;
@@ -572,6 +598,13 @@ async function attemptTask(
     });
     await notify.taskFailed(task.id, 'finalize', fl);
     return { status: 'failed-recoverable', failureLog: fl };
+  }
+
+  // Carry the non-blocking gate-trust review flags (finding G-C) onto the
+  // successful outcome so downstream consumers (completion notify, portal
+  // mirror) can surface that the gate ran against a test-infra-touching diff.
+  if (reviewFlags && reviewFlags.length > 0) {
+    outcome = { ...outcome, reviewFlags };
   }
 
   return { status: 'completed', outcome };

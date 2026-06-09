@@ -75,6 +75,10 @@ export type AuditEvent =
   // Doc-sweep verifier (finalize-time check that declared doc updates were applied)
   | 'task.doc_sweep.passed'
   | 'task.doc_sweep.failed'
+  // Gate-trust (finding G-C): the agent-authored diff touched gate-controlling
+  // test-infra files (conftest.py, jest/vitest config, CI workflow, package.json
+  // scripts). Flag-for-review only — does NOT fail the task.
+  | 'task.gate.test_infra_touched'
   // Composer layer (stage 0 — observation only). See apps/dispatcher/src/composer/CLAUDE.md
   | 'task.flight_plan.spawned'
   | 'task.flight_plan.submitted'
