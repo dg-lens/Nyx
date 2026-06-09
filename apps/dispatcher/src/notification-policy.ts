@@ -6,7 +6,7 @@
  * `(settings, now) → decision`, so the dispatcher computes the policy once per
  * send and the tests pin behavior with a fixed `now`.
  */
-import type { NotificationCategory, NyxSettings } from './settings.js';
+import type { NotificationCategory, NyxSettings, WorkflowDayWindow } from './settings.js';
 
 /**
  * Category → Pushover priority. Maps the operator's intent onto Pushover's
@@ -58,9 +58,47 @@ function parseClock(value: string): number | null {
   return h * 60 + min;
 }
 
-/** True if `now` falls inside today's scheduled working window for the operator's timezone. */
+/**
+ * True if a day window parses to a real, non-degenerate interval (start < end).
+ * A window where end <= start is treated as no window (overnight windows are out
+ * of scope for v1 — the desktop editor enforces start < end).
+ */
+function isValidWindow(window: WorkflowDayWindow | undefined): boolean {
+  if (!window) return false;
+  const start = parseClock(window.start);
+  const end = parseClock(window.end);
+  return start !== null && end !== null && end > start;
+}
+
+/**
+ * Whether the operator has configured ANY working window at all. The shipped
+ * default schedule is empty on every day; an empty schedule means the operator
+ * has NOT opted into working-hours suppression yet.
+ *
+ * Crucial safety property: an unconfigured schedule must mean "always reachable"
+ * (Workflow always active), NOT "never reachable". Otherwise the default config
+ * — whose settings.json carries no notifications block and so inherits the empty
+ * schedule + workflow-gated action-required/failure categories — would BATCH
+ * every workflow/workhours alert (including urgent action-required halts and
+ * gate-awaiting pings, and failure alerts) off-hours 24/7, since `isInSchedule`
+ * is false on every day. Suppression only begins once the operator sets at least
+ * one real window.
+ */
+function scheduleIsConfigured(settings: NyxSettings): boolean {
+  const { schedule } = settings.notifications.workflow;
+  return WEEKDAY_KEYS.some((day) => isValidWindow(schedule[day]));
+}
+
+/**
+ * True if `now` falls inside today's scheduled working window for the operator's
+ * timezone. An UNCONFIGURED schedule (no valid window on any day) is treated as
+ * "always in-schedule" — see `scheduleIsConfigured`: with no working hours set
+ * there are no off-hours to suppress, so nothing is gated until the operator
+ * defines a window.
+ */
 function isInSchedule(settings: NyxSettings, now: Date): boolean {
   const { schedule } = settings.notifications.workflow;
+  if (!scheduleIsConfigured(settings)) return true;
   let parts: { weekday: WeekdayKey; minutes: number };
   try {
     parts = localParts(now, schedule.timezone);
@@ -68,13 +106,9 @@ function isInSchedule(settings: NyxSettings, now: Date): boolean {
     return false;
   }
   const window = schedule[parts.weekday];
-  if (!window) return false;
-  const start = parseClock(window.start);
-  const end = parseClock(window.end);
-  if (start === null || end === null) return false;
-  // A window where end <= start is treated as no window (overnight windows are
-  // out of scope for v1 — the desktop editor enforces start < end).
-  if (end <= start) return false;
+  if (!isValidWindow(window)) return false;
+  const start = parseClock(window!.start)!;
+  const end = parseClock(window!.end)!;
   return parts.minutes >= start && parts.minutes < end;
 }
 

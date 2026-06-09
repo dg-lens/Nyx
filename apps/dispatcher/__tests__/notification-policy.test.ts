@@ -88,9 +88,28 @@ describe('isWorkflowActive — schedule window', () => {
     assert.equal(isWorkflowActive(s, new Date('2026-06-09T14:00:00Z')), false);
   });
 
-  test('default settings (empty schedule, no override) → never active', () => {
+  test('default settings (empty/unconfigured schedule, no override) → ALWAYS active', () => {
+    // SAFETY INVARIANT: an unconfigured schedule means "always reachable", NOT
+    // "never reachable". The deployed settings.json carries no notifications block
+    // and inherits this empty schedule; if it were treated as never-active, the
+    // workflow-gated action-required/failure categories would be batched (not sent)
+    // 24/7, silently suppressing urgent halt/gate/failure alerts off-hours.
     const s = clone(SETTINGS_DEFAULTS);
-    assert.equal(isWorkflowActive(s, monAt('14:00')), false);
+    assert.equal(isWorkflowActive(s, monAt('14:00')), true);
+    assert.equal(isWorkflowActive(s, monAt('03:00')), true);
+    assert.equal(isWorkflowActive(s, new Date('2026-06-09T23:00:00Z')), true);
+  });
+
+  test('a schedule with only a degenerate (end<=start) window is still unconfigured → always active', () => {
+    const s = withSchedule({ windows: { mon: { start: '17:00', end: '09:00' } } });
+    // No valid window anywhere → treated as unconfigured → always reachable.
+    assert.equal(isWorkflowActive(s, monAt('03:00')), true);
+  });
+
+  test('once ANY valid window exists, off-hours suppression resumes', () => {
+    const s = withSchedule({ windows: { mon: { start: '09:00', end: '17:00' } } });
+    assert.equal(isWorkflowActive(s, monAt('14:00')), true);
+    assert.equal(isWorkflowActive(s, monAt('03:00')), false);
   });
 
   test('window honors the configured timezone', () => {
@@ -101,18 +120,27 @@ describe('isWorkflowActive — schedule window', () => {
     assert.equal(isWorkflowActive(s, new Date('2026-06-08T22:00:00Z')), false);
   });
 
-  test('an end <= start window is treated as no window', () => {
-    const s = withSchedule({ windows: { mon: { start: '17:00', end: '09:00' } } });
+  test('an end <= start window is treated as no window (within a configured schedule)', () => {
+    // A real window on Tuesday makes the schedule "configured", so the degenerate
+    // Monday window is correctly ignored (not silently promoted to always-active).
+    const s = withSchedule({
+      windows: { mon: { start: '17:00', end: '09:00' }, tue: { start: '09:00', end: '17:00' } },
+    });
     assert.equal(isWorkflowActive(s, monAt('18:00')), false);
   });
 });
 
 describe('isWorkflowActive — manual override', () => {
   const offHours = new Date('2026-06-08T03:00:00Z'); // 03:00 Mon, outside a 09–17 window
+  // Every override-in-isolation case uses a CONFIGURED schedule (Mon 09–17) so the
+  // override path is what's exercised — `offHours` is outside the window, so the
+  // override alone decides active/inactive. (An unconfigured schedule is "always
+  // active" and would mask the override; that's covered in the schedule block.)
+  const configuredWindows = { mon: { start: '09:00', end: '17:00' } } as const;
 
   test('override with no expiry forces active outside the schedule', () => {
     const s = withSchedule({
-      windows: { mon: { start: '09:00', end: '17:00' } },
+      windows: configuredWindows,
       override: { active: true, expiresAt: null },
     });
     assert.equal(isWorkflowActive(s, offHours), true);
@@ -120,6 +148,7 @@ describe('isWorkflowActive — manual override', () => {
 
   test('override active and not yet expired → active', () => {
     const s = withSchedule({
+      windows: configuredWindows,
       override: { active: true, expiresAt: '2026-06-08T04:00:00Z' },
     });
     assert.equal(isWorkflowActive(s, offHours), true);
@@ -127,6 +156,7 @@ describe('isWorkflowActive — manual override', () => {
 
   test('override active but expired → inactive', () => {
     const s = withSchedule({
+      windows: configuredWindows,
       override: { active: true, expiresAt: '2026-06-08T02:00:00Z' },
     });
     assert.equal(isWorkflowActive(s, offHours), false);
@@ -134,13 +164,14 @@ describe('isWorkflowActive — manual override', () => {
 
   test('override inactive flag → inactive even with a future expiry', () => {
     const s = withSchedule({
+      windows: configuredWindows,
       override: { active: false, expiresAt: '2026-06-08T23:00:00Z' },
     });
     assert.equal(isWorkflowActive(s, offHours), false);
   });
 
   test('override with a malformed expiresAt → inactive (fail closed)', () => {
-    const s = withSchedule({ override: { active: true, expiresAt: 'not-a-date' } });
+    const s = withSchedule({ windows: configuredWindows, override: { active: true, expiresAt: 'not-a-date' } });
     assert.equal(isWorkflowActive(s, offHours), false);
   });
 });
@@ -227,5 +258,20 @@ describe('default settings — backward-compatible category policies', () => {
   test('SETTINGS_DEFAULTS enables Slack, disables Pushover', () => {
     assert.equal(SETTINGS_DEFAULTS.notifications.channels.slack, true);
     assert.equal(SETTINGS_DEFAULTS.notifications.channels.pushover.enabled, false);
+  });
+
+  test('REGRESSION: in the default config (empty schedule), urgent alerts deliver live 24/7', () => {
+    // The deployed settings.json has no notifications block → these exact defaults.
+    // action-required (halt/gate-awaiting) and failure are workflow-gated; with an
+    // unconfigured schedule they MUST still deliver, never batch. Probe both an
+    // off-hours instant and a normal-hours instant.
+    const s = clone(SETTINGS_DEFAULTS);
+    for (const at of [new Date('2026-06-08T03:00:00Z'), new Date('2026-06-08T14:00:00Z')]) {
+      assert.equal(shouldDeliver('action-required', s, at).deliver, true);
+      assert.equal(shouldDeliver('failure', s, at).deliver, true);
+      assert.equal(shouldDeliver('delivery', s, at).deliver, true);
+    }
+    // status is `digest` by default → still batched (not urgent, by design).
+    assert.equal(shouldDeliver('status', s, new Date('2026-06-08T03:00:00Z')).deliver, false);
   });
 });

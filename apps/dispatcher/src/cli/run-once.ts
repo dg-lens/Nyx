@@ -41,6 +41,7 @@ import { invokeDecomposer, type DecomposeIntent } from '../decomposer.js';
 import { submitDecision } from '../pipeline/decide.js';
 import { isValidRepoTag, targetMode } from '../pipeline/target.js';
 import { acquire } from '../lockfile.js';
+import { maybeFlushDigest } from '../notification-digest-flush.js';
 import * as notify from '../notifier.js';
 import {
   markTaskCompleted,
@@ -1228,6 +1229,15 @@ async function main(): Promise<void> {
     () => Date.now(),
   );
   if (controlApplied > 0) console.log(`[nyx] control actions applied: ${controlApplied}`);
+
+  // Off-hours digest: if this tick is the start of a working window (or a manual
+  // override just armed), flush the "what you missed" summary before any new work
+  // so the operator's catch-up lands first. Best-effort — never blocks the tick.
+  try {
+    await maybeFlushDigest();
+  } catch (err) {
+    console.error('[nyx] maybeFlushDigest threw (unexpected):', (err as Error).message);
+  }
 
   // Type-aware concurrency (Track 3). The blanket "any claude live → exit(0)"
   // guard is gone — it serialized EVERY task type behind one in-flight claude,

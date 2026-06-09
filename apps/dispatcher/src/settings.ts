@@ -182,10 +182,13 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
     // is exactly today's (Slack-only). Pushover opts in via settings + creds.
     channels: { slack: true, pushover: { enabled: false } },
     workflow: {
-      // No working windows defined out of the box. With every day empty, Workflow
-      // is inactive unless a manual override is armed — so 'workflow'/'workhours'
-      // categories stay quiet until the operator sets a schedule. The categories
-      // are still wired; the operator opts into scheduling via the desktop (N3).
+      // No working windows defined out of the box. An UNCONFIGURED schedule (every
+      // day empty) means Workflow is ALWAYS ACTIVE — "no working hours set" ==
+      // "always reachable", never "never reachable". This is the safe default: it
+      // keeps 'workflow'/'workhours' categories (incl. urgent action-required and
+      // failure alerts) delivering live until the operator opts into suppression by
+      // setting at least one real window via the desktop (N3). See
+      // `scheduleIsConfigured` in notification-policy.ts.
       schedule: {
         mon: { start: '', end: '' },
         tue: { start: '', end: '' },

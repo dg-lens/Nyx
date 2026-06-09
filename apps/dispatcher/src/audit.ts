@@ -87,6 +87,11 @@ export type AuditEvent =
   | 'bitwarden.token.missing'
   | 'inbox.rotation.ingested'
   | 'inbox.rotation.malformed'
+  // Off-hours notification digest (Track 6, N4). A suppressed message was
+  // batched (not dropped); the batch is flushed as one summary at the next
+  // working-window start. Mutable batch lives in the notification_digest table.
+  | 'notification.digest.batched'
+  | 'notification.digest.flushed'
   // Ambiguity escalation: agent wrote .nyx/ambiguity.json and exited 0
   | 'task.ambiguity.escalated'
   // Wisdom capture: second claude -p spawn after main task exits 0, before gate

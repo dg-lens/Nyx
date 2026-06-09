@@ -1,8 +1,15 @@
 import { WebClient } from '@slack/web-api';
 
+import { audit } from './audit.js';
 import { config } from './config.js';
 import { emitHook } from './plugins/hooks.js';
-import { CATEGORY_PRIORITY } from './notification-policy.js';
+import { CATEGORY_PRIORITY, shouldDeliver } from './notification-policy.js';
+import {
+  batchDigestItem,
+  clearDigestBatch,
+  formatDigest,
+  pendingDigestItems,
+} from './notification-digest.js';
 import { redactCredentialPatterns } from './redaction.js';
 import type { NotificationCategory } from './settings.js';
 
@@ -161,26 +168,77 @@ export function _resetSinksForTest(): void {
 }
 
 /**
- * Category-aware router: fan one message out to every ENABLED channel. Slack is
- * gated on the settings flag; Pushover on its flag + creds. When neither channel
- * is configured (no creds, default Pushover-off, Slack token absent) this falls
+ * Fan one message out to every ENABLED channel right now. Slack is gated on the
+ * settings flag; Pushover on its flag + creds. When neither channel is
+ * configured (no creds, default Pushover-off, Slack token absent) this falls
  * back to a console log — identical to the pre-refactor `dm()` no-slack path, so
- * an install with no notifications config behaves exactly as before.
+ * an install with no notifications config behaves exactly as before. Returns
+ * true if the message reached at least one channel (used by the flush path to
+ * decide whether the batch may be cleared).
+ */
+async function sendNow(category: NotificationCategory, text: string): Promise<boolean> {
+  let reached = false;
+  if (config.settings.notifications.channels.slack && (await slackSink(text))) reached = true;
+  if (pushoverEnabled() && (await pushoverSink(category, text))) reached = true;
+  if (!reached) console.log(`[notifier:undelivered] ${text}`);
+  return reached;
+}
+
+/**
+ * Category-aware router with the LIVE Workflow gate (Track 6, N4). For each typed
+ * event, `shouldDeliver(category, settings, now)` decides whether the operator is
+ * reachable right now under the per-category policy:
+ *   - deliver → fan out to the enabled channels immediately (today's behavior).
+ *   - suppress → the message is BATCHED into the durable digest store, never
+ *     dropped (plan decision #1). At the next working-window start the tick calls
+ *     `flushDigest()` to send a single "what you missed" summary and clear it.
  *
- * NOTE (Track 6 scope): this does NOT yet apply `shouldDeliver`/Workflow-mode
- * suppression. The pure policy helpers ship in this phase (schema + helpers),
- * but suppression is wired only once the off-hours digest (N4) exists — otherwise
- * suppressed messages would be silently dropped rather than batched.
+ * `off`-policy categories are the one suppression that is a true drop, not a
+ * defer: `shouldDeliver` reports `deliver:false` for both `off` and `digest`/
+ * off-hours, so we distinguish them here — `off` means "never want this", so it
+ * is neither sent nor batched.
  */
 export async function deliver(category: NotificationCategory, text: string): Promise<void> {
   if (!notificationsEnabled) {
     console.log(`[notifier:disabled] ${text}`);
     return;
   }
-  let reached = false;
-  if (config.settings.notifications.channels.slack && (await slackSink(text))) reached = true;
-  if (pushoverEnabled() && (await pushoverSink(category, text))) reached = true;
-  if (!reached) console.log(`[notifier:undelivered] ${text}`);
+  const decision = shouldDeliver(category, config.settings, new Date());
+  if (decision.deliver) {
+    await sendNow(category, text);
+    return;
+  }
+  // Suppressed. `off` is a real drop (operator opted out of the category);
+  // every other suppression is a defer — batch it for the next-window flush.
+  if (config.settings.notifications.categories[category] === 'off') {
+    console.log(`[notifier:off] ${text}`);
+    return;
+  }
+  batchDigestItem(category, text);
+  audit('notification.digest.batched', 'notifier', { category });
+}
+
+/**
+ * Send the batched "what you missed" summary and clear the batch. Called by the
+ * tick at the rising edge of `isWorkflowActive` (a scheduled window opening OR a
+ * manual override being armed). No-op when the batch is empty. The batch is
+ * cleared only if the summary reached a channel — a failed send leaves items
+ * batched so the next tick retries rather than silently losing them. Returns the
+ * number of items flushed (0 if nothing pending / send failed).
+ */
+export async function flushDigest(): Promise<number> {
+  if (!notificationsEnabled) return 0;
+  const items = pendingDigestItems();
+  if (items.length === 0) return 0;
+  const summary = formatDigest(items, config.systemName);
+  // The digest is an action-required-adjacent catch-up the operator asked to see
+  // on return; send it at `status` priority (0) so Pushover treats it as a normal
+  // notification rather than a quiet-hours bypass.
+  const reached = await sendNow('status', summary);
+  if (!reached) return 0;
+  clearDigestBatch();
+  audit('notification.digest.flushed', 'notifier', { count: items.length });
+  return items.length;
 }
 
 /**
