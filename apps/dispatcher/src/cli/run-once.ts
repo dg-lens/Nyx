@@ -16,7 +16,7 @@ import {
   lastEventPayload,
   lastSuccessfulTaskAt,
   tasksFiredInWindow,
-  verifyChain,
+  verifyChainPeriodic,
 } from '../audit.js';
 import { runAudit, MAX_AUDIT_PASSES } from '../audit-runner.js';
 import type { FlightPlan } from '../composer/types.js';
@@ -50,6 +50,7 @@ import {
 } from '../task-reader.js';
 import { runPreflight } from '../preflight.js';
 import { STALLED_EXIT_CODE } from '../spawn-helpers.js';
+import { redactCredentialPatterns } from '../redaction.js';
 import { buildPrompt, invokeClaude, invokeWisdomCapture } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
@@ -81,10 +82,12 @@ const STALE_THRESHOLD_HOURS = 24;
  * remaining cross-cutting config secrets that the child inherits via the
  * `process.env` spread in task-runner's spawn env.
  *
- * NOTE: per-task Bitwarden secret VALUES are fetched inside `buildSpawnInvocation`
- * and never reach this module, so they are NOT redacted here. Fully closing that
- * surface requires `invokeClaude` to return its injected `extraEnv` so the values
- * can be added to this denylist — a task-runner change tracked separately.
+ * Per-task Bitwarden secret VALUES (injected via `extraEnv`, never in this
+ * process's env) are scrubbed at their one known site — `invokeClaude` /
+ * `invokeWisdomCapture` in task-runner — before the ClaudeResult leaves that
+ * module, so `claudeResult.stdout/stderr` arrive here already value-redacted.
+ * The `redactCredentialPatterns` backstop below is the final shape-based net for
+ * any credential token that no exact-value pass knew about.
  */
 function redactClaudeOutput(s: string): string {
   let out = git.redactSecrets(s);
@@ -96,7 +99,7 @@ function redactClaudeOutput(s: string): string {
   for (const secret of denylist) {
     if (secret) out = out.split(secret).join('***');
   }
-  return out;
+  return redactCredentialPatterns(out);
 }
 
 /**
@@ -860,7 +863,7 @@ async function main(): Promise<void> {
 
   audit('dispatch.tick', 'dispatcher', { pid: process.pid, slot: slotOf() });
 
-  const chain = verifyChain();
+  const chain = verifyChainPeriodic();
   if (!chain.ok) {
     const msg = `audit chain broken at row ${chain.firstBadRowId} (${chain.reason}). refusing to start.`;
     console.error(`[nyx] ${msg}`);
@@ -868,7 +871,7 @@ async function main(): Promise<void> {
     lock.release();
     process.exit(2);
   }
-  audit('dispatch.chain_verified', 'dispatcher', { rows: chain.totalRows });
+  audit('dispatch.chain_verified', 'dispatcher', { rows: chain.totalRows, full: chain.wasFull });
 
   await initPlugins();
   await emitHook('tick.before', { slot: slotOf(), pid: process.pid });
