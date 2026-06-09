@@ -41,6 +41,8 @@ import { invokeDecomposer, type DecomposeIntent } from '../decomposer.js';
 import { submitDecision } from '../pipeline/decide.js';
 import { isValidRepoTag, targetMode } from '../pipeline/target.js';
 import { acquire } from '../lockfile.js';
+import { isWorkflowActive } from '../notification-policy.js';
+import { readDigestState, writeDigestState } from '../notification-digest.js';
 import * as notify from '../notifier.js';
 import {
   markTaskCompleted,
@@ -811,6 +813,31 @@ async function maybeIdleOrStaleAlert(): Promise<void> {
   }
 }
 
+/**
+ * Off-hours digest flush (Track 6, N4). Each tick records whether Workflow is
+ * active now; the inactive→active rising edge IS the "next working-window start"
+ * trigger. That edge covers both a scheduled window opening and a manual
+ * "working late" override being armed, so no separate override-activation hook is
+ * needed — arming the override on any surface flips `isWorkflowActive`, and the
+ * next tick (≤5 min later) sees the edge and flushes.
+ *
+ * State persists in notification_digest_state so the edge survives the
+ * per-tick fresh launchd process. A flush only runs on the edge, so a long
+ * working window doesn't re-flush every 5 minutes; items that arrive WHILE active
+ * are sent live by `deliver` and never reach the batch.
+ */
+async function maybeFlushDigest(now: Date = new Date()): Promise<void> {
+  const active = isWorkflowActive(config.settings, now);
+  const state = readDigestState();
+  if (active && !state.wasActive) {
+    const flushed = await notify.flushDigest();
+    if (flushed > 0) console.log(`[nyx] flushed ${flushed} batched digest item(s) at working-window start`);
+    writeDigestState({ wasActive: true, lastFlushAt: now.toISOString() });
+  } else if (active !== state.wasActive) {
+    writeDigestState({ wasActive: active, lastFlushAt: state.lastFlushAt });
+  }
+}
+
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60_000;
 
 function desktopNotify(title: string, body: string): void {
@@ -1173,6 +1200,15 @@ async function main(): Promise<void> {
     () => Date.now(),
   );
   if (controlApplied > 0) console.log(`[nyx] control actions applied: ${controlApplied}`);
+
+  // Off-hours digest: if this tick is the start of a working window (or a manual
+  // override just armed), flush the "what you missed" summary before any new work
+  // so the operator's catch-up lands first. Best-effort — never blocks the tick.
+  try {
+    await maybeFlushDigest();
+  } catch (err) {
+    console.error('[nyx] maybeFlushDigest threw (unexpected):', (err as Error).message);
+  }
 
   // Type-aware concurrency (Track 3). The blanket "any claude live → exit(0)"
   // guard is gone — it serialized EVERY task type behind one in-flight claude,
