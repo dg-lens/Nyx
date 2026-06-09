@@ -36,7 +36,7 @@ import { drainPendingActions, insertUnderActiveTasks } from '../control/actions.
 import { listPending, markApplied, markFailed } from '../control/db.js';
 import { invokeDecomposer, type DecomposeIntent } from '../decomposer.js';
 import { submitDecision } from '../pipeline/decide.js';
-import { isValidRepoTag } from '../pipeline/target.js';
+import { isValidRepoTag, targetMode } from '../pipeline/target.js';
 import { acquire } from '../lockfile.js';
 import * as notify from '../notifier.js';
 import {
@@ -640,6 +640,28 @@ async function handlePipelineInTick(
 ): Promise<{ status: PipelineStatus; markComplete: boolean; failed: boolean }> {
   const isStanding = task.slot == null && task.everyStepSlots == null;
   const existing = getRunByTaskId(task.id);
+
+  // C1: reject a fresh self-mode pipeline run (no valid [repo:]) up front. Self
+  // mode builds the deliverable in a /tmp clone that cleanup deletes with no
+  // merge-back — it never delivered, it only lost the output (silent success-
+  // reported data loss). Fail loudly with guidance instead. Correct choices:
+  // [repo: local] (greenfield → persists to Data/projects), [repo: owner/name]
+  // (external → PR), or [type: code] to modify Nyx itself. In-flight runs (an
+  // `existing` row from before this guard) are left to the branches below.
+  if (!existing && targetMode(task.repo) === 'self') {
+    const reason =
+      `self-mode pipeline is unsupported: a [type: pipeline] task with no [repo:] ` +
+      `builds in /tmp and is deleted at cleanup with no merge-back. Use [repo: local] ` +
+      `for a new standalone project, [repo: owner/name] for a GitHub repo, or ` +
+      `[type: code] to modify Nyx itself.`;
+    audit('pipeline.rejected', 'pipeline', {
+      taskId: task.id,
+      reason: 'self-mode-unsupported',
+      message: reason,
+    });
+    void notify.taskFailed(task.id, 'pipeline', reason);
+    return { status: 'failed', markComplete: isStanding && !task.checked, failed: true };
+  }
 
   if (existing && isTerminal(existing.status)) {
     // A prior tick (or the resume scan) already finished this run. Reconcile the
