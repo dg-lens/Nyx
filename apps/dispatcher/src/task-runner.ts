@@ -14,6 +14,7 @@ import { redactCredentialPatterns, redactValues } from './redaction.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
 import { costMeteringArgs, extractResultText, parseMcpToolEvents, parseUsage, type McpToolEvent, type SpawnUsage } from './spawn-usage.js';
 import { classOf } from './concurrency.js';
+import { buildJudgePrompt } from './content-judge.js';
 import { fetchProjectSecretValues } from './secrets/bitwarden-client.js';
 import { resolveProject } from './secrets/project-registry.js';
 import type { ParsedTask } from './types.js';
@@ -417,6 +418,43 @@ export async function invokeWisdomCapture(task: ParsedTask, cwd: string): Promis
   }, WISDOM_TIMEOUT_MS);
   // Wisdom output is read from NYX_WISDOM.md, not stdout, so no cost-reconcile is
   // needed; still scrub secret values from stdout/stderr before the result leaves.
+  return scrubResult(result, extraEnv);
+}
+
+const JUDGE_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Content-judge spawn (P7): an INDEPENDENT haiku Read/Grep-only `claude -p` that
+ * scores the just-committed diff PASS/FAIL against the task's acceptance criteria
+ * and writes NYX_JUDGE.md. Shares the wisdom-capture spawn shape exactly (haiku,
+ * restricted read-only tools, 5-min cap, GIT-class attribution) — it runs only
+ * for code tasks inside the GIT task's lifetime.
+ *
+ * Read-ONLY by construction: only Read/Glob/Grep are allowed, so the judge can
+ * inspect the diff but can neither run the gate (no second compute) nor mutate
+ * the diff it's judging. Non-fatal: the caller treats any non-zero exit / missing
+ * file as "no concern".
+ */
+export async function invokeContentJudge(task: ParsedTask, cwd: string): Promise<ClaudeResult> {
+  const prompt = buildJudgePrompt(task);
+  const claudeArgs = [
+    '-p', prompt,
+    '--model', 'haiku',
+    '--permission-mode', config.claudePermissionMode,
+    '--allowed-tools', 'Read Glob Grep Write',
+    '--add-dir', cwd,
+  ];
+  const { command, args, extraEnv } = buildSpawnInvocation(task, claudeArgs);
+  const spawnEnv = buildAgentEnv(extraEnv);
+  const result = await spawnWithTimeout(command, args, {
+    cwd,
+    env: spawnEnv,
+    captureStdout: true,
+    label: 'nyx-judge',
+    silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
+    claudeMeta: { class: 'git', taskId: task.id },
+  }, JUDGE_TIMEOUT_MS);
+  // Verdict is read from NYX_JUDGE.md, not stdout; just scrub secret values.
   return scrubResult(result, extraEnv);
 }
 

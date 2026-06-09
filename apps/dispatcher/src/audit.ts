@@ -104,6 +104,24 @@ export type AuditEvent =
   // test-infra files (conftest.py, jest/vitest config, CI workflow, package.json
   // scripts). Flag-for-review only — does NOT fail the task.
   | 'task.gate.test_infra_touched'
+  // ── Content-level verifiers + lint gate (P7) ──
+  // Pinned-version diff-scoped lint (the long-pending CORTANA-GATE-LINT). HARD
+  // signal: a lint failure on the agent's own diff fails the task into audit.
+  | 'task.lint.passed'
+  | 'task.lint.failed'
+  | 'task.lint.skipped'
+  // Flaky-test quarantine: the tests stage flipped verdict on the identical tree.
+  // The dispatcher halts (quarantine) rather than retrying to green.
+  | 'task.gate.flaky_quarantined'
+  // Rotten-green: a changed test file asserts nothing / is skip-only / discards
+  // its result into a blank-identifier sink. Flag-for-review only (advisory).
+  | 'task.test_oracle.rotten_green'
+  // Content-judge: an independent haiku read-only spawn scored the diff against
+  // the task's acceptance criteria. captured = a verdict was produced; concern =
+  // a high-confidence FAIL flagged for review; skipped = non-fatal no-op.
+  | 'task.judge.captured'
+  | 'task.judge.concern'
+  | 'task.judge.skipped'
   // Composer layer (stage 0 — observation only). See apps/dispatcher/src/composer/CLAUDE.md
   | 'task.flight_plan.spawned'
   | 'task.flight_plan.submitted'

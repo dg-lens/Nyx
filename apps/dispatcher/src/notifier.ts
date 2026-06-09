@@ -304,6 +304,30 @@ export async function taskGateTestInfraTouched(taskId: string, paths: string[]):
   );
 }
 
+/**
+ * P7 rotten-green: changed test files that assert nothing / are skip-only / sink
+ * their result into a blank identifier. Advisory — the task still completed; the
+ * operator should confirm the new tests actually check something.
+ */
+export async function taskRottenGreen(taskId: string, lines: string[]): Promise<void> {
+  const list = lines.slice(0, 20).map((l) => `  • ${l}`).join('\n');
+  await dm(
+    `🪫 *${taskId}* passed the gate, but its new/changed tests look rotten-green (assert nothing / skip-only):\n${list}`,
+  );
+}
+
+/**
+ * P7 content-judge: an independent read-only spawn scored the diff a confident
+ * FAIL against the task's acceptance criteria. Advisory — the task still
+ * completed (the judge is same-family, so it can't fail the task), but the diff
+ * may not actually do what was asked.
+ */
+export async function taskJudgeConcern(taskId: string, summary: string): Promise<void> {
+  await dm(
+    `🧑‍⚖️ *${taskId}* passed the gate, but the content-judge flagged it: ${redactSecrets(summary).slice(0, 500)}`,
+  );
+}
+
 export async function prCreated(taskId: string, prUrl: string): Promise<void> {
   await deliver('delivery', `📬 ${taskId} → PR opened: ${prUrl}`);
 }
