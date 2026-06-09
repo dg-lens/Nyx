@@ -17,6 +17,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { config } from '../config.js';
+import { openDb } from '../db.js';
 import type { ComposerRunResult, FlightPlan } from './types.js';
 
 let db: DatabaseSync | null = null;
@@ -41,8 +42,7 @@ function open(): DatabaseSync {
   if (db && insertFlightPlanStmt) return db;
   if (!db) {
     mkdirSync(dirname(config.dbPath), { recursive: true });
-    db = new DatabaseSync(config.dbPath);
-    db.exec(`PRAGMA journal_mode = WAL;`);
+    db = openDb(config.dbPath);
   }
   db.exec(`
     CREATE TABLE IF NOT EXISTS flight_plans (

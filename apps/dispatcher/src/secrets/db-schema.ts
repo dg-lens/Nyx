@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { config } from '../config.js';
+import { openDb } from '../db.js';
 
 /**
  * Secrets-related schema, kept in a sibling module so audit.ts stays focused
@@ -18,8 +19,7 @@ let db: DatabaseSync | null = null;
 export function openSecretsDb(): DatabaseSync {
   if (db) return db;
   mkdirSync(dirname(config.dbPath), { recursive: true });
-  db = new DatabaseSync(config.dbPath);
-  db.exec(`PRAGMA journal_mode = WAL;`);
+  db = openDb(config.dbPath);
   db.exec(`
     CREATE TABLE IF NOT EXISTS bitwarden_projects (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
