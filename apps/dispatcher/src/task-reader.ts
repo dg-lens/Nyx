@@ -2,6 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 
 import type { GateStage, Model, ParsedTask, Priority, TaskType } from './types.js';
 import { config } from './config.js';
+import { isValidRepoTag } from './pipeline/target.js';
 
 // Matches only the OPENER of a tag: `[name:` plus any leading whitespace.
 // The value is then scanned manually with bracket-depth tracking so a path
@@ -309,6 +310,16 @@ export function readQueue(path: string): QueueFile {
     // Legacy 0.2 tags — be loud, not silent.
     if (tags['recurring'] != null) invalidTags.push({ tag: 'recurring', raw: tags['recurring'] });
     if (tags['at'] != null) invalidTags.push({ tag: 'at', raw: tags['at'] });
+
+    // Security (C2): an unvalidated [repo:] value is interpolated into `git clone`
+    // for code/analysis tasks (git-ops.cloneExternalRepo). Reject anything that
+    // isn't an `owner/name` repo or a greenfield keyword so a value carrying shell
+    // metacharacters can never reach the clone command. A flagged task has
+    // invalidTags.length > 0 and is therefore never returned by pickNextTask —
+    // it surfaces to the operator via tasksWithInvalidTags instead of executing.
+    if (tags['repo'] != null && !isValidRepoTag(tags['repo'])) {
+      invalidTags.push({ tag: 'repo', raw: tags['repo'] });
+    }
 
     const task: ParsedTask = {
       id,

@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test, afterEach } from 'node:test';
 
-import { permissionArgs, buildSpawnInvocation } from '../src/task-runner.js';
+import { permissionArgs, buildSpawnInvocation, buildAgentEnv } from '../src/task-runner.js';
 import { _resetCache } from '../src/mcp-discovery.js';
 import type { ParsedTask } from '../src/types.js';
 
@@ -27,6 +27,29 @@ function task(type: ParsedTask['type'], extra: Partial<ParsedTask> = {}): Parsed
 // tests below.
 
 afterEach(() => _resetCache());
+
+describe('buildAgentEnv (H2 GitHub-PAT leak guard)', () => {
+  test('strips GITHUB_TOKEN and GH_TOKEN from the spawned agent env', () => {
+    const saved = { gh: process.env['GITHUB_TOKEN'], ghAlt: process.env['GH_TOKEN'] };
+    try {
+      process.env['GITHUB_TOKEN'] = 'ghp_secret_write_pat';
+      process.env['GH_TOKEN'] = 'gho_secret';
+      const env = buildAgentEnv({});
+      assert.equal(env['GITHUB_TOKEN'], undefined, 'GITHUB_TOKEN stripped');
+      assert.equal(env['GH_TOKEN'], undefined, 'GH_TOKEN stripped');
+      // Non-secret inherited env (e.g. PATH) is preserved — we strip creds, not all env.
+      assert.equal(env['PATH'], process.env['PATH']);
+    } finally {
+      if (saved.gh === undefined) delete process.env['GITHUB_TOKEN']; else process.env['GITHUB_TOKEN'] = saved.gh;
+      if (saved.ghAlt === undefined) delete process.env['GH_TOKEN']; else process.env['GH_TOKEN'] = saved.ghAlt;
+    }
+  });
+
+  test('preserves Bitwarden extraEnv (BWS_ACCESS_TOKEN passes through)', () => {
+    const env = buildAgentEnv({ BWS_ACCESS_TOKEN: 'bws-token' });
+    assert.equal(env['BWS_ACCESS_TOKEN'], 'bws-token');
+  });
+});
 
 describe('permissionArgs', () => {
   test('assistant gets --allowed-tools with read-only + MCPs', () => {

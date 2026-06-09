@@ -285,6 +285,29 @@ const WISDOM_TIMEOUT_MS = 5 * 60_000;
  *
  * Non-fatal: caller must treat any non-zero exit as a skip, not a failure.
  */
+/**
+ * Build the environment for a spawned agent, stripping the GitHub PAT (H2).
+ * Code/analysis agents run with Bash and could otherwise `echo $GITHUB_TOKEN` to
+ * read the operator's all-repo-write token straight from their inherited env —
+ * a live exfil path, worst for analysis tasks scanning untrusted repos. In the
+ * dispatch model the agent never needs GitHub credentials: it writes code and
+ * commits locally; the DISPATCHER performs every git network op itself (with the
+ * token supplied out-of-band via GIT_ASKPASS — see git-ops.gitEnv). So drop both
+ * GITHUB_TOKEN and GH_TOKEN here. An analysis task that genuinely needs GitHub
+ * read access should be granted a narrowly-scoped token explicitly, not inherit
+ * the write PAT. ANTHROPIC_API_KEY + Bitwarden extraEnv are preserved.
+ */
+export function buildAgentEnv(extraEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
+    ...extraEnv,
+  };
+  delete env['GITHUB_TOKEN'];
+  delete env['GH_TOKEN'];
+  return env;
+}
+
 export async function invokeWisdomCapture(task: ParsedTask, cwd: string): Promise<ClaudeResult> {
   const prompt = buildWisdomPrompt();
   const claudeArgs = [
@@ -295,11 +318,7 @@ export async function invokeWisdomCapture(task: ParsedTask, cwd: string): Promis
     '--add-dir', cwd,
   ];
   const { command, args, extraEnv } = buildSpawnInvocation(task, claudeArgs);
-  const spawnEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
-    ...extraEnv,
-  };
+  const spawnEnv = buildAgentEnv(extraEnv);
   const result = await spawnWithTimeout(command, args, {
     cwd,
     env: spawnEnv,
@@ -334,12 +353,9 @@ export async function invokeClaude(
   // Auth model: ANTHROPIC_API_KEY passes through to `claude -p` as-is. If it's
   // set (BYO key), the spawn uses API billing; if absent, it falls back to the
   // host's ~/.claude OAuth (Max-plan). The install chooses by whether the key is
-  // present in the spawn env (.env / launchd). See .env.example.
-  const spawnEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
-    ...extraEnv, // BWS_ACCESS_TOKEN if Bitwarden is in play. Never logged.
-  };
+  // present in the spawn env (.env / launchd). See .env.example. GITHUB_TOKEN is
+  // stripped (H2); Bitwarden extraEnv (BWS_ACCESS_TOKEN) is preserved. Never logged.
+  const spawnEnv = buildAgentEnv(extraEnv);
   const result = await spawnWithTimeout(command, args, {
     cwd,
     env: spawnEnv,

@@ -33,6 +33,20 @@ export function isGreenfield(repo: string | null | undefined): boolean {
   return targetMode(repo) === 'greenfield';
 }
 
+/**
+ * A `[repo:]` tag value is acceptable for ANY task type iff it's an `owner/name`
+ * GitHub repo or a greenfield keyword. This is the primary guard against shell
+ * command injection: an unvalidated repo string is interpolated into `git clone`
+ * (see git-ops.cloneExternalRepo), so a value bearing shell metacharacters
+ * (`"`, `;`, `$(…)`, backticks, spaces) would execute arbitrary commands on the
+ * dispatcher host. `OWNER_NAME`/greenfield-keyword shapes contain none of those.
+ * Empty/absent repo (self mode) is the caller's concern, not this predicate's.
+ */
+export function isValidRepoTag(repo: string): boolean {
+  const m = targetMode(repo);
+  return m === 'external' || m === 'greenfield';
+}
+
 /** Human-facing reason for an `invalid` repo, used in the terminal-failure message. */
 export function invalidRepoReason(repo: string | null | undefined): string {
   return (
