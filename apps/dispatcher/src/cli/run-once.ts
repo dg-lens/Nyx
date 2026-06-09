@@ -54,6 +54,9 @@ import {
 import { runPreflight } from '../preflight.js';
 import { STALLED_EXIT_CODE } from '../spawn-helpers.js';
 import { redactCredentialPatterns } from '../redaction.js';
+import { listMcpServers } from '../mcp-discovery.js';
+import { recordSpawnOutcome } from '../mcp-resilience.js';
+import { healAuth } from '../mcp-auth-healer.js';
 import { buildPrompt, invokeClaude, invokeWisdomCapture } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
@@ -398,6 +401,21 @@ async function attemptTask(
     return { status: 'failed-recoverable', failureLog };
   }
 
+  // ── Pre-spawn MCP auth-heal (G-D) ──
+  // For MCP-dependent task types, proactively check each credential's TTL BEFORE
+  // the spawn. A token past its refresh window surfaces as a generic tool error
+  // mid-spawn → agent drift → exit 124. Proactive flagging (the 80%-TTL point)
+  // emits task.mcp.auth_stale so the operator can re-auth before the next tick.
+  // Observation-only / non-fatal: we never block the spawn here — a stale token
+  // may still work, and the reactive 401 classifier below catches a dead one.
+  if (task.type === 'assistant' || task.type === 'analysis') {
+    try {
+      healAuth(listMcpServers(), { taskId: task.id });
+    } catch {
+      /* auth-heal is best-effort; never block a spawn on it */
+    }
+  }
+
   const claudeResult = await invokeClaude(
     task,
     workingDir.path,
@@ -408,6 +426,24 @@ async function attemptTask(
     exitCode: claudeResult.exitCode,
     durationMs: claudeResult.durationMs,
   });
+
+  // ── Post-spawn MCP breaker bookkeeping (G-D) ──
+  // For MCP-dependent task types, classify the spawn output for an MCP failure
+  // (auth 401/403 vs transport 5xx/timeout) and update the cross-process breaker
+  // per referenced server: a failure increments toward opening the breaker, a
+  // clean run closes a half-open one. This is what makes the breaker survive the
+  // cold-per-spawn model — the state lives in nyx.db, not the dead child. The
+  // emitted breaker_opened/closed rows are the post-mortem join the MCP-heavy hang
+  // T4 entries lacked. Best-effort: any throw here never affects the task outcome.
+  if (task.type === 'assistant' || task.type === 'analysis') {
+    try {
+      recordSpawnOutcome(`${claudeResult.stderr}\n${claudeResult.stdout}`, {
+        exitCode: claudeResult.exitCode,
+      });
+    } catch {
+      /* breaker bookkeeping is best-effort; never affect task flow */
+    }
+  }
 
   // Per-spawn cost/token metering (G-B/P1). Locally-estimated dollars survive the
   // Max-plan OAuth seat (no billing signal). Recorded as its own audit event so it

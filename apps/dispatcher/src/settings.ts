@@ -56,6 +56,45 @@ export interface NotificationsSettings {
   categories: Record<NotificationCategory, CategoryPolicy>;
 }
 
+/** Per-tool MCP permission disposition (mirrors the Agent SDK allow/ask/deny engine). */
+export type McpToolPolicy = 'auto' | 'ask' | 'deny';
+
+/**
+ * MCP-plane resilience config (G-D). All best-effort / non-fatal — a disabled or
+ * malformed block falls back to defaults that preserve today's behavior (breaker
+ * never trips on the default threshold during a normal run; default policy `auto`
+ * keeps every discovered MCP, matching the pre-resilience allowlist).
+ */
+export interface McpSettings {
+  breaker: {
+    // Consecutive failures for one server before its breaker opens. Generalizes
+    // the documented SUPABASE_URL "3 consecutive 404s" rule (IBM default: 3).
+    failureThreshold: number;
+    // How long an open breaker stays open before one half-open probe is allowed.
+    // Aligned to a tick boundary in practice (IBM default 60s; Nyx tick is 5m).
+    cooldownMs: number;
+  };
+  probe: {
+    // Pre-spawn readiness probe (claude mcp list) on/off + its hard timeout. The
+    // probe must never become the hang it prevents, so the timeout is tight.
+    enabled: boolean;
+    timeoutMs: number;
+  };
+  auth: {
+    // Proactive auth-healer: refresh when past this fraction of the TTL window
+    // (0.8 = the 80%-TTL point the spec literature converges on).
+    refreshAtFraction: number;
+    // Fallback TTL when a credential's last-refresh anchor is unknown.
+    defaultTtlMs: number;
+  };
+  policy: {
+    // Default disposition for any MCP server/tool not named in `tools`.
+    defaultPolicy: McpToolPolicy;
+    // Per-server (`mcp__server`) or per-tool (`mcp__server__tool`) overrides.
+    tools: Record<string, McpToolPolicy>;
+  };
+}
+
 export interface NyxSettings {
   pipeline: {
     concurrentCap: number;
@@ -63,6 +102,7 @@ export interface NyxSettings {
     autoMerge: boolean;
     reviewStrictness: 'lenient' | 'normal' | 'strict';
   };
+  mcp: McpSettings;
   dispatcher: {
     maxChainDepth: number;
     taskTimeoutMs: number;
@@ -109,6 +149,15 @@ export interface NyxSettings {
 
 export const SETTINGS_DEFAULTS: NyxSettings = {
   pipeline: { concurrentCap: 4, slackNotifications: true, autoMerge: false, reviewStrictness: 'normal' },
+  mcp: {
+    // Breaker opens after 3 consecutive failures (the SUPABASE_URL rule, IBM
+    // default), 5-minute cooldown = one tick. probe ON but cheap. defaultPolicy
+    // `auto` = every discovered MCP stays in the allowlist (today's behavior).
+    breaker: { failureThreshold: 3, cooldownMs: 5 * 60_000 },
+    probe: { enabled: true, timeoutMs: 4000 },
+    auth: { refreshAtFraction: 0.8, defaultTtlMs: 60 * 60_000 },
+    policy: { defaultPolicy: 'auto', tools: {} },
+  },
   dispatcher: {
     maxChainDepth: 2,
     taskTimeoutMs: 30 * 60_000,
@@ -235,6 +284,50 @@ function coerceNotifications(
   };
 }
 
+const VALID_TOOL_POLICIES: readonly McpToolPolicy[] = ['auto', 'ask', 'deny'];
+function coerceToolPolicy(value: unknown, fallback: McpToolPolicy): McpToolPolicy {
+  return (VALID_TOOL_POLICIES as readonly string[]).includes(value as string)
+    ? (value as McpToolPolicy)
+    : fallback;
+}
+
+/**
+ * Merge a partial mcp block onto the defaults, coercing every field so a
+ * hand-edited settings.json can never produce a non-finite threshold, a bogus
+ * policy string, or a non-record tools map. An invalid per-tool policy value is
+ * dropped to the default rather than letting an unknown string reach the spawn.
+ */
+function coerceMcp(raw: unknown, d: McpSettings): McpSettings {
+  const r = (raw ?? {}) as Partial<McpSettings>;
+  const tools: Record<string, McpToolPolicy> = {};
+  const rawTools = (r.policy?.tools ?? {}) as Record<string, unknown>;
+  if (rawTools && typeof rawTools === 'object') {
+    for (const [key, val] of Object.entries(rawTools)) {
+      if ((VALID_TOOL_POLICIES as readonly string[]).includes(val as string)) {
+        tools[key] = val as McpToolPolicy;
+      }
+    }
+  }
+  return {
+    breaker: {
+      failureThreshold: clampNumber(r.breaker?.failureThreshold, d.breaker.failureThreshold, 1, 100),
+      cooldownMs: clampNumber(r.breaker?.cooldownMs, d.breaker.cooldownMs, 1000, 60 * 60_000),
+    },
+    probe: {
+      enabled: coerceBool(r.probe?.enabled, d.probe.enabled),
+      timeoutMs: clampNumber(r.probe?.timeoutMs, d.probe.timeoutMs, 500, 30_000),
+    },
+    auth: {
+      refreshAtFraction: clampNumber(r.auth?.refreshAtFraction, d.auth.refreshAtFraction, 0.1, 1),
+      defaultTtlMs: clampNumber(r.auth?.defaultTtlMs, d.auth.defaultTtlMs, 60_000, 30 * 24 * 60 * 60_000),
+    },
+    policy: {
+      defaultPolicy: coerceToolPolicy(r.policy?.defaultPolicy, d.policy.defaultPolicy),
+      tools,
+    },
+  };
+}
+
 export function loadSettings(dataDir: string): NyxSettings {
   const path = resolve(dataDir, 'settings.json');
   if (!existsSync(path)) return SETTINGS_DEFAULTS;
@@ -270,6 +363,7 @@ export function loadSettings(dataDir: string): NyxSettings {
         autoApply: typeof raw.updates?.autoApply === 'boolean' ? raw.updates.autoApply : d.updates.autoApply,
       },
       notifications: coerceNotifications(raw.notifications, d.notifications),
+      mcp: coerceMcp(raw.mcp, d.mcp),
     };
   } catch {
     return SETTINGS_DEFAULTS;

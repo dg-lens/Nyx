@@ -8,6 +8,7 @@ import type { FlightPlan } from './composer/types.js';
 import { config } from './config.js';
 import { emitHook } from './plugins/hooks.js';
 import { listMcpServers } from './mcp-discovery.js';
+import { applyPolicy, probeReadiness, resolveWithheld } from './mcp-resilience.js';
 import { buildRequiredContextBlock, parseReadingRefs, resolveReadingRefs } from './reading-resolver.js';
 import { redactCredentialPatterns, redactValues } from './redaction.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
@@ -239,16 +240,65 @@ export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): strin
  * can't escape" guarantee for assistant/content/analysis is (2). Code has
  * neither restriction by design.
  */
+/**
+ * Resolve the MCP servers that survive the resilience layer for this spawn.
+ *
+ * The discovered allowlist (mcp-discovery) is passed through three out-of-process
+ * filters before it reaches the spawn — none of which the cold per-spawn client
+ * could enforce itself:
+ *   1. **circuit breaker** — a server whose breaker is OPEN (N consecutive
+ *      failures, generalizing the SUPABASE_URL rule) is withheld so the task isn't
+ *      spawned against a backend known-bad this cooldown window.
+ *   2. **readiness probe** — `claude mcp list` connection status withholds a
+ *      server the probe reports disconnected RIGHT NOW (parallel to the v0.7
+ *      env-var presence check). Best-effort: if the probe didn't run/observe a
+ *      server, the breaker remains the authoritative suppressor.
+ *   3. **policy** — settings.mcp.policy drops `deny` servers entirely and routes
+ *      `ask` servers out of the headless allowlist (no human to prompt; `ask` is
+ *      reified as Nyx's halt path elsewhere). `auto` (the default) keeps the
+ *      server — so an empty policy map reproduces today's allowlist exactly.
+ *
+ * Every withholding decision emits an audit row so the immutable chain records why
+ * an MCP was absent from a spawn (the post-mortem join the hang T4 entries lacked).
+ * Best-effort: any throw is swallowed and the raw discovered list is returned, so
+ * the resilience layer can never crash a tick.
+ */
+export function resolveMcpAllowlist(task: ParsedTask): string[] {
+  const discovered = listMcpServers();
+  if (discovered.length === 0) return discovered;
+  try {
+    const probe = config.settings.mcp.probe.enabled ? probeReadiness() : undefined;
+    const { allowed: afterBreaker, withheld } = resolveWithheld(discovered, { probe });
+    if (withheld.length > 0) {
+      audit('task.mcp.servers_withheld', 'mcp-resilience', {
+        taskId: task.id,
+        withheld: withheld.map((w) => ({ server: w.server, reason: w.reason })),
+      });
+    }
+    const { allowed, denied, ask } = applyPolicy(afterBreaker);
+    if (denied.length > 0 || ask.length > 0) {
+      audit('task.mcp.policy_decision', 'mcp-resilience', {
+        taskId: task.id,
+        ...(denied.length > 0 ? { denied } : {}),
+        ...(ask.length > 0 ? { ask } : {}),
+      });
+    }
+    return allowed;
+  } catch (err) {
+    console.warn('[task-runner] MCP resilience resolution failed, using raw allowlist:', (err as Error).message);
+    return discovered;
+  }
+}
+
 export function permissionArgs(task: ParsedTask): string[] {
   const args: string[] = ['--permission-mode', config.claudePermissionMode];
   const READ_ONLY = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite', 'Write', 'Edit'];
-  const mcps = listMcpServers();
   if (task.type === 'assistant') {
-    args.push('--allowed-tools', [...READ_ONLY, ...mcps].join(' '));
+    args.push('--allowed-tools', [...READ_ONLY, ...resolveMcpAllowlist(task)].join(' '));
   } else if (task.type === 'content') {
     args.push('--allowed-tools', READ_ONLY.join(' '));
   } else if (task.type === 'analysis') {
-    args.push('--allowed-tools', [...READ_ONLY, 'Bash', ...mcps].join(' '));
+    args.push('--allowed-tools', [...READ_ONLY, 'Bash', ...resolveMcpAllowlist(task)].join(' '));
   }
   // type === 'code' → no --allowed-tools, full default tool access
   return args;
