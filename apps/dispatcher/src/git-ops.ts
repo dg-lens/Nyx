@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
@@ -31,6 +31,27 @@ export function redactSecrets(s: string): string {
 // `run`/`tryRun` already turn into a deterministic failure for the audit phase.
 const GIT_TIMEOUT_MS = 120_000;
 
+// GIT_TERMINAL_PROMPT=0 + GCM_INTERACTIVE=never: never block on an interactive
+// credential prompt (empty/expired PAT on a private HTTPS repo) — fail fast
+// instead of wedging the dispatcher waiting on stdin.
+function gitEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
+}
+
+// Re-throw an execSync/execFileSync error with every secret value scrubbed from
+// its message + stdout + stderr before it can reach the hash-chained audit DB or
+// Slack. Shared by the shell-string `run` and the argv-form `runArgs`.
+function rethrowScrubbed(err: unknown): never {
+  const e = err as Error & { stdout?: Buffer | string; stderr?: Buffer | string };
+  const scrubbed = new Error(redactSecrets(e.message ?? String(e))) as Error & {
+    stdout?: string;
+    stderr?: string;
+  };
+  if (e.stdout != null) scrubbed.stdout = redactSecrets(e.stdout.toString());
+  if (e.stderr != null) scrubbed.stderr = redactSecrets(e.stderr.toString());
+  throw scrubbed;
+}
+
 function run(cmd: string, cwd?: string): string {
   try {
     return execSync(cmd, {
@@ -38,17 +59,30 @@ function run(cmd: string, cwd?: string): string {
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
       timeout: GIT_TIMEOUT_MS,
-      // GIT_TERMINAL_PROMPT=0 + GCM_INTERACTIVE=never: never block on an
-      // interactive credential prompt (empty/expired PAT on a private HTTPS
-      // repo) — fail fast instead of wedging the dispatcher waiting on stdin.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+      env: gitEnv(),
     }).trim();
   } catch (err) {
-    const e = err as Error & { stdout?: Buffer | string; stderr?: Buffer | string };
-    const scrubbed = new Error(redactSecrets(e.message ?? String(e)));
-    if (e.stdout != null) (scrubbed as Error & { stdout?: string }).stdout = redactSecrets(e.stdout.toString());
-    if (e.stderr != null) (scrubbed as Error & { stderr?: string }).stderr = redactSecrets(e.stderr.toString());
-    throw scrubbed;
+    rethrowScrubbed(err);
+  }
+}
+
+// argv-form executor for git invocations whose arguments contain externally-
+// influenced values (repo names, URLs, paths). execFileSync passes args directly
+// to the binary with NO shell, so metacharacters in any argument are inert —
+// closing the `git clone "${url}"` command-injection class (C2). Use this, not
+// `run`, for any git command interpolating a value that isn't a fixed literal or
+// a strictly-validated token (e.g. taskId / branch from the `[A-Z0-9-]` charset).
+function runArgs(file: string, args: string[], cwd?: string): string {
+  try {
+    return execFileSync(file, args, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      timeout: GIT_TIMEOUT_MS,
+      env: gitEnv(),
+    }).trim();
+  } catch (err) {
+    rethrowScrubbed(err);
   }
 }
 
@@ -261,8 +295,14 @@ export function cloneExternalRepo(
   // that branch's tip, not main's, or any pre-staged commits on the target
   // branch are invisible to the spawned Claude. Push-time rebase against
   // baseBranch then becomes a no-op rather than a divergence.
-  const branchFlag = opts.baseBranch ? ` --branch "${opts.baseBranch}" --single-branch` : '';
-  run(`git clone --depth ${depth}${branchFlag} "${url}" "${path}"`);
+  // argv-form clone (C2): `url` derives from the task's `[repo:]` tag. Even with
+  // parse-time validation upstream, never let it reach a shell. execFileSync
+  // passes each arg verbatim to git with no `/bin/sh -c`, so a `repo` carrying
+  // `"`, `;`, `$(…)` or backticks is an inert (and 404-ing) string, not a command.
+  const cloneArgs = ['clone', '--depth', String(depth)];
+  if (opts.baseBranch) cloneArgs.push('--branch', opts.baseBranch, '--single-branch');
+  cloneArgs.push(url, path);
+  runArgs('git', cloneArgs);
   configureGitIdentity(path);
   writeLivenessSentinel(path, taskId);
 

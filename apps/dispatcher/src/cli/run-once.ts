@@ -36,6 +36,7 @@ import { drainPendingActions, insertUnderActiveTasks } from '../control/actions.
 import { listPending, markApplied, markFailed } from '../control/db.js';
 import { invokeDecomposer, type DecomposeIntent } from '../decomposer.js';
 import { submitDecision } from '../pipeline/decide.js';
+import { isValidRepoTag } from '../pipeline/target.js';
 import { acquire } from '../lockfile.js';
 import * as notify from '../notifier.js';
 import {
@@ -841,7 +842,21 @@ async function main(): Promise<void> {
           const type = String(p.type ?? 'assistant').trim();
           const id = `UI-${Date.now().toString(36).slice(-6).toUpperCase()}`;
           const tags = [`[type: ${type}]`];
-          if (p.repo) tags.push(`[repo: ${String(p.repo)}]`);
+          if (p.repo) {
+            // Security (C2): a control-action repo string flows verbatim into the
+            // queued `[repo:]` tag and, later, into `git clone`. Reject anything
+            // that isn't an `owner/name` repo or greenfield keyword here, at the
+            // control-plane boundary, rather than relying solely on the task-reader
+            // backstop — a malicious/relayed producer must not reach the clone.
+            const repo = String(p.repo);
+            if (!isValidRepoTag(repo)) {
+              throw new Error(
+                `queue_task: invalid [repo:] value ${JSON.stringify(repo)} — ` +
+                  `must be "owner/name" or a greenfield keyword (local|new|greenfield|scratch)`,
+              );
+            }
+            tags.push(`[repo: ${repo}]`);
+          }
           raw = `- [ ] ${id} — ${text}\n      ${tags.join(' ')}`;
         }
         const cur = existsSync(config.queuePath) ? readFileSync(config.queuePath, 'utf8') : '## Active Tasks\n';

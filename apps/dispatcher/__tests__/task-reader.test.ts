@@ -11,6 +11,7 @@ import {
   readQueue,
   slotOf,
   slotWindow,
+  tasksWithInvalidTags,
 } from '../src/task-reader.js';
 
 let tmpDir: string;
@@ -319,5 +320,46 @@ describe('pickNextTask (slot model)', () => {
     const q = readQueue(queuePath);
     const t = q.active.find(x => x.id === 'TEST-T');
     assert.equal(t?.reading, undefined);
+  });
+});
+
+describe('[repo:] validation (C2 command-injection guard)', () => {
+  test('a repo with shell metacharacters is flagged invalid and never picked', () => {
+    const evil = 'a";echo INJECTED > /tmp/marker;"b';
+    write(
+      `## Active Tasks\n\n- [ ] EVIL-1 — clone a repo\n      [type: code] [repo: ${evil}]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'EVIL-1');
+    assert.ok(t, 'task parsed');
+    assert.ok(
+      t!.invalidTags.some(it => it.tag === 'repo'),
+      'repo flagged as invalidTag',
+    );
+    // The decisive guarantee: a task carrying an injection payload is never
+    // returned by the picker, so it never reaches git clone.
+    assert.equal(pickNextTask(q), null);
+    assert.ok(tasksWithInvalidTags(q).some(x => x.id === 'EVIL-1'));
+  });
+
+  test('a valid owner/name repo is accepted and picked', () => {
+    write(
+      `## Active Tasks\n\n- [ ] GOOD-1 — fix a bug\n      [type: code] [repo: lens-cx/employee-portal] [gate: none]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'GOOD-1');
+    assert.equal(t?.repo, 'lens-cx/employee-portal');
+    assert.equal(t!.invalidTags.length, 0);
+    assert.equal(pickNextTask(q)?.id, 'GOOD-1');
+  });
+
+  test('a greenfield keyword repo is accepted', () => {
+    write(
+      `## Active Tasks\n\n- [ ] GREEN-1 — build a snake game\n      [type: pipeline] [repo: local]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'GREEN-1');
+    assert.equal(t?.repo, 'local');
+    assert.equal(t!.invalidTags.length, 0);
   });
 });
