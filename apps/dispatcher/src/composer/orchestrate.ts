@@ -12,10 +12,12 @@
  */
 
 import { audit } from '../audit.js';
+import { config } from '../config.js';
 import type { ParsedTask } from '../types.js';
-import { gatherAncestorContext } from './chain-context.js';
+import { gatherAncestorContext, type AncestorContext } from './chain-context.js';
 import { runComposer } from './composer-runner.js';
-import { saveFlightPlan } from './db.js';
+import { saveFlightPlan, saveNormalization } from './db.js';
+import { normalizeTaskSpec, type NormalizerSpawnFn } from './normalizer.js';
 import { removeFlightPlanArtifact, runPlanSpawn } from './plan-spawner.js';
 import type { FlightPlan } from './types.js';
 
@@ -112,9 +114,17 @@ export async function runComposerLayer(
   });
   removeFlightPlanArtifact(workingDir);
 
-  // ── Phase 2: composer call ──
+  // Gathered once; reused by phase 2 (composer) and phase 3 (normalizer).
+  let ancestors: AncestorContext[] = [];
   try {
-    const ancestors = gatherAncestorContext(task, workingDir);
+    ancestors = gatherAncestorContext(task, workingDir);
+  } catch {
+    ancestors = [];
+  }
+
+  // ── Phase 2: composer call ──
+  let composerThrew = false;
+  try {
     await runComposer({ task, plan, ancestors });
   } catch (err) {
     // Composer failure is non-blocking — we already have the plan for phase 3.
@@ -123,8 +133,65 @@ export async function runComposerLayer(
       stage: 'composer_run',
       reason: `runComposer threw: ${(err as Error).message}`,
     });
-    return { flightPlan: plan, status: 'composer_threw' };
+    composerThrew = true;
   }
 
-  return { flightPlan: plan, status: 'ok' };
+  // ── Phase 3: pre-dispatch normalizer (SHADOW ONLY) ──
+  // Extracted into a void-returning helper so it is STRUCTURALLY impossible for
+  // it to influence this function's return value or status. See its doc comment.
+  await runShadowNormalizePhase(task, workingDir, ancestors);
+
+  // Return value is UNCHANGED by phase 3 — exactly as the stage-0 contract
+  // before the normalizer existed: { flightPlan: plan, status }.
+  return { flightPlan: plan, status: composerThrew ? 'composer_threw' : 'ok' };
+}
+
+/**
+ * Phase 3 — the SHADOW normalizer side effect. Returns `void`: it computes,
+ * persists, and audit-logs the normalization, and that is ALL it does. It MUST
+ * NOT halt/reject/re-park anything, MUST NOT alter the spec the executor sees,
+ * and — being void — CANNOT change `runComposerLayer`'s return value or status.
+ * Enforcement (acting on `would_reject` / `enforced`) is a SEPARATE future PR.
+ *
+ * Guarded end-to-end: disabled by config → no-op; spawn null → audit skipped;
+ * any throw → audit skipped. Never propagates.
+ *
+ * `spawnFn` is a test seam (default = the real LLM spawn) so the invariance test
+ * can drive this deterministically without spawning `claude`.
+ */
+export async function runShadowNormalizePhase(
+  task: ParsedTask,
+  workingDir: string,
+  ancestors: AncestorContext[],
+  spawnFn?: NormalizerSpawnFn,
+): Promise<void> {
+  if (!config.composer.normalizer.enabled) return;
+  try {
+    const norm = await normalizeTaskSpec(task, workingDir, ancestors, spawnFn);
+    if (norm) {
+      saveNormalization(norm);
+      audit('composer.normalize.completed', 'composer.orchestrate', {
+        taskId: task.id,
+        normalization_id: norm.normalization_id,
+        solvable: norm.spec.verdict.solvable,
+        complete: norm.spec.verdict.complete,
+        redundant_count: norm.spec.verdict.redundant_with.length,
+        blocking_count: norm.spec.verdict.blocking_issues.length,
+        would_reject: norm.would_reject,
+        enforced: norm.enforced,
+        predicted_conflict_count: norm.dag?.predicted_conflicts.length ?? 0,
+        dag_cycle: norm.dag?.cycle != null,
+      });
+    } else {
+      audit('composer.normalize.skipped', 'composer.orchestrate', {
+        taskId: task.id,
+        reason: 'normalizer returned null (spawn produced no usable spec)',
+      });
+    }
+  } catch (err) {
+    audit('composer.normalize.skipped', 'composer.orchestrate', {
+      taskId: task.id,
+      reason: `normalize threw: ${(err as Error).message}`,
+    });
+  }
 }

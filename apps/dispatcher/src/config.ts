@@ -219,6 +219,24 @@ export const config = {
   bitwardenOrganizationId: process.env['BITWARDEN_ORGANIZATION_ID'] ?? '',
   bitwardenApiBase: (process.env['BITWARDEN_API_BASE'] ?? 'https://api.bitwarden.com').replace(/\/+$/, ''),
   bitwardenInboxDir: resolve(DATA_DIR, 'inbox', 'rotation-events'),
+
+  // ── Composer layer ──
+  // The composer is the pre-dispatch task-spec normalizer/compiler. Today the
+  // normalizer runs in SHADOW MODE: it computes + persists + audit-logs its
+  // verdict and returns control unchanged. It never halts, rejects, or alters
+  // the spec the executor sees.
+  composer: {
+    normalizer: {
+      // Compute the shadow normalization (LLM spawn + DAG compile + persist).
+      // On by default — the whole point of this stage is to collect shadow
+      // output for operator review before enforcement is ever wired.
+      enabled: bool('COMPOSER_NORMALIZER_ENABLED', true),
+      // Future enforcement flag. DEFAULT FALSE and NOT acted on anywhere in this
+      // cut — it is recorded on each NormalizationResult for operator visibility
+      // only. Turning it into a runtime gate is a SEPARATE future PR.
+      enforced: bool('COMPOSER_NORMALIZER_ENFORCED', false),
+    },
+  },
 } as const;
 
 // Force a non-empty git identity into the environment every `git` child inherits.

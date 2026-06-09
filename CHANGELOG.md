@@ -2,6 +2,15 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.3.0 — 2026-06-09
+
+### Composer normalizer (shadow stage)
+- The composer grows its intended canonical role — a **pre-dispatch spec normalizer/compiler** — as a first cut that runs **shadow-mode only**. For a code task it computes a tightened spec (exact paths/symbols verified against the actual repo, concrete acceptance criteria, anti-examples), compiles the `[depends:]` dependency DAG (Kahn topo-sort + cycle detection), predicts merge conflicts (planned-file-set intersection ∪ `git merge-tree` probe), and derives a `would_reject` verdict for un-normalizable specs.
+- **Shadow only:** the normalizer **computes + persists + audit-logs** and returns control unchanged. It does **not** halt, reject, re-park, alter the spec the executor sees, or change any task's control flow. The new `would_reject` boolean is recorded for operator review; **enforcement is a future flag-flip** (`config.composer.normalizer.enforced`, default `false`, read but not acted on).
+- New: `composer/dag.ts` (pure DAG compiler), `composer/normalizer-spawner.ts` (read-only Read/Glob/Grep claude spawn → `.nyx/normalized-spec.json`), `composer/normalizer.ts` (assembler), a `composer_normalizations` table, and a `nyx composer normalizations [--limit N]` review command.
+- New audit events: `composer.normalize.completed`, `composer.normalize.skipped`.
+- Touched: `apps/dispatcher/src/composer/{types,db,orchestrate,chain-context}.ts`, `apps/dispatcher/src/config.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/src/cli/composer-normalizations.ts`, `scripts/nyx`, `scripts/nyx-composer.sh`. Caveat: phase-3 only runs from `runComposerLayer` (`orchestrate.ts`); enforcement and any dispatch-path wiring are deferred to the enforcement PR.
+
 ## v1.2.1 — 2026-06-09
 
 ### Fixed
