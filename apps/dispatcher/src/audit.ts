@@ -83,6 +83,7 @@ export type AuditEvent =
   // mutable run state lives in the pipeline_runs table. See
   // moc-nyx-pipeline (Arachne) + apps/dispatcher/src/pipeline/.
   | 'pipeline.run.started'
+  | 'pipeline.rejected'
   | 'pipeline.decision.submitted'
   | 'pipeline.stage.advanced'
   | 'pipeline.preview.delivered'
