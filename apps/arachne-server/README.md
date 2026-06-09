@@ -20,16 +20,20 @@ the service is down) · oversight/sharing is **transparent** (a #3 concern, late
   locally on outage, and writes queued + flushed on reconnect.
 
 ## API (bearer token per platform; token_hash in `platforms`, raw token in Bitwarden)
-- `POST /pack`    `{loc, role, paths, text, budget}` → assembled, budgeted, U-ordered pack
-- `POST /search`  `{text?, loc?, kind?, limit?}` → ranked stubs
-- `GET  /node/:id`                              → full node (or `?section=`)
-- `POST /node`    `{node}`                      → write (provenance `platform:<id>`, review pending)
+- `POST /pack`    `{loc, role, paths, text, budget}` → assembled, budgeted, U-ordered pack (`read`)
+- `POST /search`  `{text?, loc?, kind?, limit?}` → ranked stubs (`read`)
+- `GET  /node/:id`                              → full node (or `?section=`) (`read`)
+- `POST /node`    `{node}`                      → write (provenance `platform:<id>`, review pending) (`write`)
 - `POST /usage`   `{node_ids[], cited?, outcome?}` → outcome feedback
-- `GET  /health`                               → liveness
+- `GET  /health`                               → liveness (no auth)
+
+The read routes (`/pack`, `/search`, `/node/:id`) require the `read` scope: a
+platform provisioned without it (e.g. a `gate_push`/`gate_review`-only relay
+peer) is 403'd and cannot exfiltrate the corpus. `write` implies `read`.
 
 ### Gate relay (remote pipeline-gate review across Nyx instances)
 Scopes `gate_push` (origin) and `gate_review` (reviewer), granted per platform in `platforms.scopes`.
-- `POST /gate`               `{id, reviewer, run_id, task_id?, repo?, gate_kind: preview|review, summary?, options?}` → origin pushes a gate brief (`gate_push`; idempotent upsert while open)
+- `POST /gate`               `{id, reviewer, run_id, task_id?, repo?, gate_kind: preview|review, summary?, options?}` → origin pushes a gate brief (`gate_push`; idempotent upsert while open). The `origin` is the authenticated platform id (never a client param); a gate id already owned by a different origin is 409'd, never absorbed — so no `gate_push` peer can squat/hijack another origin's gate.
 - `GET  /gate/inbox`                            → reviewer's open gates (`gate_review`)
 - `POST /gate/:id/decision` `{decision, note?}` → reviewer decides (`gate_review`, must be the assigned reviewer; `revise`/`fix` require a note)
 - `GET  /gate/decided`                          → origin's decided-but-unconsumed gates (`gate_push`)

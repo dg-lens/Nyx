@@ -34,8 +34,13 @@ export function makeHandler(pool: Pool) {
       const platform: Platform | null = await verifyToken(pool, bearer(req.headers['authorization']));
       if (!platform) return send(res, 401, { error: 'unauthorized' });
       const canWrite = platform.scopes.includes('write');
+      // write implies read: a platform trusted to mutate the corpus can read it,
+      // and the default provisioning is {read,write}. Encoded explicitly so a
+      // read-less, write-only grant is never silently treated as read-capable.
+      const canRead = platform.scopes.includes('read') || canWrite;
 
       if (method === 'POST' && path === '/pack') {
+        if (!canRead) return send(res, 403, { error: 'no read scope' });
         const d = (await readBody(req)) as Directive | null;
         if (!d || typeof d.loc !== 'string') return send(res, 400, { error: 'pack needs {loc, role, paths, text, budget}' });
         const index = await loadActiveNodes(pool);
@@ -45,12 +50,14 @@ export function makeHandler(pool: Pool) {
       }
 
       if (method === 'POST' && path === '/search') {
+        if (!canRead) return send(res, 403, { error: 'no read scope' });
         const q = (await readBody(req)) as SearchQuery | null;
         const index = await loadActiveNodes(pool);
         return send(res, 200, { hits: search(index, q ?? {}) });
       }
 
       if (method === 'GET' && path.startsWith('/node/')) {
+        if (!canRead) return send(res, 403, { error: 'no read scope' });
         const node = await getNode(pool, decodeURIComponent(path.slice('/node/'.length)));
         return node ? send(res, 200, node) : send(res, 404, { error: 'not found' });
       }
@@ -80,8 +87,8 @@ export function makeHandler(pool: Pool) {
         if (!g || !g.id || !g.reviewer || !g.run_id || (g.gate_kind !== 'preview' && g.gate_kind !== 'review')) {
           return send(res, 400, { error: 'gate needs {id, reviewer, run_id, gate_kind: preview|review}' });
         }
-        const id = await pushGate(pool, g, platform.id);
-        return send(res, 200, { ok: true, id });
+        const r = await pushGate(pool, g, platform.id);
+        return r.ok ? send(res, 200, { ok: true, id: r.id }) : send(res, r.code, { error: r.error });
       }
 
       // Reviewer inbox: open gates assigned to me.
