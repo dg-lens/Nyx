@@ -10,6 +10,7 @@ import { emitHook } from './plugins/hooks.js';
 import { listMcpServers } from './mcp-discovery.js';
 import { buildRequiredContextBlock, parseReadingRefs, resolveReadingRefs } from './reading-resolver.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
+import { costMeteringArgs, extractResultText, parseUsage, type SpawnUsage } from './spawn-usage.js';
 import { fetchProjectSecretValues } from './secrets/bitwarden-client.js';
 import { resolveProject } from './secrets/project-registry.js';
 import type { ParsedTask } from './types.js';
@@ -20,6 +21,26 @@ export interface ClaudeResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  /** Locally-estimated cost/tokens from the JSON envelope; null when metering is off or the envelope was unparseable. */
+  usage?: SpawnUsage | null;
+}
+
+/**
+ * Reconcile a metered spawn's stdout with the sentinel contract.
+ *
+ * With `--output-format json`, the agent's final text (carrying the VERDICT /
+ * terminal sentinel) is inside the envelope's `result` field, not raw on stdout.
+ * Every downstream check parses `stdout` for that sentinel, so we swap in the
+ * extracted `result` text — making stdout byte-identical to the pre-metering
+ * shape. If the envelope can't be parsed (older CLI, crash before the result
+ * message, shape drift), we keep the raw stdout: the sentinel parse still works on
+ * the unmodified output and metering simply reports null. This is the seam that
+ * stops JSON output from regressing completion detection.
+ */
+function reconcileMeteredOutput(rawStdout: string): { stdout: string; usage: SpawnUsage | null } {
+  const usage = parseUsage(rawStdout);
+  const resultText = extractResultText(rawStdout);
+  return { stdout: resultText ?? rawStdout, usage };
 }
 
 export interface BuildPromptOpts {
@@ -324,7 +345,10 @@ export async function invokeWisdomCapture(task: ParsedTask, cwd: string): Promis
     env: spawnEnv,
     captureStdout: true,
     label: 'nyx-wisdom',
+    silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
   }, WISDOM_TIMEOUT_MS);
+  // Wisdom output is read from NYX_WISDOM.md, not stdout, so no sentinel-reconcile
+  // is needed here — stdout is left as the runner returns it.
   return {
     exitCode: result.exitCode,
     stdout: result.stdout,
@@ -345,6 +369,7 @@ export async function invokeClaude(
     prompt,
     '--model', task.model,
     ...permissionArgs(task),
+    ...(config.costMeteringEnabled ? costMeteringArgs() : []),
     '--add-dir', cwd,
   ];
   const { command, args, extraEnv } = buildSpawnInvocation(task, claudeArgs);
@@ -361,11 +386,19 @@ export async function invokeClaude(
     env: spawnEnv,
     captureStdout: true,
     label: 'nyx',
+    silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
   }, config.claudeTaskTimeoutMs);
+  // Only reconcile when metering is on AND the spawn exited cleanly. A non-zero
+  // exit (crash, timeout, stall) may leave partial/non-JSON stdout the redaction
+  // path wants verbatim; keep it raw and report no usage in that case.
+  const metered = config.costMeteringEnabled && result.exitCode === 0
+    ? reconcileMeteredOutput(result.stdout)
+    : { stdout: result.stdout, usage: null };
   return {
     exitCode: result.exitCode,
-    stdout: result.stdout,
+    stdout: metered.stdout,
     stderr: result.stderr,
     durationMs: result.durationMs,
+    usage: metered.usage,
   };
 }

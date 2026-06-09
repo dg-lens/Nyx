@@ -49,6 +49,7 @@ import {
   tasksWithInvalidTags,
 } from '../task-reader.js';
 import { runPreflight } from '../preflight.js';
+import { STALLED_EXIT_CODE } from '../spawn-helpers.js';
 import { buildPrompt, invokeClaude, invokeWisdomCapture } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
@@ -389,7 +390,36 @@ async function attemptTask(
     durationMs: claudeResult.durationMs,
   });
 
+  // Per-spawn cost/token metering (G-B/P1). Locally-estimated dollars survive the
+  // Max-plan OAuth seat (no billing signal). Recorded as its own audit event so it
+  // never perturbs the existing exit/gate flow; absent when metering is off or the
+  // JSON envelope was unparseable.
+  if (claudeResult.usage) {
+    const u = claudeResult.usage;
+    audit('task.usage.metered', 'dispatcher', {
+      taskId: task.id,
+      estimated_cost_usd: u.estimatedCostUsd,
+      input_tokens: u.inputTokens,
+      output_tokens: u.outputTokens,
+      cache_read_input_tokens: u.cacheReadInputTokens,
+      cache_creation_input_tokens: u.cacheCreationInputTokens,
+      total_tokens: u.totalTokens,
+      num_turns: u.numTurns,
+    });
+  }
+
   if (claudeResult.exitCode !== 0) {
+    // Loop-detector classification: 125 means the silence watchdog killed a hung
+    // spawn (no output for the silence window) — distinct from a wall-clock 124.
+    // Surface it as its own audit event before the generic failure so the post-
+    // mortem doesn't have to infer a stall from a generic exit code.
+    if (claudeResult.exitCode === STALLED_EXIT_CODE) {
+      audit('task.claude.stalled', 'dispatcher', {
+        taskId: task.id,
+        durationMs: claudeResult.durationMs,
+        silenceTimeoutMs: config.claudeSilenceTimeoutMs,
+      });
+    }
     const failureLog = redactClaudeOutput(
       `claude exit ${claudeResult.exitCode}\nstderr:\n${claudeResult.stderr}\nstdout-tail:\n${claudeResult.stdout.slice(-2000)}`,
     );

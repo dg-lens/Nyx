@@ -1,11 +1,27 @@
 import { spawn } from 'node:child_process';
 import { registerClaude, deregisterClaude } from './claude-registry.js';
 
+/**
+ * Distinct exit code for a spawn killed by the stdout-silence watchdog. Kept
+ * separate from the wall-clock-timeout 124 so the dispatcher can classify a hung
+ * spawn ("stalled" — no output for N minutes, likely a wedged MCP/tool call) apart
+ * from a spawn that was genuinely still working when its budget ran out.
+ */
+export const STALLED_EXIT_CODE = 125;
+
 export interface SpawnWithTimeoutOptions {
   cwd: string;
   env: NodeJS.ProcessEnv;
   captureStdout?: boolean;
   label?: string;
+  /**
+   * Loop-detector / liveness heartbeat: if set, the spawn is killed early when
+   * no stdout OR stderr byte arrives for this many ms. A pid-alive check can't
+   * catch a zombie blocked on a hung tool call — output silence can. Off by
+   * default (existing callers are unaffected). The watchdog timer is the inner
+   * heartbeat; `timeoutMs` remains the hard outer wall-clock cap.
+   */
+  silenceTimeoutMs?: number;
 }
 
 export interface SpawnResult {
@@ -14,6 +30,8 @@ export interface SpawnResult {
   stderr: string;
   durationMs: number;
   killedByTimeout: boolean;
+  /** True when the silence watchdog (not the wall-clock timeout) killed the spawn. */
+  stalledBySilence: boolean;
 }
 
 /**
@@ -52,10 +70,14 @@ export function spawnWithTimeout(
 ): Promise<SpawnResult> {
   return new Promise((resolve) => {
     const start = Date.now();
+    // stdout is piped whenever it's captured OR a silence watchdog is armed (the
+    // watchdog needs to observe stdout bytes as liveness). Otherwise 'ignore', so
+    // the no-watchdog/no-capture path keeps its original FD shape exactly.
+    const pipeStdout = options.captureStdout || options.silenceTimeoutMs !== undefined;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: ['ignore', options.captureStdout ? 'pipe' : 'ignore', 'pipe'],
+      stdio: ['ignore', pipeStdout ? 'pipe' : 'ignore', 'pipe'],
       detached: true,
     });
     if (child.pid !== undefined) registerClaude(child.pid);
@@ -63,11 +85,14 @@ export function spawnWithTimeout(
     let stdout = '';
     let stderr = '';
     let killedByTimeout = false;
+    let stalledBySilence = false;
     let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+    let silenceTimer: ReturnType<typeof setTimeout> | null = null;
     const label = options.label ?? 'nyx';
 
-    const timer = setTimeout(() => {
-      killedByTimeout = true;
+    // Escalate a kill from SIGTERM → SIGKILL after a 5s grace window. Shared by
+    // both the wall-clock timeout and the silence watchdog.
+    const escalateKill = (): void => {
       if (child.pid !== undefined) {
         killTree(child.pid, 'SIGTERM');
         sigkillTimer = setTimeout(() => {
@@ -75,48 +100,88 @@ export function spawnWithTimeout(
           sigkillTimer = null;
         }, 5000);
       }
+    };
+
+    const timer = setTimeout(() => {
+      killedByTimeout = true;
+      escalateKill();
     }, timeoutMs);
+
+    // Loop-detector heartbeat: reset on every output chunk; firing means the spawn
+    // produced no output for the whole window — treat as a hung tool/MCP call and
+    // kill early with a 'stalled' classification (distinct from wall-clock 124).
+    const armSilence = (): void => {
+      if (!options.silenceTimeoutMs) return;
+      silenceTimer = setTimeout(() => {
+        stalledBySilence = true;
+        escalateKill();
+      }, options.silenceTimeoutMs);
+    };
+    const resetSilence = (): void => {
+      if (!options.silenceTimeoutMs || killedByTimeout || stalledBySilence) return;
+      if (silenceTimer !== null) clearTimeout(silenceTimer);
+      armSilence();
+    };
+    armSilence();
+
+    const clearTimers = (): void => {
+      clearTimeout(timer);
+      if (sigkillTimer !== null) {
+        clearTimeout(sigkillTimer);
+        sigkillTimer = null;
+      }
+      if (silenceTimer !== null) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+      }
+    };
 
     if (options.captureStdout) {
       child.stdout?.on('data', (b: Buffer) => {
         stdout += b.toString();
+        resetSilence();
+      });
+    } else {
+      // Even when stdout isn't captured, its bytes still count as liveness for the
+      // watchdog — otherwise a non-capturing spawn that only writes stdout looks
+      // silent and gets falsely killed. Drain without buffering.
+      child.stdout?.on('data', () => {
+        resetSilence();
       });
     }
     child.stderr?.on('data', (b: Buffer) => {
       stderr += b.toString();
+      resetSilence();
     });
 
     child.on('close', (code) => {
-      clearTimeout(timer);
+      clearTimers();
       if (child.pid !== undefined) deregisterClaude(child.pid);
-      if (sigkillTimer !== null) {
-        clearTimeout(sigkillTimer);
-        sigkillTimer = null;
-      }
+      const note = killedByTimeout
+        ? `\n[${label}] timed out after ${timeoutMs}ms`
+        : stalledBySilence
+          ? `\n[${label}] stalled — no output for ${options.silenceTimeoutMs}ms`
+          : '';
       resolve({
-        exitCode: killedByTimeout ? 124 : code ?? 1,
+        exitCode: stalledBySilence ? STALLED_EXIT_CODE : killedByTimeout ? 124 : code ?? 1,
         stdout,
-        stderr: killedByTimeout
-          ? `${stderr}\n[${label}] timed out after ${timeoutMs}ms`
-          : stderr,
+        stderr: `${stderr}${note}`,
         durationMs: Date.now() - start,
         killedByTimeout,
+        stalledBySilence,
       });
     });
 
     child.on('error', (err) => {
-      clearTimeout(timer);
+      clearTimers();
       if (child.pid !== undefined) deregisterClaude(child.pid);
-      if (sigkillTimer !== null) {
-        clearTimeout(sigkillTimer);
-        sigkillTimer = null;
-      }
       resolve({
         exitCode: 127,
         stdout,
         stderr: `${stderr}\n[${label}] spawn error: ${(err as Error).message}`,
         durationMs: Date.now() - start,
         killedByTimeout: false,
+        stalledBySilence: false,
       });
     });
   });

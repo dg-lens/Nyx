@@ -14,7 +14,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
-import { spawnWithTimeout, killTree } from '../src/spawn-helpers.js';
+import { spawnWithTimeout, killTree, STALLED_EXIT_CODE } from '../src/spawn-helpers.js';
 
 // ── killTree ─────────────────────────────────────────────────────────────────
 
@@ -138,6 +138,120 @@ describe('spawnWithTimeout — timeout', () => {
       5000,
     );
     assert.equal(result.killedByTimeout, false);
+    assert.equal(result.stalledBySilence, false);
     // The test completing without hanging confirms no timer blocked the event loop.
   });
+});
+
+// ── spawnWithTimeout — silence watchdog (loop-detector) ──────────────────────
+
+describe('spawnWithTimeout — silence watchdog', () => {
+  test('off by default: a silent process runs to the wall-clock timeout (124, not stalled)', async () => {
+    // No silenceTimeoutMs → no watchdog → silent sleep is killed only by the
+    // outer wall-clock timeout, classified 124, NOT as a silence stall.
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'sleep 300'],
+      { cwd: '/tmp', env: process.env },
+      150,
+    );
+    assert.equal(result.exitCode, 124);
+    assert.equal(result.killedByTimeout, true);
+    assert.equal(result.stalledBySilence, false);
+  }, { timeout: 6500 });
+
+  test('a process silent past silenceTimeoutMs is killed early with the stalled code', async () => {
+    const t0 = Date.now();
+    // Sleeps 300s with no output; silence window is 150ms, wall-clock is 30s.
+    // The watchdog must fire (not the wall clock) → STALLED_EXIT_CODE.
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'sleep 300'],
+      { cwd: '/tmp', env: process.env, silenceTimeoutMs: 150, label: 'test-stall' },
+      30_000,
+    );
+    const elapsed = Date.now() - t0;
+    assert.equal(result.exitCode, STALLED_EXIT_CODE);
+    assert.equal(result.stalledBySilence, true);
+    assert.equal(result.killedByTimeout, false);
+    assert.match(result.stderr, /stalled — no output for 150ms/);
+    // Must have died ~150ms + grace, FAR before the 30s wall clock.
+    assert.ok(elapsed < 5500, `elapsed ${elapsed}ms should be well under the 30s wall clock`);
+  }, { timeout: 7000 });
+
+  test('ongoing output keeps the watchdog from firing (heartbeat resets on each chunk)', async () => {
+    // Prints every 60ms for ~600ms then exits 0. The 250ms silence window never
+    // elapses between chunks, so the watchdog must NOT fire — the process exits
+    // normally with code 0.
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'for i in 1 2 3 4 5 6 7 8 9 10; do printf "tick "; sleep 0.06; done; exit 0'],
+      { cwd: '/tmp', env: process.env, captureStdout: true, silenceTimeoutMs: 250 },
+      30_000,
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stalledBySilence, false);
+    assert.equal(result.killedByTimeout, false);
+    assert.match(result.stdout, /tick/);
+  }, { timeout: 7000 });
+
+  test('stderr-only output also counts as liveness (resets the watchdog)', async () => {
+    // Writes to stderr (not stdout) every 60ms. Even with captureStdout false,
+    // stderr chunks must reset the silence timer — otherwise a stderr-chatty,
+    // stdout-quiet process would be falsely classified as stalled.
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'for i in 1 2 3 4 5 6 7 8; do printf "e" >&2; sleep 0.06; done; exit 0'],
+      { cwd: '/tmp', env: process.env, captureStdout: false, silenceTimeoutMs: 250 },
+      30_000,
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stalledBySilence, false);
+  }, { timeout: 7000 });
+
+  test('stdout liveness works even when captureStdout is false', async () => {
+    // captureStdout false, but stdout writes must still count as liveness. The
+    // process prints to stdout every 60ms then exits; the 250ms window never
+    // elapses, so no false stall. stdout is not buffered (empty in the result).
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'for i in 1 2 3 4 5 6 7 8; do printf "o"; sleep 0.06; done; exit 0'],
+      { cwd: '/tmp', env: process.env, captureStdout: false, silenceTimeoutMs: 250 },
+      30_000,
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stalledBySilence, false);
+    assert.equal(result.stdout, '');
+  }, { timeout: 7000 });
+});
+
+// ── config default — watchdog OFF unless explicitly opted in ─────────────────
+
+describe('claudeSilenceTimeoutMs config default', () => {
+  test('defaults to 0 (watchdog disabled) when CLAUDE_SILENCE_TIMEOUT_MS is unset', async () => {
+    // The watchdog mechanism is sound but `claude -p --output-format json` emits
+    // one final blob, not incremental stdout — so a positive default would
+    // false-kill legitimate long code/coder spawns. The default MUST be 0.
+    // config.ts reads process.env at module load, so unset the var and import
+    // fresh (cache-busted) to evaluate the true default.
+    const prev = process.env['CLAUDE_SILENCE_TIMEOUT_MS'];
+    delete process.env['CLAUDE_SILENCE_TIMEOUT_MS'];
+    try {
+      const { config } = await import(`../src/config.js?default-watchdog=${Date.now()}`);
+      assert.equal(config.claudeSilenceTimeoutMs, 0);
+    } finally {
+      if (prev !== undefined) process.env['CLAUDE_SILENCE_TIMEOUT_MS'] = prev;
+    }
+  });
+
+  test('a config default of 0 propagates to spawnWithTimeout as a disarmed watchdog', async () => {
+    // The call sites pass `config.claudeSilenceTimeoutMs || undefined`, so a 0
+    // default arrives as undefined and the watchdog never arms: a silent process
+    // is killed only by the wall clock (124), never the stalled code (125).
+    const silenceOpt = (0 as number) || undefined;
+    assert.equal(silenceOpt, undefined);
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'sleep 300'],
+      { cwd: '/tmp', env: process.env, silenceTimeoutMs: silenceOpt },
+      150,
+    );
+    assert.equal(result.exitCode, 124);
+    assert.equal(result.stalledBySilence, false);
+    assert.notEqual(result.exitCode, STALLED_EXIT_CODE);
+  }, { timeout: 6500 });
 });
