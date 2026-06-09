@@ -7,5 +7,6 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["__tests__/**/*"]
+  "exclude": ["__tests__/**/*"],
+  "references": [{ "path": "../assistant" }]
 }
