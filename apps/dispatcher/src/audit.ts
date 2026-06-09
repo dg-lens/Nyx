@@ -16,6 +16,10 @@ export type AuditEvent =
   | 'dispatch.update_available'
   | 'task.started'
   | 'task.claude.exited'
+  // Per-spawn cost/token metering off `claude -p --output-format json` (G-B/P1)
+  | 'task.usage.metered'
+  // Loop-detector: spawn killed by the stdout-silence watchdog, not wall-clock
+  | 'task.claude.stalled'
   | 'task.gate.completed'
   | 'task.committed'
   | 'task.merged'

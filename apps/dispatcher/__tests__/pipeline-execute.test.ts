@@ -149,6 +149,44 @@ describe('runExecuting (injected coder + base)', () => {
     assert.equal(stored[0]?.status, 'committed');
   });
 
+  test('accumulates per-coder usage into pipeline_runs.cost_actuals', async () => {
+    createRun({ id: 'pr_cost', taskId: 'T', prompt: 'build it', repo: 'org/repo', now: 1000 });
+    updateRun('pr_cost', { status: 'executing', plan_json: freezePlan(planWith([fp('A'), fp('B')])) }, 1000);
+
+    const usage = {
+      estimatedCostUsd: 0.25,
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadInputTokens: 5,
+      cacheCreationInputTokens: 3,
+      totalTokens: 128,
+      numTurns: 2,
+    };
+    const fakeCoder = async (ctx: CoderContext): Promise<CoderResult> => ({
+      task_id: ctx.plan.task_id,
+      branch: coderBranch(ctx.run.id, ctx.plan.task_id),
+      status: 'committed',
+      commit: `sha-${ctx.plan.task_id}`,
+      files_changed: ctx.plan.modifies,
+      exit_code: 0,
+      log: '',
+      usage,
+    });
+
+    await runExecuting(getRun('pr_cost')!, {
+      runCoder: fakeCoder,
+      base: { basePath: '/tmp/fake-base', integrationBranch: 'ib' },
+    });
+
+    const persisted = getRun('pr_cost');
+    assert.ok(persisted?.cost_actuals, 'cost_actuals persisted');
+    const cost = JSON.parse(persisted!.cost_actuals!) as { estimatedCostUsd: number; spawns: number; totalTokens: number };
+    // Two coders, each $0.25 / 128 tokens — the per-run total is the SUM.
+    assert.equal(cost.spawns, 2);
+    assert.ok(Math.abs(cost.estimatedCostUsd - 0.5) < 1e-9);
+    assert.equal(cost.totalTokens, 256);
+  });
+
   test('throws when the run has no frozen plan', async () => {
     createRun({ id: 'pr_noplan', taskId: 'T', prompt: 'x', now: 1000 });
     updateRun('pr_noplan', { status: 'executing' }, 1000);

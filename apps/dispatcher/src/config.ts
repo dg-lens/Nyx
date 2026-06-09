@@ -140,6 +140,18 @@ export const config = {
   logRetentionDays: int('LOG_RETENTION_DAYS', 7),
   gateStageTimeoutMs: int('GATE_STAGE_TIMEOUT_MS', 5 * 60_000),
   claudeTaskTimeoutMs: int('CLAUDE_TASK_TIMEOUT_MS', SETTINGS.dispatcher.taskTimeoutMs),
+  // Loop-detector heartbeat: kill a spawn that emits no stdout/stderr for this
+  // long (likely a hung MCP/tool call) before the full wall-clock budget, with a
+  // 'stalled' classification distinct from exit 124. 0 disables the watchdog.
+  // DEFAULT OFF (0): `claude -p --output-format json` emits a single final blob,
+  // not incremental stdout, so any positive default would false-kill legitimate
+  // long-running code/coder spawns. The mechanism is kept intact and opt-in via
+  // CLAUDE_SILENCE_TIMEOUT_MS — re-enable only once streaming output is verified,
+  // and only above the 30-min task timeout if used as a coarse outer guard.
+  claudeSilenceTimeoutMs: int('CLAUDE_SILENCE_TIMEOUT_MS', 0),
+  // Per-spawn cost/token metering via `claude -p --output-format json`. On by
+  // default; locally-estimated (works under Max-plan OAuth, no billing signal).
+  costMeteringEnabled: bool('COST_METERING_ENABLED', true),
   claudePermissionMode: process.env.CLAUDE_PERMISSION_MODE ?? 'acceptEdits',
   auditFailureLogMinBytes: int('AUDIT_FAILURE_LOG_MIN_BYTES', 8192),
 

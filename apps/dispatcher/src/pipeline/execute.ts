@@ -24,6 +24,7 @@ import { audit } from '../audit.js';
 import { config } from '../config.js';
 import * as git from '../git-ops.js';
 import { spawnWithTimeout } from '../spawn-helpers.js';
+import { addUsage, costMeteringArgs, parseCostActuals, parseUsage, type CostActuals, type SpawnUsage } from '../spawn-usage.js';
 import { pipelineRunEnv, loadRunDecisions } from './run-secrets.js';
 import { parsePlanJson, renderCoderSpec, type FlightPlanContract, type PlanningResult } from './flight-plan.js';
 import type { PlanTarget } from './planning.js';
@@ -51,6 +52,8 @@ export interface CoderResult {
   files_changed: string[];
   exit_code: number;
   log: string;
+  /** Locally-estimated cost/tokens for this coder spawn; null when metering is off. */
+  usage?: SpawnUsage | null;
 }
 
 export interface ExecuteResult {
@@ -191,7 +194,7 @@ export interface CoderSpawnArgs {
   label: string;
   runId: string;
 }
-export type CoderSpawn = (args: CoderSpawnArgs) => Promise<{ exitCode: number; stderr: string }>;
+export type CoderSpawn = (args: CoderSpawnArgs) => Promise<{ exitCode: number; stderr: string; usage?: SpawnUsage | null }>;
 
 const realCoderSpawn: CoderSpawn = async (a) => {
   const env: NodeJS.ProcessEnv = {
@@ -207,16 +210,28 @@ const realCoderSpawn: CoderSpawn = async (a) => {
     config.claudePermissionMode,
     '--allowed-tools',
     CODER_TOOLS.join(' '),
+    ...(config.costMeteringEnabled ? costMeteringArgs() : []),
     '--add-dir',
     a.workingDir,
   ];
+  // Capture stdout ONLY to parse the cost envelope — a coder's success is judged
+  // by its git diff, never by its stdout text, so there's no sentinel to preserve
+  // here (unlike the main task path). The silence watchdog guards the long coder
+  // budget against a hung tool/MCP call.
   const r = await spawnWithTimeout(
     'claude',
     args,
-    { cwd: a.workingDir, env, captureStdout: false, label: a.label },
+    {
+      cwd: a.workingDir,
+      env,
+      captureStdout: config.costMeteringEnabled,
+      label: a.label,
+      silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
+    },
     a.timeoutMs,
   );
-  return { exitCode: r.exitCode, stderr: r.stderr };
+  const usage = config.costMeteringEnabled && r.exitCode === 0 ? parseUsage(r.stdout) : null;
+  return { exitCode: r.exitCode, stderr: r.stderr, usage };
 };
 
 /**
@@ -302,6 +317,7 @@ export async function defaultRunCoder(ctx: CoderContext): Promise<CoderResult> {
     files_changed: files,
     exit_code: spawnRes.exitCode,
     log: spawnRes.stderr.slice(-500),
+    usage: spawnRes.usage ?? null,
   };
 }
 
@@ -374,12 +390,21 @@ export async function runExecuting(run: PipelineRun, deps: ExecuteDeps = {}): Pr
   const phaseTaskIds = new Set(phaseResults.map((r) => r.task_id));
   const coderResults = [...prior.filter((r) => !phaseTaskIds.has(r.task_id)), ...phaseResults];
 
+  // Per-RUN cost accumulation (G-B/P1). Parallel coders multiply spend ~Nx, so the
+  // meaningful budget is per-run, not per-spawn — fold THIS phase's coder usage
+  // into the persisted running total. Accumulated across phases via the prior
+  // cost_actuals value, so it survives the one-phase-per-tick resume model.
+  const priorCost = parseCostActuals(run.cost_actuals);
+  let costActuals: CostActuals | null = priorCost;
+  for (const r of phaseResults) costActuals = addUsage(costActuals, r.usage ?? null);
+
   updateRun(
     run.id,
     {
       coder_results: JSON.stringify(coderResults),
       integration_branch: base.integrationBranch,
       worktree_base: base.basePath,
+      ...(costActuals ? { cost_actuals: JSON.stringify(costActuals) } : {}),
     },
     Date.now(),
   );
