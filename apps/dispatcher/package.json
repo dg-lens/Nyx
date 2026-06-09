@@ -1,6 +1,6 @@
 {
   "name": "@nyx/dispatcher",
-  "version": "0.3.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "main": "dist/cli/run-once.js",
