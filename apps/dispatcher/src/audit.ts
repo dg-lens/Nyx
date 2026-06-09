@@ -96,6 +96,17 @@ export type AuditEvent =
   | 'composer.run.spawned'
   | 'composer.run.completed'
   | 'composer.skipped'
+  // Trace→eval→lesson loop FOUNDATION (G-A). Evaluation is a SEPARATE control
+  // plane ON TOP of the trace: the audit chain records WHAT happened, these
+  // events record that a run was JUDGED (and the drift verdict over time). The
+  // eval SCORE itself is NOT hash-chained — it lives in the eval_scores table
+  // (like composer_findings), so a re-score never perturbs the ledger. These
+  // events are the append-only lifecycle markers around that off-chain scoring.
+  | 'eval.online.sampled'
+  | 'eval.online.scored'
+  | 'eval.online.skipped'
+  | 'eval.drift.checked'
+  | 'eval.drift.regressed'
   // Pipeline orchestrator (`[type: pipeline]`). Append-only lifecycle record;
   // mutable run state lives in the pipeline_runs table. See
   // moc-nyx-pipeline (Arachne) + apps/dispatcher/src/pipeline/.
@@ -397,6 +408,34 @@ export function tasksFiredInWindow(start: Date, end: Date): Set<string> {
   const out = new Set<string>();
   for (const r of rows) if (r.taskId) out.add(r.taskId);
   return out;
+}
+
+/**
+ * Read raw audit rows for the run-tree projection / eval sampling. The chain
+ * stays the canonical immutable ledger — this is a READ-ONLY window over it,
+ * never a second write path. `sinceIso` bounds the scan to recent history so the
+ * online-eval sampler doesn't re-walk the whole table every cadence. Rows come
+ * back ascending by id (the chain order) so the projection can fold them in one
+ * pass. The payload is returned as the raw JSON string; the projection parses it
+ * (a malformed payload there must not crash a DB accessor).
+ */
+export function readAuditRowsSince(sinceIso: string): AuditRow[] {
+  const d = open();
+  const rows = d
+    .prepare(
+      `SELECT id, at, event, actor, payload, row_hash, prev_hash FROM system_audit
+       WHERE at >= ? ORDER BY id ASC`,
+    )
+    .all(sinceIso) as Array<{
+    id: number;
+    at: string;
+    event: string;
+    actor: string;
+    payload: string;
+    row_hash: string;
+    prev_hash: string;
+  }>;
+  return rows.map((r) => ({ ...r, event: r.event as AuditEvent, payload: r.payload }));
 }
 
 export interface ChainVerification {

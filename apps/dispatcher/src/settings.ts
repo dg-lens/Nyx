@@ -85,6 +85,18 @@ export interface NyxSettings {
     defaultModels: Record<string, string>;
   };
   plugins: { disabled: string[] };
+  // Trace→eval→lesson loop FOUNDATION (G-A). Sampled async online-eval + drift
+  // monitor. Observation-only: scores accumulate and the drift monitor DMs the
+  // operator, but nothing here gates or blocks a task. `enabled: false` (the
+  // default) keeps the entire eval layer dormant until the operator opts in.
+  evaluation: {
+    enabled: boolean;
+    // Fraction (0..1) of CLEAN terminal runs to score each cadence. Flagged
+    // runs (halt/audit/stall) are ALWAYS scored regardless of this rate.
+    sampleRate: number;
+    // The judge model — cheap by design (the judge is advisory, high-volume).
+    judgeModel: string;
+  };
   updates: {
     // check = dispatcher polls origin/main once a day and notifies when the
     // installed keg is behind. autoApply = also run 'nyx update' automatically
@@ -106,6 +118,9 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
     defaultModels: { code: 'sonnet', analysis: 'opus', content: 'sonnet', assistant: 'haiku', pipeline: 'opus' },
   },
   plugins: { disabled: [] },
+  // 0.1 sampling is the canonical online-eval rate; haiku is the cheap judge.
+  // OFF by default — the loop accumulates no scores until the operator enables it.
+  evaluation: { enabled: false, sampleRate: 0.1, judgeModel: 'haiku' },
   updates: { check: true, autoApply: false },
   notifications: {
     // Slack on, Pushover off by default → with no settings.json present, behavior
@@ -243,6 +258,13 @@ export function loadSettings(dataDir: string): NyxSettings {
         defaultModels: { ...d.dispatcher.defaultModels, ...(raw.dispatcher?.defaultModels ?? {}) },
       },
       plugins: { disabled: Array.isArray(raw.plugins?.disabled) ? raw.plugins!.disabled : [] },
+      evaluation: {
+        enabled: coerceBool(raw.evaluation?.enabled, d.evaluation.enabled),
+        // Clamp the rate into [0,1]; a hand-edited >1 or negative would otherwise
+        // sample everything / nothing. 0 is legal (flagged-only scoring).
+        sampleRate: clampNumber(raw.evaluation?.sampleRate, d.evaluation.sampleRate, 0, 1),
+        judgeModel: coerceString(raw.evaluation?.judgeModel, d.evaluation.judgeModel),
+      },
       updates: {
         check: typeof raw.updates?.check === 'boolean' ? raw.updates.check : d.updates.check,
         autoApply: typeof raw.updates?.autoApply === 'boolean' ? raw.updates.autoApply : d.updates.autoApply,
