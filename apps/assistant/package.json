@@ -13,10 +13,12 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test ./__tests__/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.5.4"
   }
 }
