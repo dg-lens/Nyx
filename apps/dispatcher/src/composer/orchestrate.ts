@@ -8,7 +8,14 @@
  * and the dispatcher proceeds with the existing execution flow as if the
  * composer layer didn't exist.
  *
- * Called from `dispatchOne` in `cli/run-once.ts` for `type: code` tasks only.
+ * NOTE ON CALLERS: `runComposerLayer` is currently UNCALLED. The stage-0
+ * composer layer (plan-only + composer-check spawn before execution) was
+ * removed from the code-task dispatch path — code tasks now run a single
+ * execution spawn (see the comment in `cli/run-once.ts` `dispatchOne`). It is
+ * retained here for the pipeline's composer-redux stage and as the reference
+ * orchestration of all three phases. The phase-3 shadow normalizer, however,
+ * IS wired into the live code-task dispatch path directly via
+ * `maybeRunShadowNormalize` below — it does NOT depend on `runComposerLayer`.
  */
 
 import { audit } from '../audit.js';
@@ -192,6 +199,58 @@ export async function runShadowNormalizePhase(
     audit('composer.normalize.skipped', 'composer.orchestrate', {
       taskId: task.id,
       reason: `normalize threw: ${(err as Error).message}`,
+    });
+  }
+}
+
+/**
+ * Dispatch-path entry point for the shadow normalizer. This is the function the
+ * live code-task dispatch path (`attemptTask` in `cli/run-once.ts`) calls,
+ * BEFORE the main execution spawn — the normalizer is a PRE-dispatch step.
+ *
+ * Behaviorally inert by default and fully additive:
+ *   - When `config.composer.normalizer.enabled` is false (the SHIPPED default),
+ *     this returns immediately having done NOTHING — no ancestor gathering, no
+ *     spawn, no audit. The dispatch path is identical to a build without it.
+ *   - When enabled, it gathers ancestor context and runs the shadow normalizer
+ *     (one extra sonnet planning spawn per code task — the documented cost).
+ *
+ * It returns `void` and is double-guarded: `runShadowNormalizePhase` is itself
+ * void + internally try/catch'd, and this wrapper wraps the whole thing again so
+ * a throw from ancestor-gathering or anywhere else can NEVER reach the caller.
+ * It MUST NOT influence control flow, the gate decision, or the task outcome.
+ *
+ * `deps` is a test seam (defaults = the real implementations) so the wiring
+ * contract — off→not-invoked, on→a-throw-is-swallowed — can be driven
+ * deterministically without spawning `claude` or importing the dispatch loop.
+ */
+export async function maybeRunShadowNormalize(
+  task: ParsedTask,
+  workingDir: string,
+  deps: {
+    gatherAncestors?: (task: ParsedTask, workingDir: string) => AncestorContext[];
+    runShadow?: (
+      task: ParsedTask,
+      workingDir: string,
+      ancestors: AncestorContext[],
+    ) => Promise<void>;
+  } = {},
+): Promise<void> {
+  if (!config.composer.normalizer.enabled) return;
+  const gatherAncestors = deps.gatherAncestors ?? gatherAncestorContext;
+  const runShadow = deps.runShadow ?? runShadowNormalizePhase;
+  try {
+    let ancestors: AncestorContext[] = [];
+    try {
+      ancestors = gatherAncestors(task, workingDir);
+    } catch {
+      ancestors = [];
+    }
+    await runShadow(task, workingDir, ancestors);
+  } catch (err) {
+    audit('composer.normalize.skipped', 'composer.orchestrate', {
+      taskId: task.id,
+      reason: `shadow-normalize wiring threw: ${(err as Error).message}`,
     });
   }
 }

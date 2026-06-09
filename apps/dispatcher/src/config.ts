@@ -228,9 +228,13 @@ export const config = {
   composer: {
     normalizer: {
       // Compute the shadow normalization (LLM spawn + DAG compile + persist).
-      // On by default — the whole point of this stage is to collect shadow
-      // output for operator review before enforcement is ever wired.
-      enabled: bool('COMPOSER_NORMALIZER_ENABLED', true),
+      // OFF by default: the normalizer is now wired into the live code-task
+      // dispatch path, so a `true` default would silently add one extra sonnet
+      // planning spawn to EVERY code task on merge. The operator opts in with
+      // COMPOSER_NORMALIZER_ENABLED=true to begin shadow observation; the
+      // shipped/default config runs nothing new. (Enforcement —
+      // COMPOSER_NORMALIZER_ENFORCED below — is a separate future flag.)
+      enabled: bool('COMPOSER_NORMALIZER_ENABLED', false),
       // Future enforcement flag. DEFAULT FALSE and NOT acted on anywhere in this
       // cut — it is recorded on each NormalizationResult for operator visibility
       // only. Turning it into a runtime gate is a SEPARATE future PR.

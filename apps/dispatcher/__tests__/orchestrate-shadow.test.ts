@@ -5,7 +5,8 @@ import { describe, test, beforeEach, afterEach } from 'node:test';
 import { _setAuditDb } from '../src/audit.js';
 import { config } from '../src/config.js';
 import { _setComposerDb, getNormalizationsForTask } from '../src/composer/db.js';
-import { runShadowNormalizePhase } from '../src/composer/orchestrate.js';
+import { maybeRunShadowNormalize, runShadowNormalizePhase } from '../src/composer/orchestrate.js';
+import type { AncestorContext } from '../src/composer/chain-context.js';
 import type { NormalizerSpawnResult } from '../src/composer/normalizer-spawner.js';
 import type { NormalizationVerdict, NormalizedSpec } from '../src/composer/types.js';
 import type { ParsedTask } from '../src/types.js';
@@ -129,5 +130,83 @@ describe('orchestrate phase-3 (shadow normalizer)', () => {
     }
     assert.equal(threw, false, 'phase-3 must never propagate a throw');
     assert.equal(getNormalizationsForTask('TASK-THROW').length, 0);
+  });
+});
+
+/**
+ * The dispatch-path wiring contract — exactly what `attemptTask` in
+ * `cli/run-once.ts` relies on. run-once.ts has zero exports and runs `main()` on
+ * import, so we test the inert, side-effect-free seam it calls instead.
+ */
+describe('maybeRunShadowNormalize (dispatch-path wiring)', () => {
+  test('flag OFF (shipped default) → normalizer NEVER invoked, no ancestor gather', async () => {
+    let gathered = false;
+    let ran = false;
+    await withNormalizerEnabled(false, () =>
+      maybeRunShadowNormalize(makeTask('TASK-OFF'), '/tmp', {
+        gatherAncestors: () => {
+          gathered = true;
+          return [];
+        },
+        runShadow: async () => {
+          ran = true;
+        },
+      }),
+    );
+    assert.equal(gathered, false, 'must not gather ancestors when disabled');
+    assert.equal(ran, false, 'must not invoke the shadow normalizer when disabled');
+    assert.equal(getNormalizationsForTask('TASK-OFF').length, 0);
+  });
+
+  test('flag ON → normalizer invoked with gathered ancestors', async () => {
+    const ancestors: AncestorContext[] = [{ task_id: 'PARENT', plan: null, actual_diff: null }];
+    let seen: AncestorContext[] | null = null;
+    await withNormalizerEnabled(true, () =>
+      maybeRunShadowNormalize(makeTask('TASK-ON'), '/tmp', {
+        gatherAncestors: () => ancestors,
+        runShadow: async (_t, _wd, anc) => {
+          seen = anc;
+        },
+      }),
+    );
+    assert.deepEqual(seen, ancestors, 'gathered ancestors must reach the shadow phase');
+  });
+
+  test('flag ON + a thrown normalizer → swallowed; dispatch caller proceeds', async () => {
+    let threw = false;
+    try {
+      await withNormalizerEnabled(true, () =>
+        maybeRunShadowNormalize(makeTask('TASK-WIRE-THROW'), '/tmp', {
+          gatherAncestors: () => [],
+          runShadow: async () => {
+            throw new Error('normalizer exploded');
+          },
+        }),
+      );
+    } catch {
+      threw = true;
+    }
+    assert.equal(threw, false, 'wiring must never propagate a throw to the dispatch path');
+  });
+
+  test('flag ON + a thrown ancestor-gather → swallowed; normalizer still runs with []', async () => {
+    let ranWith: AncestorContext[] | null = null;
+    let threw = false;
+    try {
+      await withNormalizerEnabled(true, () =>
+        maybeRunShadowNormalize(makeTask('TASK-GATHER-THROW'), '/tmp', {
+          gatherAncestors: () => {
+            throw new Error('git blew up');
+          },
+          runShadow: async (_t, _wd, anc) => {
+            ranWith = anc;
+          },
+        }),
+      );
+    } catch {
+      threw = true;
+    }
+    assert.equal(threw, false, 'a gather throw must never reach the dispatch path');
+    assert.deepEqual(ranWith, [], 'normalizer still runs, with empty ancestors');
   });
 });
