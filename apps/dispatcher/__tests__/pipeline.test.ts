@@ -11,6 +11,7 @@ import { _setNotificationsEnabled } from '../src/notifier.js';
 import {
   _setPipelineDb,
   activeRuns,
+  claimRunForResume,
   createRun,
   getRun,
   getRunByTaskId,
@@ -417,6 +418,63 @@ describe('orchestrator — review gate: accept (merge held + continue)', () => {
     assert.deepEqual(f.held, [], 'held cleared');
     assert.ok(f.merged.includes('API-ROUTES'), 'formerly-held task now counted as merged');
     assert.ok(events().includes('pipeline.review.accept'));
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  test('accept-with-conflict re-park releases the resume_lease so the next decision is claimable', async () => {
+    // Base where integration and the held branch DIVERGE on the same file, so the
+    // force-merge genuinely conflicts and the task stays held (re-park path).
+    const base = mkdtempSync(join(tmpdir(), 'nyx-acc-conflict-'));
+    g('git init -q', base);
+    g('git config user.email t@t.t', base);
+    g('git config user.name tester', base);
+    writeFileSync(resolve(base, 'shared.ts'), 'export const v = 0\n');
+    g('git add -A', base); g('git commit -q -m base', base);
+    g('git checkout -q -B integration', base);
+    // Held branch off the base commit, diverging on shared.ts.
+    g('git checkout -q -B api-branch HEAD', base);
+    writeFileSync(resolve(base, 'shared.ts'), 'export const v = 2\n');
+    g('git add -A', base); g('git commit -q -m held', base);
+    // Integration diverges on the SAME file → merging api-branch conflicts.
+    g('git checkout -q integration', base);
+    writeFileSync(resolve(base, 'shared.ts'), 'export const v = 1\n');
+    g('git add -A', base); g('git commit -q -m integration-change', base);
+
+    const plan: PlanningResult = {
+      dag: { nodes: [] },
+      plans: [{ task_id: 'API-ROUTES', description: 'api', phase: 0, deps: [], creates: [], modifies: ['shared.ts'], consumes: [], preflight: [], scope_boundary: [], acceptance: [] }],
+      alignment: { conflicts: [], preflight: [], decisions: [] },
+    };
+    createRun({ id: 'pr_acc_conflict', taskId: 'BAKE2', prompt: 'build', now: 1000 });
+    updateRun('pr_acc_conflict', {
+      status: 'awaiting_review', current_stage: 'review_gate', current_phase: 0,
+      plan_json: freezePlan(plan), worktree_base: base, integration_branch: 'integration',
+      coder_results: JSON.stringify([{ task_id: 'API-ROUTES', branch: 'api-branch', status: 'committed' }]),
+      redux_findings: JSON.stringify({ merged: [], held: ['API-ROUTES'] }),
+      operator_decision: { kind: 'accept', at: 'now' },
+    }, 1000);
+
+    // Stamp a future-dated lease, exactly as claimRunForResume does when a tick
+    // claims this armed run before advancing it.
+    const claimed = claimRunForResume('pr_acc_conflict', 2000);
+    assert.ok(claimed, 'precondition: the armed accept run is claimable');
+    assert.ok((getRun('pr_acc_conflict')!.resume_lease ?? 0) > 2000, 'lease is future-dated');
+
+    // Advance: force-merge conflicts → re-park at the review gate.
+    const final = await advancePipeline(getRun('pr_acc_conflict')!, { ship, deliver });
+    assert.equal(final.status, 'awaiting_review', 're-parked at the review gate');
+    assert.equal(final.operator_decision, null, 'accept decision consumed');
+    assert.equal(getRun('pr_acc_conflict')!.resume_lease, null,
+      'the stale future-dated lease was released on the re-park');
+    const stillHeld = JSON.parse(getRun('pr_acc_conflict')!.redux_findings!) as { held: string[] };
+    assert.deepEqual(stillHeld.held, ['API-ROUTES'], 'genuinely-conflicting task stays held');
+
+    // The operator's NEXT decision must be claimable IMMEDIATELY — a stale lease
+    // would fence claimRunForResume out for up to RESUME_LEASE_MS.
+    updateRun('pr_acc_conflict', { operator_decision: { kind: 'rollback', at: 'now' } }, 2001);
+    assert.ok(claimRunForResume('pr_acc_conflict', 2002),
+      'the subsequent decision is claimable immediately — no lease fence');
+
     rmSync(base, { recursive: true, force: true });
   });
 });

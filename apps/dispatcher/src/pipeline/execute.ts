@@ -43,6 +43,15 @@ function sanitize(s: string): string {
 
 export class ExecuteError extends Error {}
 
+/**
+ * A reused `worktree_base` that no longer exists on disk (M2). Multi-phase runs
+ * span many ticks (one phase/tick, 30-min coder caps → hours-to-days); the /tmp
+ * base of a self/external run can be evicted by a reboot or tmp-reaper mid-run.
+ * Distinct from ExecuteError so the orchestrator routes it to a RECOVERABLE
+ * base-missing halt instead of failing every coder with a raw ENOENT.
+ */
+export class BaseMissingError extends Error {}
+
 export type CoderStatus = 'committed' | 'no_changes' | 'failed';
 
 export interface CoderResult {
@@ -366,12 +375,28 @@ export async function runExecuting(run: PipelineRun, deps: ExecuteDeps = {}): Pr
   }
   const target: PlanTarget = { id: run.task_id, description: run.prompt, ...(run.repo ? { repo: run.repo } : {}) };
   // Set the base up ONCE (phase 0); later phases reuse it so they branch off the
-  // accumulated integration branch.
-  const base =
-    deps.base ??
-    (run.worktree_base && run.integration_branch
-      ? { basePath: run.worktree_base, integrationBranch: run.integration_branch }
-      : setupIntegrationBase(run, target));
+  // accumulated integration branch. M2: a reuse must revalidate the base dir on
+  // disk — a string in `worktree_base` does NOT prove the dir survived a reboot /
+  // tmp eviction between ticks. Without the guard every coder's `git worktree
+  // add` ENOENT-fails against the vanished cwd and redux fails the same way,
+  // surfacing as mass coder failure and discarding the already-merged earlier
+  // phases (whose only copy lived in the deleted clone). Drive a recoverable
+  // base-missing halt instead so the operator can rollback/re-run cleanly.
+  let base: { basePath: string; integrationBranch: string; cleanup?: () => void };
+  if (deps.base) {
+    base = deps.base;
+  } else if (run.worktree_base && run.integration_branch) {
+    if (!existsSync(run.worktree_base)) {
+      throw new BaseMissingError(
+        `pipeline base ${run.worktree_base} no longer exists on disk (evicted between ticks). ` +
+          `The integration branch carrying earlier phases lived only there. Rollback to replan, ` +
+          `or abort.`,
+      );
+    }
+    base = { basePath: run.worktree_base, integrationBranch: run.integration_branch };
+  } else {
+    base = setupIntegrationBase(run, target);
+  }
   const spawn = deps.spawn ?? realCoderSpawn;
   const runCoder = deps.runCoder ?? defaultRunCoder;
   // Coder concurrency is bounded by BOTH the pipeline-specific cap AND the

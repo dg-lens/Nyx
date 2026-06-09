@@ -147,6 +147,9 @@ export type AuditEvent =
   // moc-nyx-pipeline (Arachne) + apps/dispatcher/src/pipeline/.
   | 'pipeline.run.started'
   | 'pipeline.rejected'
+  | 'pipeline.resume.contended'
+  | 'pipeline.base.missing'
+  | 'pipeline.phase.replay_skipped'
   | 'pipeline.decision.submitted'
   | 'pipeline.stage.advanced'
   | 'pipeline.preview.delivered'
@@ -290,15 +293,51 @@ function hashRow(at: string, event: string, actor: string, payload: string, prev
  */
 export function audit(event: AuditEvent, actor: string, payload: Record<string, unknown> = {}): void {
   const d = open();
-  const at = new Date().toISOString();
-  const payloadJson = JSON.stringify(payload);
   d.exec('BEGIN IMMEDIATE');
   try {
-    const prevRow = lastHashStmt!.get() as { row_hash: string } | undefined;
-    const prev = prevRow?.row_hash ?? GENESIS_HASH;
-    const rowHash = hashRow(at, event, actor, payloadJson, prev);
-    insertStmt!.run(at, event, actor, payloadJson, rowHash, prev);
+    appendChainRow(event, actor, payload);
     d.exec('COMMIT');
+  } catch (err) {
+    d.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Append one hash-chained audit row using the OPEN audit connection, WITHOUT
+ * opening its own transaction. The caller MUST already hold a transaction on
+ * this same connection (`runChecked` / a same-transaction checkpoint). Exists so
+ * a state mutation and its audit event can commit atomically on ONE connection —
+ * node:sqlite rejects a nested `BEGIN`, and two separate connections to the same
+ * file can't share a transaction, so true atomicity demands a single connection
+ * + a single BEGIN owned by the caller.
+ */
+export function appendChainRow(event: AuditEvent, actor: string, payload: Record<string, unknown> = {}): void {
+  open();
+  const at = new Date().toISOString();
+  const payloadJson = JSON.stringify(payload);
+  const prevRow = lastHashStmt!.get() as { row_hash: string } | undefined;
+  const prev = prevRow?.row_hash ?? GENESIS_HASH;
+  const rowHash = hashRow(at, event, actor, payloadJson, prev);
+  insertStmt!.run(at, event, actor, payloadJson, rowHash, prev);
+}
+
+/**
+ * Run `body` inside a single IMMEDIATE transaction on the AUDIT connection,
+ * so any `appendChainRow` calls AND any other writes `body` makes to the same
+ * connection commit or roll back together. The audit DB and the pipeline DB are
+ * the SAME file (`config.dbPath`); in tests they're the same connection, and in
+ * production the pipeline checkpoint routes its row write through this connection
+ * (see pipeline/db.ts `checkpointTransition`) precisely so the state row and the
+ * chain event are one atomic unit. Returns whatever `body` returns.
+ */
+export function runChecked<T>(body: (conn: DatabaseSync) => T): T {
+  const d = open();
+  d.exec('BEGIN IMMEDIATE');
+  try {
+    const out = body(d);
+    d.exec('COMMIT');
+    return out;
   } catch (err) {
     d.exec('ROLLBACK');
     throw err;

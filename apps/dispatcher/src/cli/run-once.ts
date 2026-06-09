@@ -27,7 +27,7 @@ import {
   failPipelineRun,
   getRunByTaskId,
 } from '../pipeline/orchestrator.js';
-import { runsAwaitingDecision } from '../pipeline/db.js';
+import { claimRunForResume, runsAwaitingDecision } from '../pipeline/db.js';
 import { isAwaiting, isTerminal, type DecisionKind, type PipelineStatus } from '../pipeline/types.js';
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
 import { config } from '../config.js';
@@ -907,9 +907,18 @@ async function failPipelineWithNotice(taskId: string, err: Error): Promise<void>
 async function resumeDecidedRunsInTick(): Promise<Set<string>> {
   const handled = new Set<string>();
   for (const run of runsAwaitingDecision()) {
+    // Resume-lease CAS (P3): atomically claim the run before advancing it so a
+    // manual `nyx tick` overlapping the launchd tick can't both resume it (the
+    // shell single-flight lock serializes scheduled ticks but NOT a manual tick
+    // racing one). A lost CAS skips the run this tick; the winner owns it.
+    const claimed = claimRunForResume(run.id, Date.now());
+    if (!claimed) {
+      audit('pipeline.resume.contended', 'pipeline', { runId: run.id, taskId: run.task_id });
+      continue;
+    }
     handled.add(run.task_id);
     try {
-      await advancePipeline(run);
+      await advancePipeline(claimed);
     } catch (err) {
       const e = err as Error;
       await failPipelineWithNotice(run.task_id, e);
