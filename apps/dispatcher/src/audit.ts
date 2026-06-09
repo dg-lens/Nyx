@@ -20,6 +20,18 @@ export type AuditEvent =
   | 'task.usage.metered'
   // Loop-detector: spawn killed by the stdout-silence watchdog, not wall-clock
   | 'task.claude.stalled'
+  // MCP-plane resilience (G-D). Breaker state transitions are observational rows
+  // on the otherwise-mutable mcp_server_health table; probe/policy/auth events
+  // record the pre-spawn suppression decisions. See mcp-resilience.ts.
+  | 'task.mcp.breaker_opened'
+  | 'task.mcp.breaker_closed'
+  | 'task.mcp.servers_withheld'
+  | 'task.mcp.policy_decision'
+  | 'task.mcp.auth_stale'
+  // Reactive auth-failure: a spawn's stream-json showed an MCP call 401/403; the
+  // failing server's credential is marked expired so the next tick's healAuth
+  // routes it to the operator-action path. See mcp-auth-healer.recordAuthFailure.
+  | 'task.mcp.auth_failure'
   | 'task.gate.completed'
   | 'task.committed'
   | 'task.merged'
@@ -75,6 +87,11 @@ export type AuditEvent =
   | 'bitwarden.token.missing'
   | 'inbox.rotation.ingested'
   | 'inbox.rotation.malformed'
+  // Off-hours notification digest (Track 6, N4). A suppressed message was
+  // batched (not dropped); the batch is flushed as one summary at the next
+  // working-window start. Mutable batch lives in the notification_digest table.
+  | 'notification.digest.batched'
+  | 'notification.digest.flushed'
   // Ambiguity escalation: agent wrote .nyx/ambiguity.json and exited 0
   | 'task.ambiguity.escalated'
   // Wisdom capture: second claude -p spawn after main task exits 0, before gate
@@ -87,6 +104,24 @@ export type AuditEvent =
   // test-infra files (conftest.py, jest/vitest config, CI workflow, package.json
   // scripts). Flag-for-review only — does NOT fail the task.
   | 'task.gate.test_infra_touched'
+  // ── Content-level verifiers + lint gate (P7) ──
+  // Pinned-version diff-scoped lint (the long-pending CORTANA-GATE-LINT). HARD
+  // signal: a lint failure on the agent's own diff fails the task into audit.
+  | 'task.lint.passed'
+  | 'task.lint.failed'
+  | 'task.lint.skipped'
+  // Flaky-test quarantine: the tests stage flipped verdict on the identical tree.
+  // The dispatcher halts (quarantine) rather than retrying to green.
+  | 'task.gate.flaky_quarantined'
+  // Rotten-green: a changed test file asserts nothing / is skip-only / discards
+  // its result into a blank-identifier sink. Flag-for-review only (advisory).
+  | 'task.test_oracle.rotten_green'
+  // Content-judge: an independent haiku read-only spawn scored the diff against
+  // the task's acceptance criteria. captured = a verdict was produced; concern =
+  // a high-confidence FAIL flagged for review; skipped = non-fatal no-op.
+  | 'task.judge.captured'
+  | 'task.judge.concern'
+  | 'task.judge.skipped'
   // Composer layer (stage 0 — observation only). See apps/dispatcher/src/composer/CLAUDE.md
   | 'task.flight_plan.spawned'
   | 'task.flight_plan.submitted'
@@ -112,6 +147,9 @@ export type AuditEvent =
   // moc-nyx-pipeline (Arachne) + apps/dispatcher/src/pipeline/.
   | 'pipeline.run.started'
   | 'pipeline.rejected'
+  | 'pipeline.resume.contended'
+  | 'pipeline.base.missing'
+  | 'pipeline.phase.replay_skipped'
   | 'pipeline.decision.submitted'
   | 'pipeline.stage.advanced'
   | 'pipeline.preview.delivered'
@@ -255,15 +293,51 @@ function hashRow(at: string, event: string, actor: string, payload: string, prev
  */
 export function audit(event: AuditEvent, actor: string, payload: Record<string, unknown> = {}): void {
   const d = open();
-  const at = new Date().toISOString();
-  const payloadJson = JSON.stringify(payload);
   d.exec('BEGIN IMMEDIATE');
   try {
-    const prevRow = lastHashStmt!.get() as { row_hash: string } | undefined;
-    const prev = prevRow?.row_hash ?? GENESIS_HASH;
-    const rowHash = hashRow(at, event, actor, payloadJson, prev);
-    insertStmt!.run(at, event, actor, payloadJson, rowHash, prev);
+    appendChainRow(event, actor, payload);
     d.exec('COMMIT');
+  } catch (err) {
+    d.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Append one hash-chained audit row using the OPEN audit connection, WITHOUT
+ * opening its own transaction. The caller MUST already hold a transaction on
+ * this same connection (`runChecked` / a same-transaction checkpoint). Exists so
+ * a state mutation and its audit event can commit atomically on ONE connection —
+ * node:sqlite rejects a nested `BEGIN`, and two separate connections to the same
+ * file can't share a transaction, so true atomicity demands a single connection
+ * + a single BEGIN owned by the caller.
+ */
+export function appendChainRow(event: AuditEvent, actor: string, payload: Record<string, unknown> = {}): void {
+  open();
+  const at = new Date().toISOString();
+  const payloadJson = JSON.stringify(payload);
+  const prevRow = lastHashStmt!.get() as { row_hash: string } | undefined;
+  const prev = prevRow?.row_hash ?? GENESIS_HASH;
+  const rowHash = hashRow(at, event, actor, payloadJson, prev);
+  insertStmt!.run(at, event, actor, payloadJson, rowHash, prev);
+}
+
+/**
+ * Run `body` inside a single IMMEDIATE transaction on the AUDIT connection,
+ * so any `appendChainRow` calls AND any other writes `body` makes to the same
+ * connection commit or roll back together. The audit DB and the pipeline DB are
+ * the SAME file (`config.dbPath`); in tests they're the same connection, and in
+ * production the pipeline checkpoint routes its row write through this connection
+ * (see pipeline/db.ts `checkpointTransition`) precisely so the state row and the
+ * chain event are one atomic unit. Returns whatever `body` returns.
+ */
+export function runChecked<T>(body: (conn: DatabaseSync) => T): T {
+  const d = open();
+  d.exec('BEGIN IMMEDIATE');
+  try {
+    const out = body(d);
+    d.exec('COMMIT');
+    return out;
   } catch (err) {
     d.exec('ROLLBACK');
     throw err;

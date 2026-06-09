@@ -126,7 +126,21 @@ export const config = {
    */
   gitTargets: {} as Record<
     string,
-    { baseBranch: string; pushMode: 'pr' | 'direct'; deployPatterns?: string[]; deployTargets?: string[] } | undefined
+    {
+      baseBranch: string;
+      pushMode: 'pr' | 'direct';
+      deployPatterns?: string[];
+      deployTargets?: string[];
+      /**
+       * Linter versions pinned to the target repo's CI (P7 lint gate). The diff-
+       * scoped lint stage installs and runs EXACTLY these versions so a local
+       * green doesn't diverge from a CI red on a rule that shipped in a newer
+       * linter. Keyed by tool; value is the exact version CI uses (e.g. ruff
+       * `'0.6.9'`, eslint `'9.13.0'`). Absent → the gate falls back to the
+       * version the repo itself declares, and records that it was unpinned.
+       */
+      lintPins?: { ruff?: string; eslint?: string };
+    } | undefined
   >,
 
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
@@ -177,6 +191,17 @@ export const config = {
   // Per-spawn cost/token metering via `claude -p --output-format json`. On by
   // default; locally-estimated (works under Max-plan OAuth, no billing signal).
   costMeteringEnabled: bool('COST_METERING_ENABLED', true),
+  // Content-judge (P7): a haiku Read/Grep-only spawn that scores a code task's
+  // diff PASS/FAIL against its acceptance criteria after the gate passes.
+  // Advisory + non-fatal — a FAIL flags for review, never fails the task. On by
+  // default; free-ish under Max plan but it IS a spawn, so allow disabling.
+  contentJudgeEnabled: bool('CONTENT_JUDGE_ENABLED', true),
+  contentJudgeConfidenceThreshold: int('CONTENT_JUDGE_CONFIDENCE_THRESHOLD', 75),
+  // Flaky-test quarantine (P7): on a gate tests-stage FAILURE, rerun the tests
+  // stage once on the IDENTICAL tree. If the verdict flips → quarantine (halt),
+  // never silently retry-to-green. On by default; the rerun is the only added
+  // cost and only happens on an initial tests-stage failure.
+  flakyRerunEnabled: bool('FLAKY_RERUN_ENABLED', true),
   claudePermissionMode: process.env.CLAUDE_PERMISSION_MODE ?? 'acceptEdits',
   auditFailureLogMinBytes: int('AUDIT_FAILURE_LOG_MIN_BYTES', 8192),
 

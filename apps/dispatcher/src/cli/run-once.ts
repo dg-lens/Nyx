@@ -27,7 +27,7 @@ import {
   failPipelineRun,
   getRunByTaskId,
 } from '../pipeline/orchestrator.js';
-import { runsAwaitingDecision } from '../pipeline/db.js';
+import { claimRunForResume, runsAwaitingDecision } from '../pipeline/db.js';
 import { isAwaiting, isTerminal, type DecisionKind, type PipelineStatus } from '../pipeline/types.js';
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
 import { config } from '../config.js';
@@ -41,6 +41,7 @@ import { invokeDecomposer, type DecomposeIntent } from '../decomposer.js';
 import { submitDecision } from '../pipeline/decide.js';
 import { isValidRepoTag, targetMode } from '../pipeline/target.js';
 import { acquire } from '../lockfile.js';
+import { maybeFlushDigest } from '../notification-digest-flush.js';
 import * as notify from '../notifier.js';
 import {
   markTaskCompleted,
@@ -54,11 +55,23 @@ import {
 import { runPreflight } from '../preflight.js';
 import { STALLED_EXIT_CODE } from '../spawn-helpers.js';
 import { redactCredentialPatterns } from '../redaction.js';
-import { buildPrompt, invokeClaude, invokeWisdomCapture } from '../task-runner.js';
+import { listMcpServers } from '../mcp-discovery.js';
+import { authFailedServers, recordSpawnOutcome } from '../mcp-resilience.js';
+import { healAuth, recordAuthFailure } from '../mcp-auth-healer.js';
+import { buildPrompt, invokeClaude, invokeContentJudge, invokeWisdomCapture } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
 import { changedFilesWorkingTree } from '../deploy-detector.js';
 import { assessGateTrust } from '../gate-trust.js';
+import { runLintGate } from '../lint-gate.js';
+import { assessRottenGreen } from '../rotten-green.js';
+import { buildFlakyReport, classifyRerun } from '../flaky-detect.js';
+import {
+  JUDGE_FILE,
+  isJudgeConcern,
+  parseJudgeFile,
+  summarizeJudgement,
+} from '../content-judge.js';
 import {
   finalizeAnalysis,
   finalizeAssistant,
@@ -298,6 +311,15 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
         pattern: 'aesthetic-ambiguity',
       });
     }
+    if (result.status === 'flaky-quarantined') {
+      // A non-deterministic tests stage is NOT something an audit pass can fix by
+      // re-running — re-running is the very thing that would launder the flake
+      // into a green. Quarantine straight to operator review.
+      return haltTask(task, workingDir, startedAt, {
+        operatorReport: result.report,
+        pattern: 'flaky-test',
+      });
+    }
     // result.status === 'failed-recoverable' — try to audit + auto-fix.
     if (attempt >= MAX_AUDIT_PASSES) {
       return haltTask(task, workingDir, startedAt, {
@@ -368,6 +390,7 @@ type AttemptResult =
   | { status: 'failed-final'; outcome: RunOutcome }
   | { status: 'failed-recoverable'; failureLog: string }
   | { status: 'ambiguity-escalated'; report: string }
+  | { status: 'flaky-quarantined'; report: string }
   | { status: 'rate-limited'; retryAfterMs?: number };
 
 /**
@@ -398,6 +421,21 @@ async function attemptTask(
     return { status: 'failed-recoverable', failureLog };
   }
 
+  // ── Pre-spawn MCP auth-heal (G-D) ──
+  // For MCP-dependent task types, proactively check each credential's TTL BEFORE
+  // the spawn. A token past its refresh window surfaces as a generic tool error
+  // mid-spawn → agent drift → exit 124. Proactive flagging (the 80%-TTL point)
+  // emits task.mcp.auth_stale so the operator can re-auth before the next tick.
+  // Observation-only / non-fatal: we never block the spawn here — a stale token
+  // may still work, and the reactive 401 classifier below catches a dead one.
+  if (task.type === 'assistant' || task.type === 'analysis') {
+    try {
+      healAuth(listMcpServers(), { taskId: task.id });
+    } catch {
+      /* auth-heal is best-effort; never block a spawn on it */
+    }
+  }
+
   const claudeResult = await invokeClaude(
     task,
     workingDir.path,
@@ -408,6 +446,43 @@ async function attemptTask(
     exitCode: claudeResult.exitCode,
     durationMs: claudeResult.durationMs,
   });
+
+  // ── Post-spawn MCP breaker bookkeeping (G-D) ──
+  // For MCP-dependent task types, attribute each MCP tool call in the spawn's
+  // stream-json output to its server and update the cross-process breaker per
+  // server: a failed call (auth 401/403 vs transport 5xx/timeout) increments toward
+  // opening the breaker, a successful call closes a half-open one. This is what
+  // makes the breaker survive the cold-per-spawn model — the state lives in nyx.db,
+  // not the dead child — and what makes it actually accumulate (the single-result
+  // envelope dropped the tool tokens, so the prior text-regex path saw nothing).
+  // The breaker_opened/closed rows are the post-mortem join the MCP-heavy hang T4
+  // entries lacked. Best-effort: any throw here never affects the task outcome.
+  //
+  // CRUCIALLY: the returned auth-kind is USED, not discarded. An auth-classed
+  // failure marks the failing servers' credentials expired (mcp_credentials) so the
+  // NEXT tick's pre-spawn healAuth flags them and routes to the operator-action
+  // path — the generic Opus diagnostic can't drive a browser re-auth, so without
+  // this an auth failure just burns audit passes. We re-derive the per-server auth
+  // set from the same stream-json tool events recordSpawnOutcome used, so only the
+  // server that actually 401'd is marked, not every server the spawn touched.
+  if (task.type === 'assistant' || task.type === 'analysis') {
+    try {
+      const combined = `${claudeResult.stderr}\n${claudeResult.stdout}`;
+      const events = claudeResult.mcpToolEvents ?? [];
+      const kind = recordSpawnOutcome(combined, { exitCode: claudeResult.exitCode, events });
+      if (kind === 'auth') {
+        const authServers = authFailedServers(events, combined);
+        for (const server of authServers) recordAuthFailure(server);
+        audit('task.mcp.auth_failure', 'dispatcher', { taskId: task.id, servers: authServers });
+        void notify.dm(
+          `🔑 *${task.id}* — an MCP server returned an auth error (${authServers.join(', ') || 'unattributed'}). ` +
+            `Re-auth the connector; the breaker has suppressed it for this cooldown.`,
+        );
+      }
+    } catch {
+      /* breaker bookkeeping is best-effort; never affect task flow */
+    }
+  }
 
   // Per-spawn cost/token metering (G-B/P1). Locally-estimated dollars survive the
   // Max-plan OAuth seat (no billing signal). Recorded as its own audit event so it
@@ -543,17 +618,81 @@ async function attemptTask(
     }
   }
 
-  const gate = runGate(task, workingDir.path);
+  // Flaky quarantine (P7): only the gate's `tests` stage is non-deterministic by
+  // nature, so the rerun-on-same-tree check is armed for code tasks that gate on
+  // tests. typecheck/lint are deterministic and need no rerun.
+  const rerunFlakyTests =
+    config.flakyRerunEnabled &&
+    task.type === 'code' &&
+    task.gates !== 'none' &&
+    task.gates.includes('tests');
+  const gate = runGate(task, workingDir.path, { rerunFlakyTests });
   audit('task.gate.completed', 'dispatcher', {
     taskId: task.id,
     passed: gate.passed,
     stages: gate.stages.map(s => ({ name: s.name, passed: s.passed, durationMs: s.durationMs })),
   });
+  if (gate.flaky) {
+    // The tests stage flipped verdict on the identical tree. Do NOT take the
+    // flipped green and do NOT route to the audit pipeline (its retry IS the
+    // retry-to-green this guards against). Quarantine straight to the operator.
+    const detail = gate.flakyDetail ?? { firstPassed: false, secondPassed: true };
+    const cls = classifyRerun(detail.firstPassed, detail.secondPassed);
+    audit('task.gate.flaky_quarantined', 'dispatcher', {
+      taskId: task.id,
+      firstPassed: detail.firstPassed,
+      secondPassed: detail.secondPassed,
+    });
+    const report = buildFlakyReport(task.id, cls);
+    await notify.taskFailed(task.id, 'tests-flaky', report);
+    return { status: 'flaky-quarantined', report };
+  }
   if (!gate.passed) {
     audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'gate', failure_log: gate.failureLog });
     const lastStage = gate.stages[gate.stages.length - 1]?.name ?? 'gate';
     await notify.taskFailed(task.id, lastStage, gate.failureLog);
     return { status: 'failed-recoverable', failureLog: gate.failureLog };
+  }
+
+  // ── Pinned-version diff-scoped lint gate (P7 — CORTANA-GATE-LINT) ──
+  // The script-based `lint` gate (if requested) runs the repo's own lint command
+  // repo-wide. THIS stage is the version-pinned, diff-scoped lint: it runs the
+  // EXACT ruff/eslint version the target repo's CI uses, over ONLY the files the
+  // agent changed — closing the local-green / CI-red gap that cost a hotfix cycle
+  // per bounce. HARD signal: a lint failure on the agent's own diff is a real
+  // defect → failed-recoverable → audit. Code tasks only; never runs on a repo
+  // with no ruff/eslint config, and degrades to a skip (not a fail) when the
+  // pinned linter can't be installed/run.
+  if (task.type === 'code') {
+    const changedForLint = changedFilesWorkingTree(workingDir.path);
+    const lint = runLintGate(workingDir.path, task.repo, changedForLint);
+    if (!lint.ran) {
+      audit('task.lint.skipped', 'dispatcher', { taskId: task.id, reason: lint.skipReason ?? 'no lintable files' });
+    } else if (lint.passed) {
+      audit('task.lint.passed', 'dispatcher', {
+        taskId: task.id,
+        tool: lint.tool,
+        ...(lint.pinnedVersion ? { pinnedVersion: lint.pinnedVersion } : {}),
+        versionSource: lint.versionSource,
+        files: lint.scopedFiles.length,
+      });
+    } else {
+      const pinNote = lint.pinnedVersion
+        ? `${lint.tool}@${lint.pinnedVersion} (${lint.versionSource})`
+        : `${lint.tool} (unpinned)`;
+      const failureLog =
+        `Pinned-version lint gate failed (${pinNote}) over ${lint.scopedFiles.length} changed file(s):\n\n${lint.log}`;
+      audit('task.lint.failed', 'dispatcher', {
+        taskId: task.id,
+        tool: lint.tool,
+        ...(lint.pinnedVersion ? { pinnedVersion: lint.pinnedVersion } : {}),
+        versionSource: lint.versionSource,
+        files: lint.scopedFiles,
+      });
+      audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'lint', failure_log: failureLog });
+      await notify.taskFailed(task.id, 'lint', failureLog);
+      return { status: 'failed-recoverable', failureLog };
+    }
   }
 
   // ── [expects:] verifier ──
@@ -601,6 +740,82 @@ async function attemptTask(
         categories: [...new Set(trust.hits.map((h) => h.category))],
       });
       await notify.taskGateTestInfraTouched(task.id, trust.paths);
+    }
+
+    // ── Rotten-green oracle (P7, deterministic tier) ──
+    // The gate is green, but a changed test file might assert nothing / be
+    // skip-only / sink its result into a blank identifier — green because it
+    // never checks anything. Cheap syntactic check over the changed TEST files
+    // only; no LLM, no rerun. CAREFUL POLICY (mirrors gate-trust): flag for
+    // review, never fail — a refactor can legitimately touch a test file.
+    const rotten = assessRottenGreen(workingDir.path, changed);
+    if (rotten.findings.length > 0) {
+      audit('task.test_oracle.rotten_green', 'dispatcher', {
+        taskId: task.id,
+        findings: rotten.findings.map((f) => ({
+          path: f.path,
+          reasons: f.reasons,
+          tests: f.testCount,
+          assertions: f.assertionCount,
+          skipped: f.skippedCount,
+        })),
+      });
+      await notify.taskRottenGreen(
+        task.id,
+        rotten.findings.map((f) => `${f.path} (${f.reasons.join(', ')})`),
+      );
+    }
+  }
+
+  // ── Content-judge (P7, independent advisory tier) ──
+  // A second, INDEPENDENT signal the gate cannot give: a haiku read-only spawn
+  // scores the working-tree diff PASS/FAIL against the task's acceptance criteria.
+  // This runs BEFORE finalize commits, so the diff lives in the working tree, not
+  // a commit yet. Same-family (Claude judging Claude) so it is ADVISORY — a
+  // confident FAIL flags for review, it never fails the task. Non-fatal end to
+  // end, mirroring wisdom-capture: any spawn/parse failure is logged as skipped
+  // and ignored. Code tasks only (the only type with a diff + acceptance criteria).
+  if (task.type === 'code' && config.contentJudgeEnabled) {
+    const preJudgeUntracked = untrackedSnapshot(workingDir.path);
+    try {
+      const judgeResult = await invokeContentJudge(task, workingDir.path);
+      const judgement = judgeResult.exitCode === 0 ? parseJudgeFile(workingDir.path) : null;
+      if (judgement) {
+        audit('task.judge.captured', 'dispatcher', {
+          taskId: task.id,
+          verdict: judgement.verdict,
+          confidence: judgement.confidence,
+          score: judgement.score,
+          dimensions: judgement.dimensions,
+        });
+        if (isJudgeConcern(judgement, config.contentJudgeConfidenceThreshold)) {
+          const summary = summarizeJudgement(judgement);
+          audit('task.judge.concern', 'dispatcher', { taskId: task.id, summary });
+          await notify.taskJudgeConcern(task.id, summary);
+        }
+      } else {
+        audit('task.judge.skipped', 'dispatcher', {
+          taskId: task.id,
+          reason: judgeResult.exitCode !== 0 ? `judge spawn exit ${judgeResult.exitCode}` : 'no file or malformed',
+        });
+      }
+    } catch (err) {
+      audit('task.judge.skipped', 'dispatcher', { taskId: task.id, reason: `judge threw: ${(err as Error).message}` });
+    } finally {
+      // Sweep NYX_JUDGE.md + anything the judge spawn newly made untracked, so
+      // the advisory artifact never folds into the task's commit/PR (same guard
+      // the wisdom spawn uses with its unrestricted Write tool).
+      const postJudgeUntracked = untrackedSnapshot(workingDir.path);
+      const toSweep = new Set<string>([JUDGE_FILE]);
+      for (const rel of postJudgeUntracked) {
+        if (!preJudgeUntracked.has(rel)) toSweep.add(rel);
+      }
+      for (const rel of toSweep) {
+        const p = resolve(workingDir.path, rel);
+        if (existsSync(p)) {
+          try { rmSync(p, { recursive: true, force: true }); } catch { /* swallow */ }
+        }
+      }
     }
   }
 
@@ -692,9 +907,18 @@ async function failPipelineWithNotice(taskId: string, err: Error): Promise<void>
 async function resumeDecidedRunsInTick(): Promise<Set<string>> {
   const handled = new Set<string>();
   for (const run of runsAwaitingDecision()) {
+    // Resume-lease CAS (P3): atomically claim the run before advancing it so a
+    // manual `nyx tick` overlapping the launchd tick can't both resume it (the
+    // shell single-flight lock serializes scheduled ticks but NOT a manual tick
+    // racing one). A lost CAS skips the run this tick; the winner owns it.
+    const claimed = claimRunForResume(run.id, Date.now());
+    if (!claimed) {
+      audit('pipeline.resume.contended', 'pipeline', { runId: run.id, taskId: run.task_id });
+      continue;
+    }
     handled.add(run.task_id);
     try {
-      await advancePipeline(run);
+      await advancePipeline(claimed);
     } catch (err) {
       const e = err as Error;
       await failPipelineWithNotice(run.task_id, e);
@@ -1173,6 +1397,15 @@ async function main(): Promise<void> {
     () => Date.now(),
   );
   if (controlApplied > 0) console.log(`[nyx] control actions applied: ${controlApplied}`);
+
+  // Off-hours digest: if this tick is the start of a working window (or a manual
+  // override just armed), flush the "what you missed" summary before any new work
+  // so the operator's catch-up lands first. Best-effort — never blocks the tick.
+  try {
+    await maybeFlushDigest();
+  } catch (err) {
+    console.error('[nyx] maybeFlushDigest threw (unexpected):', (err as Error).message);
+  }
 
   // Type-aware concurrency (Track 3). The blanket "any claude live → exit(0)"
   // guard is gone — it serialized EVERY task type behind one in-flight claude,

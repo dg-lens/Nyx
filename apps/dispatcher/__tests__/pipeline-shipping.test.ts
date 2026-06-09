@@ -133,4 +133,17 @@ describe('buildReviewBrief', () => {
     assert.match(brief, /A: A broke → fix A/);
     assert.doesNotMatch(brief, /build it/); // the run prompt is not echoed
   });
+
+  test('base_missing renders ONLY rollback/abort — accept/proceed/fix would fail on a vanished base', () => {
+    const run = seed('pr_basemissing', { held: ['A'], merged: ['B'] });
+    const brief = buildReviewBrief(getRun('pr_basemissing')!, 'base_missing', null);
+    assert.match(brief, /BASE MISSING/);
+    assert.match(brief, /nyx pipeline rollback pr_basemissing/);
+    assert.match(brief, /nyx pipeline abort pr_basemissing/);
+    // accept/proceed/fix all operate against the (now-vanished) base — they must
+    // not be offered, or the operator will run a command that's guaranteed to fail.
+    assert.doesNotMatch(brief, /nyx pipeline accept/);
+    assert.doesNotMatch(brief, /nyx pipeline proceed/);
+    assert.doesNotMatch(brief, /nyx pipeline fix/);
+  });
 });

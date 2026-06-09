@@ -44,7 +44,7 @@ const SMOKE_MODEL = 'sonnet';
 const SMOKE_TOOLS = ['Read', 'Glob', 'Grep', 'Bash', 'TodoWrite'];
 const DIAGNOSTIC_TOOLS = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit', 'MultiEdit', 'TodoWrite'];
 
-export type ShipReason = 'catastrophic' | 'unresolved';
+export type ShipReason = 'catastrophic' | 'unresolved' | 'base_missing';
 
 export interface SmokeResult {
   passed: boolean;
@@ -187,6 +187,9 @@ export function reviewRecommendation(run: PipelineRun, reason: ShipReason, smoke
   if (reason === 'catastrophic') {
     return `CATASTROPHIC — composer flagged unrecoverable state; rollback or abort`;
   }
+  if (reason === 'base_missing') {
+    return `BASE MISSING — the working base was evicted between ticks (earlier phases lost); rollback to replan, or abort`;
+  }
   const bits: string[] = [];
   if (f.held.length) bits.push(`${f.held.length} task(s) unintegrated (${f.held.join(', ')})`);
   if (smoke && !smoke.passed) bits.push('smoke failing');
@@ -207,11 +210,21 @@ export function buildReviewBrief(run: PipelineRun, reason: ShipReason, smoke: Sm
   L.push(`**${reviewRecommendation(run, reason, smoke)}**`);
   L.push('');
   L.push('```');
-  L.push(`nyx pipeline accept ${run.id}        # merge held task(s) + CONTINUE the build`);
-  L.push(`nyx pipeline proceed ${run.id}       # ship ONLY what merged + STOP (PR now)`);
-  L.push(`nyx pipeline fix ${run.id} --note "..."   # corrective wave`);
-  L.push(`nyx pipeline rollback ${run.id}      # replan from scratch`);
-  L.push(`nyx pipeline abort ${run.id}`);
+  if (reason === 'base_missing') {
+    // The working base was evicted between ticks — earlier phases' merged code
+    // lived ONLY in that vanished base. accept/proceed/fix all operate against the
+    // base (merge held branches, ship what merged, re-code from the integration
+    // branch) and would all fail against a base that no longer exists. Only a full
+    // replan (rollback) or abort is actionable, so render only those.
+    L.push(`nyx pipeline rollback ${run.id}      # replan from scratch (the base is gone)`);
+    L.push(`nyx pipeline abort ${run.id}`);
+  } else {
+    L.push(`nyx pipeline accept ${run.id}        # merge held task(s) + CONTINUE the build`);
+    L.push(`nyx pipeline proceed ${run.id}       # ship ONLY what merged + STOP (PR now)`);
+    L.push(`nyx pipeline fix ${run.id} --note "..."   # corrective wave`);
+    L.push(`nyx pipeline rollback ${run.id}      # replan from scratch`);
+    L.push(`nyx pipeline abort ${run.id}`);
+  }
   L.push('```');
   L.push('');
   L.push(`Integrated: ${f.merged.length ? f.merged.join(', ') : '(none)'} · Held: ${f.held.length ? f.held.join(', ') : '(none)'}`);

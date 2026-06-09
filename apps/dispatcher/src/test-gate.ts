@@ -303,7 +303,19 @@ export function countTestsPassed(log: string): number | undefined {
   return Number.parseInt(last[1], 10);
 }
 
-export function runGate(task: ParsedTask, cwd: string): GateResult {
+export interface RunGateOpts {
+  /**
+   * P7 flaky quarantine. When true, a FAILED `tests` stage is re-run ONCE on the
+   * identical tree before the gate is declared failed. If the rerun PASSES (the
+   * verdict flipped with no tree change) the gate is marked `flaky` — the
+   * dispatcher quarantines rather than accepting the flipped green. A second
+   * failure is a deterministic fail and routes to audit as usual. Only the
+   * `tests` stage is reran (typecheck/lint are deterministic by construction).
+   */
+  rerunFlakyTests?: boolean;
+}
+
+export function runGate(task: ParsedTask, cwd: string, opts: RunGateOpts = {}): GateResult {
   if (task.gates === 'none') {
     return { passed: true, stages: [], failureLog: '' };
   }
@@ -322,6 +334,22 @@ export function runGate(task: ParsedTask, cwd: string): GateResult {
     const r = runStage(s, cwd);
     results.push({ name: s.name, passed: r.passed, durationMs: r.durationMs, log: r.log });
     if (!r.passed) {
+      // Flaky quarantine: a failed tests stage is re-run once on the unchanged
+      // tree. A flip (now passes) means the test is non-deterministic — surface
+      // it as flaky, NEVER take the flipped green (that would be retry-to-green).
+      if (s.name === 'tests' && opts.rerunFlakyTests) {
+        const second = runStage(s, cwd);
+        results.push({ name: 'tests-rerun', passed: second.passed, durationMs: second.durationMs, log: second.log });
+        if (second.passed) {
+          return {
+            passed: false,
+            stages: results,
+            failureLog: `Gate tests stage is FLAKY — failed then passed on the identical tree. Quarantined (not retried to green).`,
+            flaky: true,
+            flakyDetail: { firstPassed: false, secondPassed: true },
+          };
+        }
+      }
       failureLog = `Gate failed at stage "${s.name}":\n${r.log}`;
       return { passed: false, stages: results, failureLog };
     }

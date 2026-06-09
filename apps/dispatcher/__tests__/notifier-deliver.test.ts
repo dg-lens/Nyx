@@ -1,7 +1,10 @@
 import { strict as assert } from 'node:assert';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { config } from '../src/config.js';
+import { _setDigestDb } from '../src/notification-digest.js';
+import { _setAuditDb } from '../src/audit.js';
 import {
   _resetSinksForTest,
   _setNotificationsEnabled,
@@ -12,7 +15,7 @@ import {
   pipelineDelivered,
   taskDispatched,
 } from '../src/notifier.js';
-import type { NotificationCategory } from '../src/settings.js';
+import type { CategoryPolicy, NotificationCategory } from '../src/settings.js';
 
 interface SlackCall {
   text: string;
@@ -27,7 +30,7 @@ let pushoverCalls: PushoverCall[];
 
 function setChannels(slack: boolean, pushover: boolean): void {
   const c = config as unknown as {
-    settings: { notifications: { channels: { slack: boolean; pushover: { enabled: boolean } } } };
+    settings: { notifications: { channels: { slack: boolean; pushover: { enabled: boolean } }; categories: Record<NotificationCategory, CategoryPolicy> } };
     pushoverUserKey: string;
     pushoverAppToken: string;
   };
@@ -36,17 +39,27 @@ function setChannels(slack: boolean, pushover: boolean): void {
   // Pushover also requires creds present to be considered enabled.
   c.pushoverUserKey = pushover ? 'u-test' : '';
   c.pushoverAppToken = pushover ? 't-test' : '';
+  // These tests assert CHANNEL fan-out, not the Workflow time-gate — force every
+  // category to `always` so deliver() always sends live and never batches.
+  for (const cat of ['action-required', 'failure', 'delivery', 'status'] as NotificationCategory[]) {
+    c.settings.notifications.categories[cat] = 'always';
+  }
 }
 
 const origSlack = config.settings.notifications.channels.slack;
 const origPushover = config.settings.notifications.channels.pushover.enabled;
 const origUserKey = config.pushoverUserKey;
 const origAppToken = config.pushoverAppToken;
+const origCategories = { ...config.settings.notifications.categories };
 
 beforeEach(() => {
   slackCalls = [];
   pushoverCalls = [];
   _setNotificationsEnabled(true);
+  // deliver() touches the digest store + audit chain on a suppressed send; pin
+  // both to throwaway in-memory DBs so these tests never hit the real nyx.db.
+  _setDigestDb(new DatabaseSync(':memory:'));
+  _setAuditDb(new DatabaseSync(':memory:'));
   _setSinksForTest({
     slack: async (text) => {
       slackCalls.push({ text });
@@ -62,8 +75,10 @@ beforeEach(() => {
 afterEach(() => {
   _resetSinksForTest();
   _setNotificationsEnabled(true);
+  _setDigestDb(null);
+  _setAuditDb(null);
   const c = config as unknown as {
-    settings: { notifications: { channels: { slack: boolean; pushover: { enabled: boolean } } } };
+    settings: { notifications: { channels: { slack: boolean; pushover: { enabled: boolean } }; categories: Record<NotificationCategory, CategoryPolicy> } };
     pushoverUserKey: string;
     pushoverAppToken: string;
   };
@@ -71,6 +86,7 @@ afterEach(() => {
   c.settings.notifications.channels.pushover.enabled = origPushover;
   c.pushoverUserKey = origUserKey;
   c.pushoverAppToken = origAppToken;
+  Object.assign(c.settings.notifications.categories, origCategories);
 });
 
 describe('deliver — channel fan-out', () => {
