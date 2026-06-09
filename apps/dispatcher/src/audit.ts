@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { config } from './config.js';
+import { openDb } from './db.js';
 
 export type AuditEvent =
   | 'dispatch.tick'
@@ -159,9 +160,7 @@ function open(): DatabaseSync {
   if (db && insertStmt) return db;
   if (!db) {
     mkdirSync(dirname(config.dbPath), { recursive: true });
-    db = new DatabaseSync(config.dbPath);
-    db.exec(`PRAGMA journal_mode = WAL;`);
-    db.exec(`PRAGMA busy_timeout = 5000;`);
+    db = openDb(config.dbPath);
   }
   db.exec(`
     CREATE TABLE IF NOT EXISTS system_audit (

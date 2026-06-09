@@ -9,6 +9,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { config } from '../config.js';
+import { openDb } from '../db.js';
 
 export type ActionKind = 'queue_task' | 'resume_task' | 'pipeline_decision' | 'force_tick' | 'decompose_task';
 export type ActionStatus = 'pending' | 'applied' | 'failed';
@@ -37,8 +38,7 @@ function open(): DatabaseSync {
   if (db && prepared) return db;
   if (!db) {
     mkdirSync(dirname(config.dbPath), { recursive: true });
-    db = new DatabaseSync(config.dbPath);
-    db.exec(`PRAGMA journal_mode = WAL;`);
+    db = openDb(config.dbPath);
   }
   db.exec(`
     CREATE TABLE IF NOT EXISTS pending_actions (
