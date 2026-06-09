@@ -28,7 +28,7 @@ export interface AncestorContext {
  * commit message convention (per CHANGELOG hygiene rule in T2) includes the
  * task ID in the subject line. Best-effort — returns null if no commit matches.
  */
-function findCommitForTask(workingDir: string, taskId: string): string | null {
+export function findCommitForTask(workingDir: string, taskId: string): string | null {
   try {
     // Use --format=%H so we get just the SHA. --grep matches against subject+body.
     // -n 1 keeps it fast; we want the most recent commit for this task.

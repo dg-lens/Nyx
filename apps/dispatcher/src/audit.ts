@@ -131,6 +131,10 @@ export type AuditEvent =
   | 'composer.run.spawned'
   | 'composer.run.completed'
   | 'composer.skipped'
+  // Pre-dispatch normalizer (shadow stage — observation only). Computes a
+  // tightened spec + dependency DAG + would_reject signal; never blocks.
+  | 'composer.normalize.completed'
+  | 'composer.normalize.skipped'
   // Trace→eval→lesson loop FOUNDATION (G-A). Evaluation is a SEPARATE control
   // plane ON TOP of the trace: the audit chain records WHAT happened, these
   // events record that a run was JUDGED (and the drift verdict over time). The

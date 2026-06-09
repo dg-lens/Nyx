@@ -21,6 +21,7 @@ import {
 import { runEvalLoop } from '../eval/online-eval-runner.js';
 import { runAudit, MAX_AUDIT_PASSES } from '../audit-runner.js';
 import type { FlightPlan } from '../composer/types.js';
+import { maybeRunShadowNormalize } from '../composer/orchestrate.js';
 import {
   advancePipeline,
   createPipelineRun,
@@ -433,6 +434,24 @@ async function attemptTask(
       healAuth(listMcpServers(), { taskId: task.id });
     } catch {
       /* auth-heal is best-effort; never block a spawn on it */
+    }
+  }
+
+  // ── Pre-dispatch shadow normalizer (composer, OFF by default) ──
+  // Additive, observation-only, and fully gated. When
+  // config.composer.normalizer.enabled is false (the shipped default) this is a
+  // no-op and the dispatch path below is behaviorally identical to a build
+  // without it. When enabled, it runs one extra sonnet planning spawn that
+  // computes + persists + audit-logs a shadow normalization of the spec — it
+  // does NOT alter the prompt the executor sees, the gate decision, or the task
+  // outcome. maybeRunShadowNormalize is void + double-guarded internally; the
+  // extra try/catch here makes it STRUCTURALLY impossible for a throw to touch
+  // dispatch even if that contract ever regresses.
+  if (task.type === 'code' && config.composer.normalizer.enabled) {
+    try {
+      await maybeRunShadowNormalize(task, workingDir.path);
+    } catch {
+      /* shadow normalizer is observation-only; never affects dispatch */
     }
   }
 

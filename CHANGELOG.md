@@ -2,6 +2,17 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.3.0 — 2026-06-09
+
+### Composer normalizer (shadow stage)
+- The composer grows its intended canonical role — a **pre-dispatch spec normalizer/compiler** — as a first cut that runs **shadow-mode only**. For a code task it computes a tightened spec (exact paths/symbols verified against the actual repo, concrete acceptance criteria, anti-examples), compiles the `[depends:]` dependency DAG (Kahn topo-sort + cycle detection), predicts merge conflicts (planned-file-set intersection ∪ `git merge-tree` probe), and derives a `would_reject` verdict for un-normalizable specs.
+- **Shadow only:** the normalizer **computes + persists + audit-logs** and returns control unchanged. It does **not** halt, reject, re-park, alter the spec the executor sees, or change any task's control flow. The new `would_reject` boolean is recorded for operator review; **enforcement is a future flag-flip** (`config.composer.normalizer.enforced`, default `false`, read but not acted on).
+- **Now wired into the live code-task dispatch path** — but **OFF by default.** The shadow phase (`runShadowNormalizePhase`) is invoked from `attemptTask` (`cli/run-once.ts`) via `maybeRunShadowNormalize` as a **pre-dispatch** step, before the main execution spawn. It is fully additive and guarded: the call only runs for `type: code` tasks when `config.composer.normalizer.enabled` is true, and a throw can never affect dispatch (the function is void + internally guarded, double-wrapped at the call site). `config.composer.normalizer.enabled` now **defaults to `false`** (was `true`) — set `COMPOSER_NORMALIZER_ENABLED=true` to begin shadow observation. Until then the shipped config runs nothing new and the dispatch path is behaviorally identical to before this change. `COMPOSER_NORMALIZER_ENFORCED` remains a separate, future enforcement flag.
+- **Cost when enabled:** each `type: code` task incurs **one extra sonnet planning spawn** (the read-only normalizer spawn) before its execution spawn. Off by default precisely so this cost is opt-in.
+- New: `composer/dag.ts` (pure DAG compiler), `composer/normalizer-spawner.ts` (read-only Read/Glob/Grep claude spawn → `.nyx/normalized-spec.json`), `composer/normalizer.ts` (assembler), a `composer_normalizations` table, and a `nyx composer normalizations [--limit N]` review command.
+- New audit events: `composer.normalize.completed`, `composer.normalize.skipped`.
+- Touched: `apps/dispatcher/src/composer/{types,db,orchestrate,chain-context}.ts`, `apps/dispatcher/src/config.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/src/cli/{run-once,composer-normalizations}.ts`, `scripts/nyx`, `scripts/nyx-composer.sh`.
+
 ## v1.2.1 — 2026-06-09
 
 ### Fixed
