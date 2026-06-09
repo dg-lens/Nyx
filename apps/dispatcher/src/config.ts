@@ -153,4 +153,14 @@ export const config = {
   bitwardenInboxDir: resolve(DATA_DIR, 'inbox', 'rotation-events'),
 } as const;
 
+// Force a non-empty git identity into the environment every `git` child inherits.
+// nyx-dispatch.sh does `set -a; source .env`, so a blank `GIT_AUTHOR_NAME=` in .env
+// is EXPORTED as an empty env var — and git prefers GIT_AUTHOR_NAME over user.name
+// config, so an empty value yields "fatal: empty ident name". Pinning all four here
+// (author + committer) makes a blank/absent .env identity impossible to hit.
+process.env['GIT_AUTHOR_NAME'] = config.gitAuthorName;
+process.env['GIT_AUTHOR_EMAIL'] = config.gitAuthorEmail;
+process.env['GIT_COMMITTER_NAME'] = config.gitAuthorName;
+process.env['GIT_COMMITTER_EMAIL'] = config.gitAuthorEmail;
+
 export type Config = typeof config;
