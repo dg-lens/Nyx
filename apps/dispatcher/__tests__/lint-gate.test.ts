@@ -14,6 +14,8 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { config } from '../src/config.js';
 import {
+  classifyLintResult,
+  isInstallOrUsageFailure,
   resolveEslintVersion,
   resolveRuffVersion,
   scopeLintFiles,
@@ -111,5 +113,96 @@ describe('resolveEslintVersion', () => {
 
   test('malformed package.json → unpinned, no throw', () => {
     assert.deepEqual(resolveEslintVersion(REPO, '{not json'), { source: 'unpinned' });
+  });
+});
+
+describe('isInstallOrUsageFailure', () => {
+  test('uvx cannot resolve a bad pinned ruff version', () => {
+    assert.equal(
+      isInstallOrUsageFailure('error: Failed to download `ruff==99.0.0`\nNo solution found when resolving'),
+      true,
+    );
+  });
+  test('pnpm dlx cannot resolve a bad pinned eslint version', () => {
+    assert.equal(
+      isInstallOrUsageFailure('ERR_PNPM_NO_MATCHING_VERSION  No matching version found for eslint@99.0.0'),
+      true,
+    );
+  });
+  test('npx registry 404 / ETARGET', () => {
+    assert.equal(isInstallOrUsageFailure('npm error code ETARGET\nnpm error notarget No matching version found'), true);
+  });
+  test('offline runner — network unreachable', () => {
+    assert.equal(isInstallOrUsageFailure('getaddrinfo EAI_AGAIN registry.npmjs.org'), true);
+  });
+  test('the wrapper or tool binary is missing', () => {
+    assert.equal(isInstallOrUsageFailure('uvx: command not found'), true);
+  });
+  test('a genuine ruff lint finding is NOT an install/usage failure', () => {
+    assert.equal(
+      isInstallOrUsageFailure('src/a.py:3:1: F401 [*] `os` imported but unused\nFound 1 error.'),
+      false,
+    );
+  });
+  test('a genuine eslint lint finding is NOT an install/usage failure', () => {
+    assert.equal(
+      isInstallOrUsageFailure("/w/a.ts\n  3:7  error  'x' is assigned a value but never used  no-unused-vars\n\n1 problem"),
+      false,
+    );
+  });
+});
+
+describe('classifyLintResult', () => {
+  const SCOPED = ['a.py'];
+  const mk = (over: Partial<{ status: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; error?: Error }>) => ({
+    status: 1,
+    signal: null,
+    stdout: '',
+    stderr: '',
+    ...over,
+  });
+
+  test('exit 0 → ran + passed', () => {
+    const o = classifyLintResult('ruff', '0.6.9', 'ci-pin', SCOPED, 'log', mk({ status: 0 }));
+    assert.equal(o.ran, true);
+    assert.equal(o.passed, true);
+  });
+
+  test('a real lint finding (non-zero, no install signature) → ran + FAILED (hard fail)', () => {
+    const stdout = 'a.py:3:1: F401 `os` imported but unused\nFound 1 error.';
+    const o = classifyLintResult('ruff', '0.6.9', 'ci-pin', SCOPED, 'log', mk({ status: 1, stdout }));
+    assert.equal(o.ran, true);
+    assert.equal(o.passed, false);
+    assert.equal(o.skipReason, undefined);
+  });
+
+  test('pinned version could not be fetched (non-zero + install signature) → SKIP, not fail', () => {
+    const stderr = 'error: Failed to download `ruff==99.0.0`\nNo solution found when resolving';
+    const o = classifyLintResult('ruff', '99.0.0', 'ci-pin', SCOPED, 'log', mk({ status: 1, stderr }));
+    assert.equal(o.ran, false);
+    assert.equal(o.passed, true);
+    assert.ok(o.skipReason?.includes('could not be installed/run'));
+  });
+
+  test('bad pinned eslint via pnpm dlx → SKIP, not fail', () => {
+    const stderr = 'ERR_PNPM_NO_MATCHING_VERSION  No matching version found for eslint@99.0.0';
+    const o = classifyLintResult('eslint', '99.0.0', 'ci-pin', ['a.ts'], 'log', mk({ status: 1, stderr }));
+    assert.equal(o.ran, false);
+    assert.equal(o.passed, true);
+    assert.ok(o.skipReason?.includes('could not be installed/run'));
+  });
+
+  test('spawn error (failed to launch wrapper) → SKIP', () => {
+    const o = classifyLintResult('ruff', undefined, 'unpinned', SCOPED, 'log', mk({ status: null, error: new Error('ENOENT') }));
+    assert.equal(o.ran, false);
+    assert.equal(o.passed, true);
+    assert.ok(o.skipReason?.includes('ENOENT'));
+  });
+
+  test('signal-kill (stage timeout) → SKIP', () => {
+    const o = classifyLintResult('eslint', '9.13.0', 'ci-pin', ['a.ts'], 'log', mk({ status: null, signal: 'SIGTERM' }));
+    assert.equal(o.ran, false);
+    assert.equal(o.passed, true);
+    assert.ok(o.skipReason?.includes('signal'));
   });
 });

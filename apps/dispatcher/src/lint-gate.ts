@@ -25,6 +25,13 @@ import { config } from './config.js';
  * Fail-fast hard signal: unlike rotten-green / content-judge (advisory), a lint
  * failure on the agent's OWN diff IS a real defect and fails the task into the
  * audit pipeline — that's the whole point of moving lint left of CI.
+ *
+ * BUT only when the linter actually RAN. Because the pinned version is fetched on
+ * demand (`uvx ruff@<v>` / `pnpm dlx eslint@<v>`), a bad/nonexistent pin, a
+ * registry 404, or an offline runner makes the WRAPPER exit non-zero without ever
+ * linting the diff. That is infrastructure the agent cannot fix, so it degrades to
+ * a non-fatal SKIP (ran:false), never a gate failure — see classifyLintResult /
+ * isInstallOrUsageFailure. The hard-fail path is reserved for a real lint finding.
  */
 
 export type LintEcosystem = 'js' | 'py';
@@ -119,6 +126,65 @@ export function resolveEslintVersion(
 
 function hasOnPath(cmd: string): boolean {
   return spawnSync(cmd, ['--version'], { encoding: 'utf8', timeout: 5_000 }).status === 0;
+}
+
+/**
+ * Distinguish "the pinned linter could not be installed/run" from "the linter ran
+ * and found lint issues". We invoke ruff/eslint through `uvx ruff@<v>` /
+ * `pnpm dlx eslint@<v>`, which FETCH the pinned version on demand. When that fetch
+ * fails — a bad/nonexistent pinned version, a registry 404, an offline box — the
+ * wrapper (uvx/uv, pnpm/npx) exits NON-ZERO with `status` SET (not null, no signal,
+ * no spawn `error`), so it is indistinguishable from a real lint failure by exit
+ * code alone. A code task must NOT fail its gate because a pinned linter version
+ * could not be fetched, so we sniff the install/download/usage-error signature in
+ * the combined output and treat a match as a non-fatal skip.
+ *
+ * Only matches the wrapper/install/network failure vocabulary — a genuine lint
+ * finding (ruff "F401 imported but unused", eslint "error  'x' is defined but
+ * never used") does NOT contain any of these tokens, so a real defect still fails.
+ */
+const INSTALL_OR_USAGE_FAILURE_RE = new RegExp(
+  [
+    // uv / uvx resolution + download failures (bad ruff@<v>, offline, 404)
+    'no solution found',
+    'does not exist',
+    'no matching distribution',
+    'failed to download',
+    'failed to fetch',
+    'failed to install',
+    'failed to prepare',
+    'failed to build',
+    'distribution not found',
+    'no version(?:s)? (?:of|found)',
+    // pnpm dlx / npm resolution + fetch failures (bad eslint@<v>, offline, 404)
+    'err_pnpm_no_matching_version',
+    'err_pnpm_fetch',
+    'no matching version found',
+    'etarget',
+    'notarget',
+    'npm error code',
+    'npm err!',
+    // generic network / registry reachability (offline runners)
+    'getaddrinfo',
+    'eai_again',
+    'enotfound',
+    'econnrefused',
+    'etimedout',
+    'network error',
+    'request to .* failed',
+    'unexpected (?:status|response) .*404',
+    '\\b404\\b',
+    // wrapper could not locate/spawn the tool binary at all
+    'command not found',
+    'executable .* not found',
+    'could not determine executable',
+    'no such file or directory',
+  ].join('|'),
+  'i',
+);
+
+export function isInstallOrUsageFailure(output: string): boolean {
+  return INSTALL_OR_USAGE_FAILURE_RE.test(output);
 }
 
 /**
@@ -224,6 +290,54 @@ function runEslint(
   return execLint('eslint', version, source, scoped, cmd, args, workingDir);
 }
 
+/** The subset of a spawnSync result the lint classifier needs. */
+export interface LintSpawnResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+}
+
+/**
+ * Pure: turn a linter invocation's result into a gate outcome. Three-way:
+ *   1. spawn error / signal-kill (failed to launch, stage timeout) → SKIP (ran:false).
+ *   2. non-zero exit whose output carries an install/download/usage-error
+ *      signature (bad pinned version, registry 404, offline, tool-not-found) → SKIP.
+ *      The linter never got to lint the diff, so this is infra, not the agent's defect.
+ *   3. otherwise → RAN: passed iff exit 0. A non-zero exit with a genuine lint
+ *      finding (no install/usage signature) is a REAL failure and hard-fails.
+ * Extracted from the spawn so the skip-on-install-failure decision is unit-testable.
+ */
+export function classifyLintResult(
+  tool: LintTool,
+  version: string | undefined,
+  source: 'ci-pin' | 'repo-declared' | 'unpinned',
+  scoped: string[],
+  log: string,
+  res: LintSpawnResult,
+): LintGateOutcome {
+  const base = { tool, ...(version ? { pinnedVersion: version } : {}), versionSource: source, scopedFiles: scoped, log };
+
+  if (res.error || (res.status === null && res.signal != null)) {
+    const reason = res.error
+      ? `${res.error.message}`
+      : `killed by signal ${res.signal} (lint stage timeout)`;
+    return { ran: false, passed: true, ...base, skipReason: reason };
+  }
+
+  if (res.status !== 0 && isInstallOrUsageFailure(`${res.stdout}\n${res.stderr}`)) {
+    return {
+      ran: false,
+      passed: true,
+      ...base,
+      skipReason: `pinned ${tool}${version ? `@${version}` : ''} could not be installed/run (install/download/usage error) — lint skipped, not failed`,
+    };
+  }
+
+  return { ran: true, passed: res.status === 0, ...base };
+}
+
 function execLint(
   tool: LintTool,
   version: string | undefined,
@@ -233,6 +347,13 @@ function execLint(
   args: string[],
   workingDir: string,
 ): LintGateOutcome {
+  // A spawn error (failed to launch the wrapper, timeout SIGTERM with status=null)
+  // is NOT a lint failure. A non-zero exit whose output matches the install/
+  // download/usage-error signature (a bad pinned version, a registry 404, an
+  // offline box, a missing tool) is ALSO not a lint failure — the wrapper
+  // (uvx / pnpm dlx) could not fetch+run the pinned linter, so the diff was never
+  // linted. Both degrade to ran:false (a non-fatal skip) rather than hard-failing
+  // the task on infra the agent can't fix. classifyLintResult owns that decision.
   const res = spawnSync(cmd, args, {
     cwd: workingDir,
     encoding: 'utf8',
@@ -241,24 +362,11 @@ function execLint(
   });
   const header = `[$ ${cmd} ${args.slice(0, 2).join(' ')} … (${scoped.length} file(s))]`;
   const log = `${header}\n${res.stdout ?? ''}\n${res.stderr ?? ''}`.trim();
-
-  // A spawn error (download failed, timeout SIGTERM with status=null) is NOT a
-  // lint failure — the agent's code may be clean and the tooling just couldn't
-  // run. Degrade to ran:false rather than failing the task on infrastructure.
-  if (res.error || (res.status === null && res.signal != null)) {
-    const reason = res.error
-      ? `${res.error.message}`
-      : `killed by signal ${res.signal} (lint stage timeout)`;
-    return { ran: false, passed: true, tool, ...(version ? { pinnedVersion: version } : {}), versionSource: source, scopedFiles: scoped, log, skipReason: reason };
-  }
-
-  return {
-    ran: true,
-    passed: res.status === 0,
-    tool,
-    ...(version ? { pinnedVersion: version } : {}),
-    versionSource: source,
-    scopedFiles: scoped,
-    log,
-  };
+  return classifyLintResult(tool, version, source, scoped, log, {
+    status: res.status,
+    signal: res.signal,
+    stdout: res.stdout ?? '',
+    stderr: res.stderr ?? '',
+    ...(res.error ? { error: res.error } : {}),
+  });
 }

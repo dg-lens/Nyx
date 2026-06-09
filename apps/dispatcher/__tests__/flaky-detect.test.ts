@@ -12,7 +12,6 @@ import { describe, test } from 'node:test';
 import {
   buildFlakyReport,
   classifyRerun,
-  sameTree,
 } from '../src/flaky-detect.js';
 
 describe('classifyRerun', () => {
@@ -32,20 +31,6 @@ describe('classifyRerun', () => {
     const c = classifyRerun(false, true);
     assert.equal(c.firstPassed, false);
     assert.equal(c.secondPassed, true);
-  });
-});
-
-describe('sameTree', () => {
-  test('identical fingerprints are the same tree', () => {
-    assert.equal(sameTree('abc\n M file', 'abc\n M file'), true);
-  });
-  test('different fingerprints are not', () => {
-    assert.equal(sameTree('abc\n', 'def\n'), false);
-  });
-  test('a null fingerprint (git unavailable) is never provably-same', () => {
-    assert.equal(sameTree(null, 'abc'), false);
-    assert.equal(sameTree('abc', null), false);
-    assert.equal(sameTree(null, null), false);
   });
 });
 

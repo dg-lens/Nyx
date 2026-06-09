@@ -10,10 +10,11 @@ import type { ParsedTask } from './types.js';
  * A green gate proves the code compiled and the suite ran; it does NOT prove the
  * diff actually does what the task asked. This is a SECOND, independent signal:
  * a haiku Read/Grep-only spawn (the wisdom-capture spawn shape) reads the
- * committed diff and scores it 0-100 against the task's acceptance criteria,
- * emitting a structured PASS/FAIL with a confidence.
+ * working-tree diff (the judge runs BEFORE finalize commits) and scores it 0-100
+ * against the task's acceptance criteria, emitting a structured PASS/FAIL with a
+ * confidence.
  *
- * Bias mitigations baked into the prompt (from arXiv 2604.23178 / 2604.22891):
+ * Bias mitigations baked into the prompt (from the LLM-as-judge bias literature):
  *   - CoT-before-verdict — the ONLY universally-positive judge strategy; the
  *     judge must reason in `analysis` BEFORE it commits to score/verdict.
  *   - 3-5 named dimensions (spec-conformance, correctness, completeness,
@@ -124,10 +125,11 @@ export function isJudgeConcern(j: ContentJudgement, threshold = JUDGE_CONFIDENCE
 
 /**
  * Build the judge prompt. The judge gets the task's acceptance criteria (the
- * description) + the gate stages it was held to, and is told to read the
- * committed diff itself (Read/Grep only — it cannot run anything, by design).
- * CoT-before-verdict + named dimensions are structural requirements of the
- * output schema, not suggestions.
+ * description) + the gate stages it was held to, and is told to read the diff
+ * itself (Read/Grep only — it cannot run anything, by design). The spawn runs
+ * pre-commit, so the diff lives in the WORKING TREE (`git diff` against the base
+ * branch, not a committed range). CoT-before-verdict + named dimensions are
+ * structural requirements of the output schema, not suggestions.
  */
 export function buildJudgePrompt(task: ParsedTask): string {
   const gates = task.gates === 'none' ? 'none' : task.gates.join(', ');

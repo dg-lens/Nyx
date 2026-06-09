@@ -713,11 +713,12 @@ async function attemptTask(
 
   // ── Content-judge (P7, independent advisory tier) ──
   // A second, INDEPENDENT signal the gate cannot give: a haiku read-only spawn
-  // scores the committed diff PASS/FAIL against the task's acceptance criteria.
-  // Same-family (Claude judging Claude) so it is ADVISORY — a confident FAIL
-  // flags for review, it never fails the task. Non-fatal end to end, mirroring
-  // wisdom-capture: any spawn/parse failure is logged as skipped and ignored.
-  // Code tasks only (the only type with a committed diff + acceptance criteria).
+  // scores the working-tree diff PASS/FAIL against the task's acceptance criteria.
+  // This runs BEFORE finalize commits, so the diff lives in the working tree, not
+  // a commit yet. Same-family (Claude judging Claude) so it is ADVISORY — a
+  // confident FAIL flags for review, it never fails the task. Non-fatal end to
+  // end, mirroring wisdom-capture: any spawn/parse failure is logged as skipped
+  // and ignored. Code tasks only (the only type with a diff + acceptance criteria).
   if (task.type === 'code' && config.contentJudgeEnabled) {
     const preJudgeUntracked = untrackedSnapshot(workingDir.path);
     try {
