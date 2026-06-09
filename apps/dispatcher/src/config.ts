@@ -57,10 +57,13 @@ export const config = {
   contextDir: resolve(DATA_DIR, 'context'),
 
   lockfilePath: '/tmp/nyx-dispatch.lock',
-  // Cross-tick GIT-class mutex (code + pipeline). Held for the lifetime of a GIT
-  // task's spawn+finalize even across the 5-min tick boundary, so a subsequent
-  // tick skips GIT scheduling while one is mid-flight but still runs ISO tasks.
-  // Distinct from lockfilePath (which serializes ticks, not tasks).
+  // GIT-class single-flight mutex (code + pipeline). Held for the lifetime of a
+  // GIT task's spawn+finalize so a `main()` invocation never starts a SECOND GIT
+  // task (e.g. a resumed pipeline phase + a queued code task in one tick). NOTE:
+  // it does NOT by itself yield cross-tick GIT/ISO overlap — the shell lock in
+  // nyx-dispatch.sh serializes whole tick processes, so a later launchd tick
+  // can't start while a long GIT task runs. See git-task-lock.ts for the full
+  // scope. Distinct from lockfilePath (which serializes tick processes).
   gitTaskLockPath: '/tmp/nyx-git-task.lock',
   finalizeSentinelPath: '/tmp/nyx-finalize-in-progress.json',
   cloneRootPrefix: '/tmp/nyx-clone-',

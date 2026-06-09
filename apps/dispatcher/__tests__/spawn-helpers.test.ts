@@ -27,15 +27,26 @@ describe('detectRateLimit', () => {
     assert.equal(detectRateLimit('Error: overloaded_error from API').rateLimited, true);
   });
 
-  test('detects a 429 only when rate-limit context co-occurs', () => {
+  test('detects a 429 only as an explicit HTTP-status token', () => {
     assert.equal(detectRateLimit('HTTP 429: rate limit exceeded').rateLimited, true);
-    assert.equal(detectRateLimit('Too Many Requests').rateLimited, true);
+    assert.equal(detectRateLimit('< HTTP/1.1 429 Too Many Requests').rateLimited, true);
   });
 
-  test('a bare 429 with NO rate-limit wording does not trip (avoids false cooldown)', () => {
-    // e.g. a test fixture asserting `expect(x).toBe(429)` in the agent's output.
-    assert.equal(detectRateLimit('assert status === 429 // some HTTP code in a test').rateLimited, false);
+  test('a bare 429 with NO HTTP framing does not trip (avoids false cooldown)', () => {
+    // e.g. a test fixture asserting a status code, or a duration that ends in 429.
+    assert.equal(detectRateLimit('assert status === 429 // some code in a test').rateLimited, false);
     assert.equal(detectRateLimit('all 348 tests passed in 429ms').rateLimited, false);
+    assert.equal(detectRateLimit('429 — please retry after backoff').rateLimited, false);
+  });
+
+  test('free-text "rate limit" / "too many requests" prose does NOT trip (the livelock guard)', () => {
+    // The core anti-livelock case: a code task whose JOB is rate limiting prints
+    // these phrases about its OWN work. They are not the dispatcher being
+    // throttled, so the signal must NOT fire on prose — only on the API's machine
+    // tokens (rate_limit_error / overloaded_error) or an explicit HTTP 429.
+    assert.equal(detectRateLimit('VERDICT: fixed — added rate limit middleware to the auth route').rateLimited, false);
+    assert.equal(detectRateLimit('Implemented a rate-limiter; returns 429 Too Many Requests to clients').rateLimited, false);
+    assert.equal(detectRateLimit('test: enforces the per-IP rate limit (10 req/min)').rateLimited, false);
   });
 
   test('clean output is not rate-limited', () => {
@@ -71,6 +82,31 @@ describe('detectRateLimit', () => {
       5000,
     );
     assert.equal(result.rateLimited, false);
+  });
+
+  test('a task that IMPLEMENTS rate limiting (exit 0, "rate limit" in VERDICT) is NOT intercepted', async () => {
+    // The exact livelock scenario: a code task finished its work — the VERDICT
+    // line legitimately mentions rate limiting — and exited 0. The exit-code gate
+    // in spawnWithTimeout must NOT flag it as a capacity event, or the completed
+    // task is abandoned + re-queued forever.
+    const result = await spawnWithTimeout(
+      '/bin/sh',
+      ['-c', 'echo "VERDICT: fixed — added rate_limit_error handling and a 429 Too Many Requests path"; exit 0'],
+      { cwd: '/tmp', env: process.env, captureStdout: true },
+      5000,
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.rateLimited, false, 'a completed (exit 0) task is never a capacity event');
+  });
+
+  test('a genuine API rate-limit aborts the CLI (non-zero exit) and IS flagged', async () => {
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'echo "{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\"}}" >&2; exit 1'],
+      { cwd: '/tmp', env: process.env, captureStdout: true },
+      5000,
+    );
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.rateLimited, true);
   });
 });
 

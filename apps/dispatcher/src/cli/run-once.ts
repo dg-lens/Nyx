@@ -429,8 +429,11 @@ async function attemptTask(
   // Rate-limit/overload: NOT a code defect. Surface it as a distinct result so
   // the tick leaves the task queued ([ ], no [FAILED]) and opens a global
   // cooldown — re-running it through the audit pipeline would burn compute on a
-  // capacity problem the audit agent can't fix. Detected regardless of exit code
-  // (a 429 may exit non-zero or print the signal then exit 0 on a partial run).
+  // capacity problem the audit agent can't fix. `rateLimited` is set by
+  // spawnWithTimeout ONLY on a non-zero exit carrying a machine signature
+  // (rate_limit_error / overloaded_error / a 429 with context) — a clean exit-0
+  // run never trips it, so a task that legitimately implements/tests rate
+  // limiting completes normally instead of livelocking.
   if (claudeResult.rateLimited) {
     audit('task.skipped.rate_limited', 'dispatcher', {
       taskId: task.id,
@@ -1177,7 +1180,7 @@ async function main(): Promise<void> {
   //     a concurrent Iris session), skip ALL spawning this tick. Reproduces the
   //     legacy behavior with one setting, no code revert.
   //   - 'own'/'off' — the two-class scheduler below runs: ISO tasks fan out up to
-  //     the cap, ONE GIT task runs under the cross-tick git lock.
+  //     the cap, ONE GIT task runs under the git single-flight lock.
   // The decision is taken here and consumed by the scheduler loop further down.
   const guard = config.settings.dispatcher.concurrencyGuard;
   const globalGuardBusy = guard === 'global' && hasLiveClaude();
@@ -1235,7 +1238,10 @@ async function main(): Promise<void> {
   // with fakes for peak-concurrency / cap / GIT-doesn't-block-ISO / crash
   // isolation). Here we wire the real implementations. ISO tasks fan out
   // concurrently up to effectiveIsoCap; ≤1 GIT task runs synchronously under the
-  // cross-tick git lock; a 429 opens a global cooldown and leaves work queued.
+  // git single-flight lock; a 429 opens a global cooldown and leaves work queued.
+  // The concurrency is WITHIN this tick (ISO overlaps the one GIT task). It is
+  // NOT cross-tick: the shell lock in nyx-dispatch.sh keeps the next launchd tick
+  // from starting while this GIT task is awaited here (see git-task-lock.ts).
   //
   // 'global' guard busy OR an active 429 cooldown → ZERO spawns this tick; the
   // queued tasks simply wait. A resumed pipeline phase (resumeDecidedRunsInTick)

@@ -1,15 +1,11 @@
 /**
- * Cross-tick GIT-class mutex.
+ * GIT-class single-flight mutex.
  *
  * A GIT task (code or pipeline phase that touches worktrees / the shared repo /
- * a push) runs synchronously inside its launching tick and can outlive the
- * 5-minute tick interval — so the next launchd tick fires a fresh dispatcher
- * process WHILE the prior tick's GIT task is still mid-flight. The dispatch
- * lockfile (one process per tick) does NOT cover this: that lock is released
- * when `main()` returns, but the GIT task may still be running in the prior
- * process. This lock tells a subsequent tick "a GIT task is in flight in another
- * live dispatcher pid" so it SKIPS GIT scheduling — while still running ISO
- * tasks freely (the whole point of the redesign).
+ * a push) runs synchronously inside its launching tick. `liveGitTaskExists`
+ * lets the scheduler refuse to start a SECOND GIT task while one is already
+ * mid-flight in a live dispatcher pid: at most one GIT actor system-wide, so two
+ * tasks never race the same index/working tree or a non-fast-forward push.
  *
  * The lock content is `{ pid, taskId, at }`. `liveGitTaskExists` returns true
  * iff the recorded pid is alive (reusing the same `kill(pid, 0)` liveness check
@@ -17,8 +13,31 @@
  * task; the lock is swept and treated as free so a crashed run can never wedge
  * GIT dispatch forever.
  *
- * Distinct from the dispatch lockfile (serializes TICKS) — this serializes
- * GIT-class TASKS across ticks. ISO scheduling ignores it entirely.
+ * SCOPE — what this lock actually achieves vs. what it does NOT:
+ *
+ * It IS consulted whenever a `main()` invocation could pick a second GIT task —
+ * most concretely when a resumed pipeline phase took the GIT slot earlier in the
+ * SAME tick and a queued `code` task is then picked. (`gitSlotTaken` covers the
+ * common case; this lock is the durable, pid-checked backstop.)
+ *
+ * It does NOT, on its own, give cross-tick GIT/ISO overlap — i.e. it does not
+ * let a LATER launchd tick run ISO tasks while a long GIT task from an EARLIER
+ * tick is still building. That overlap is blocked one layer up, by design: the
+ * launchd wrapper (`scripts/nyx-dispatch.sh`) holds the shell lock
+ * `/tmp/nyx-dispatch.sh.lock` for the entire `node run-once.js` process, and the
+ * GIT task is awaited inside that process's `main()`. While it runs, the next
+ * 5-min launchd tick's shell script can't acquire the shell lock and exits
+ * immediately — no second Node process starts, so this lock is never even read
+ * by a "concurrent" tick. The shell lock is intentional (it closes the
+ * launchd→Node startup race; see the `dual-lockfile` invariant) and must not be
+ * removed to force cross-tick overlap. The concurrency this redesign genuinely
+ * delivers is WITHIN a single tick: ISO tasks fan out and overlap the one GIT
+ * task (see tick-scheduler.runTwoClassTick). True cross-tick overlap would
+ * require detaching the GIT task from the shell-locked process — a daemon-model
+ * change, out of scope here.
+ *
+ * Distinct from the dispatch lockfile (serializes TICK processes) — this guards
+ * the GIT-class TASK slot. ISO scheduling ignores it entirely.
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 
@@ -52,10 +71,12 @@ export function removeGitLock(path: string): void {
 }
 
 /**
- * True iff a GIT task is mid-flight in a LIVE dispatcher process (this tick or a
- * prior overlapping one). A lock owned by a dead pid is stale — the owning tick
- * crashed mid-task — so it's swept and reported as free. A lock owned by THIS
- * process counts as live (a GIT task launched earlier in this same tick).
+ * True iff a GIT task is mid-flight in a LIVE dispatcher process. In practice
+ * (given the shell lock — see the file header) that "live process" is THIS one:
+ * a GIT task launched earlier in this same `main()` invocation, e.g. a resumed
+ * pipeline phase that already took the slot. A lock owned by a dead pid is stale
+ * — the owning tick crashed mid-task — so it's swept and reported as free, so a
+ * crashed run can never wedge GIT dispatch forever.
  */
 export function liveGitTaskExists(path: string): boolean {
   if (!existsSync(path)) return false;

@@ -46,21 +46,42 @@ export interface SpawnResult {
 }
 
 /**
- * Scan spawned-claude output for a rate-limit / overload signal. Matches the
- * provider's machine signatures (`rate_limit_error`, `overloaded_error`), the
- * bare `429` status only when it co-occurs with rate-limit wording (so a `429`
- * inside an unrelated test fixture or log line doesn't trip a false cooldown),
- * and a `Retry-After` header to size the backoff precisely. Returns the parsed
- * retry-after in ms when present.
+ * Scan spawned-claude output for a rate-limit / overload signal — keyed on
+ * MACHINE signatures, never on free-text prose.
+ *
+ * The signal fires only on:
+ *   - `rate_limit_error` / `overloaded_error` — the Anthropic API error-object
+ *     `type` values (the `{"type":"error","error":{"type":"rate_limit_error"}}`
+ *     shape the CLI surfaces when the dispatcher itself is throttled). The
+ *     trailing `_error` is the discriminator: it's the API's machine token, not
+ *     something a task implementing "rate limiting" would emit about its own work.
+ *   - a `429` ONLY when it appears as an explicit `HTTP` status token
+ *     (`HTTP 429`, `HTTP/1.1 429`). That framing is how a transport layer
+ *     reports the response; it is not how task prose describes a rate-limiter
+ *     ("returns 429 Too Many Requests to clients") nor how a test fixture
+ *     asserts one (`status === 429`) — neither carries the `HTTP` keyword, so
+ *     neither trips. The narrow `HTTP`-keyword gate (not `status`/`code`, which
+ *     appear in ordinary source/tests) is deliberate.
+ *
+ * Deliberately does NOT match the free-text phrases `rate limit` / `rate-limit`
+ * / `too many requests`, nor a bare `429` in prose or a code assertion. A code
+ * task whose JOB is to implement rate limiting legitimately prints those (in its
+ * VERDICT line, its diff, a test name). Matching them misclassified that task's
+ * OWN output as the dispatcher being throttled — the task got abandoned,
+ * re-queued, re-ran, re-tripped: a livelock. See the Arachne lesson
+ * `nyx-concurrency-redesign-pitfalls`. The authoritative backstop is the
+ * caller's exit-code gate (spawnWithTimeout only honors this on a non-zero exit).
  *
  * Conservative by construction: a false negative just means we don't back off
- * (the next spawn 429s again and we catch it then); a false positive would
- * stall the queue, so the bare-number path is gated on rate-limit context.
+ * (the next spawn 429s again and we catch it then); a false positive stalls the
+ * queue, so every path is gated on a machine token.
  */
 export function detectRateLimit(output: string): { rateLimited: boolean; retryAfterMs?: number } {
-  const hasSignature = /rate[_-]?limit|overloaded_error|too many requests/i.test(output);
-  const has429 = /\b429\b/.test(output) && /rate|limit|retry|overload/i.test(output);
-  const rateLimited = hasSignature || has429;
+  const hasMachineSignature = /rate_limit_error|overloaded_error/i.test(output);
+  // 429 only as an explicit HTTP-status token (`HTTP 429`, `HTTP/1.1 429`).
+  // Excludes a bare `429` in prose or a `status === 429` code assertion.
+  const hasHttp429 = /\bhttp\b[^\n]{0,6}\b429\b/i.test(output);
+  const rateLimited = hasMachineSignature || hasHttp429;
   if (!rateLimited) return { rateLimited: false };
   const m = output.match(/retry[- ]?after['":\s]*?(\d+(?:\.\d+)?)/i);
   if (m && m[1]) {
@@ -198,12 +219,20 @@ export function spawnWithTimeout(
         : stalledBySilence
           ? `\n[${label}] stalled — no output for ${options.silenceTimeoutMs}ms`
           : '';
+      // The silence watchdog (STALLED_EXIT_CODE) and the wall-clock timeout (124)
+      // each carry a distinct non-zero code; otherwise propagate the child's own.
+      const exitCode = stalledBySilence ? STALLED_EXIT_CODE : killedByTimeout ? 124 : code ?? 1;
       // Scan both streams (stderr is always piped; stdout only when captured) so
       // a rate-limit/overload signal is caught regardless of which stream the
-      // CLI surfaced it on.
-      const rl = detectRateLimit(`${stderr}\n${stdout}`);
+      // CLI surfaced it on. BUT only honor the signal on a NON-ZERO exit: a real
+      // API 429/overload aborts the CLI (it exits non-zero), whereas a task that
+      // exits 0 has finished its work — even if its output quotes the API error
+      // tokens (a task that implements/ tests rate limiting). Honoring it on a
+      // clean exit is the livelock: the completed task is re-queued forever. See
+      // `nyx-concurrency-redesign-pitfalls` (Arachne).
+      const rl = exitCode !== 0 ? detectRateLimit(`${stderr}\n${stdout}`) : { rateLimited: false };
       resolve({
-        exitCode: stalledBySilence ? STALLED_EXIT_CODE : killedByTimeout ? 124 : code ?? 1,
+        exitCode,
         stdout,
         stderr: `${stderr}${note}`,
         durationMs: Date.now() - start,

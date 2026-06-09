@@ -7,10 +7,12 @@
  *     `effectiveIsoCap` and are all drained before the tick returns (ISO
  *     concurrency is strictly intra-tick).
  *   - At most ONE GIT-class task (code/pipeline) runs, SYNCHRONOUSLY, under the
- *     cross-tick git lock. It NEVER blocks ISO launches — ISO is launched first,
- *     non-blocking, so the quick digests run while the long build blocks.
- *   - A GIT task is suppressed if a prior overlapping tick still holds the git
- *     lock, or a pipeline phase already took the GIT slot this tick.
+ *     git single-flight lock. It NEVER blocks ISO launches — ISO is launched
+ *     first, non-blocking, so the quick digests run while the long build blocks.
+ *     (This overlap is WITHIN the tick; cross-tick overlap is intentionally not
+ *     achieved — the shell lock serializes tick processes. See git-task-lock.ts.)
+ *   - A GIT task is suppressed if the git lock is already held in a live pid, or
+ *     a pipeline phase already took the GIT slot this tick (gitSlotTaken).
  *   - A 429/overload on any spawn opens a global cooldown and leaves the task
  *     queued (NOT failed). The cooldown is checked BEFORE any spawn.
  *   - One ISO task crashing must not abort its siblings (Promise.allSettled).
@@ -41,7 +43,7 @@ export interface SchedulerDeps {
   openCooldown: (taskId: string, retryAfterMs?: number) => void;
   /** The effective ISO cap right now (folds the global ceiling + live coders). */
   effectiveIsoCap: () => number;
-  /** True iff a GIT task is mid-flight in a live dispatcher pid (cross-tick). */
+  /** True iff a GIT task is already mid-flight in a live dispatcher pid. */
   liveGitTaskExists: () => boolean;
   writeGitLock: (taskId: string) => void;
   removeGitLock: () => void;

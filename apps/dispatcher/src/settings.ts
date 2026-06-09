@@ -68,9 +68,9 @@ export interface NyxSettings {
     taskTimeoutMs: number;
     // Type-aware concurrency (Track 3):
     // 'own'    = the two-class model (NEW DEFAULT). GIT-class {code,pipeline}
-    //            single-flight under the cross-tick git lock; ISO-class
+    //            single-flight under the git lock; ISO-class
     //            {analysis,assistant,content} run concurrently up to
-    //            maxConcurrentIso, alongside the one GIT task.
+    //            maxConcurrentIso, alongside the one GIT task (within a tick).
     // 'global' = conservative single-tenant rollback: skip ALL spawning this tick
     //            if ANY claude CLI is live (incl. Iris/foreign). Reproduces the
     //            legacy serialize-everything behavior with no code revert.

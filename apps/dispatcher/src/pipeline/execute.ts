@@ -22,6 +22,7 @@ import { resolve } from 'node:path';
 
 import { audit } from '../audit.js';
 import { config } from '../config.js';
+import { liveOwnClaudeCount } from '../claude-registry.js';
 import * as git from '../git-ops.js';
 import { spawnWithTimeout } from '../spawn-helpers.js';
 import { addUsage, costMeteringArgs, parseCostActuals, parseUsage, type CostActuals, type SpawnUsage } from '../spawn-usage.js';
@@ -331,8 +332,18 @@ export interface ExecuteDeps {
   base?: { basePath: string; integrationBranch: string; cleanup?: () => void };
   /** Override the coder spawn (used by the real runner; tests with a real git base). */
   spawn?: CoderSpawn;
-  /** Override the concurrency cap (default config.pipelineCoderConcurrency). */
+  /**
+   * Override the concurrency cap. When omitted the cap is derived as
+   * min(config.pipelineCoderConcurrency, maxConcurrentClaude - liveSpawnCount()),
+   * floored at 1. An explicit value bypasses the budget bound entirely (tests).
+   */
   cap?: number;
+  /**
+   * Live Nyx-spawned claude count at phase start (the ISO pool already running
+   * this tick). Subtracted from maxConcurrentClaude to size the coder budget.
+   * Defaults to the real registry count; tests inject a fixed number.
+   */
+  liveSpawnCount?: () => number;
 }
 
 /**
@@ -363,7 +374,16 @@ export async function runExecuting(run: PipelineRun, deps: ExecuteDeps = {}): Pr
       : setupIntegrationBase(run, target));
   const spawn = deps.spawn ?? realCoderSpawn;
   const runCoder = deps.runCoder ?? defaultRunCoder;
-  const cap = deps.cap ?? config.pipelineCoderConcurrency;
+  // Coder concurrency is bounded by BOTH the pipeline-specific cap AND the
+  // aggregate Max-plan ceiling. The coders spawn claude inside the GIT slot
+  // while the tick's ISO pool is already live, so coders + ISO together must
+  // not exceed maxConcurrentClaude or the shared OAuth quota is blown. Subtract
+  // the already-live spawns (the ISO pool registered earlier this tick) and
+  // floor at 1 so a fully-saturated budget still makes progress one coder at a
+  // time rather than deadlocking. A test-injected `deps.cap` overrides both.
+  const liveSpawnCount = deps.liveSpawnCount ?? liveOwnClaudeCount;
+  const budgetCap = Math.max(1, config.maxConcurrentClaude - liveSpawnCount());
+  const cap = deps.cap ?? Math.min(config.pipelineCoderConcurrency, budgetCap);
 
   const byId = new Map(phasePlans.map((p) => [p.task_id, p]));
   const nodes: SchedNode[] = phasePlans.map((p) => ({ id: p.task_id, deps: p.deps }));
