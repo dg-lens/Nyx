@@ -6,7 +6,7 @@ import {
   buildIndex,
   assemble,
   search,
-  writeNode,
+  routeWrite,
 } from '../../apps/dispatcher/dist/memory/arachne.js';
 
 const DATA = process.env.NYX_DATA_DIR || join(homedir(), 'Nyx', 'Data');
@@ -16,7 +16,8 @@ const stub = (n) => ({ id: n.id, title: n.title, summary: n.summary, loc: n.loc,
 function handle(dir, req) {
   if (req.op === 'write') {
     if (!req.node || !req.node.id || !req.node.body) return { ok: false, error: 'write needs node.id + node.body' };
-    return { ok: true, wrote: writeNode(dir, req.node) };
+    const r = routeWrite(dir, req.node);
+    return { ok: true, action: r.action, wrote: r.file, matchId: r.matchId };
   }
   if (req.op === 'search') return { ok: true, hits: search(buildIndex(dir), req.query || {}).map(stub) };
   if (req.op === 'assemble') {
