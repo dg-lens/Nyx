@@ -147,7 +147,6 @@ const INSTALL_OR_USAGE_FAILURE_RE = new RegExp(
   [
     // uv / uvx resolution + download failures (bad ruff@<v>, offline, 404)
     'no solution found',
-    'does not exist',
     'no matching distribution',
     'failed to download',
     'failed to fetch',
@@ -173,7 +172,6 @@ const INSTALL_OR_USAGE_FAILURE_RE = new RegExp(
     'network error',
     'request to .* failed',
     'unexpected (?:status|response) .*404',
-    '\\b404\\b',
     // wrapper could not locate/spawn the tool binary at all
     'command not found',
     'executable .* not found',

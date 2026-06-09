@@ -150,6 +150,24 @@ describe('isInstallOrUsageFailure', () => {
       false,
     );
   });
+  test('a lint finding that happens to mention 404 is NOT an install/usage failure', () => {
+    assert.equal(
+      isInstallOrUsageFailure("/w/a.ts\n  7:3  error  Magic number 404; assign to a named constant  no-magic-numbers\n\n1 problem"),
+      false,
+    );
+  });
+  test('a lint finding that says "does not exist" is NOT an install/usage failure', () => {
+    assert.equal(
+      isInstallOrUsageFailure("src/a.ts:9:5: error TS2339: Property 'foo' does not exist on type 'Bar'."),
+      false,
+    );
+  });
+  test('a contextual registry 404 (not a bare token) IS still an install/usage failure', () => {
+    assert.equal(
+      isInstallOrUsageFailure('npm error Unexpected response 404 Not Found - GET https://registry.npmjs.org/eslint'),
+      true,
+    );
+  });
 });
 
 describe('classifyLintResult', () => {
@@ -171,6 +189,22 @@ describe('classifyLintResult', () => {
   test('a real lint finding (non-zero, no install signature) → ran + FAILED (hard fail)', () => {
     const stdout = 'a.py:3:1: F401 `os` imported but unused\nFound 1 error.';
     const o = classifyLintResult('ruff', '0.6.9', 'ci-pin', SCOPED, 'log', mk({ status: 1, stdout }));
+    assert.equal(o.ran, true);
+    assert.equal(o.passed, false);
+    assert.equal(o.skipReason, undefined);
+  });
+
+  test('a real lint finding mentioning 404 (no install signature) → ran + FAILED (hard fail)', () => {
+    const stdout = 'a.ts:7:3: error  Magic number 404; assign to a named constant  no-magic-numbers\n1 problem';
+    const o = classifyLintResult('eslint', '9.13.0', 'ci-pin', ['a.ts'], 'log', mk({ status: 1, stdout }));
+    assert.equal(o.ran, true);
+    assert.equal(o.passed, false);
+    assert.equal(o.skipReason, undefined);
+  });
+
+  test('a real lint finding saying "does not exist" (no install signature) → ran + FAILED (hard fail)', () => {
+    const stdout = "a.ts:9:5: error TS2339: Property 'foo' does not exist on type 'Bar'.\n1 problem";
+    const o = classifyLintResult('eslint', '9.13.0', 'ci-pin', ['a.ts'], 'log', mk({ status: 1, stdout }));
     assert.equal(o.ran, true);
     assert.equal(o.passed, false);
     assert.equal(o.skipReason, undefined);
