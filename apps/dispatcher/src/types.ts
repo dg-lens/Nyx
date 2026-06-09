@@ -75,6 +75,14 @@ export interface GateResult {
     log: string;
   }>;
   failureLog: string;
+  /**
+   * P7 flaky-test quarantine. Set when the tests stage produced DIFFERENT
+   * verdicts on two same-tree runs — the gate is non-deterministic. The
+   * dispatcher quarantines (halts) rather than retrying to green. `passed` stays
+   * false in this case: a flaky green is not an accepted green.
+   */
+  flaky?: boolean;
+  flakyDetail?: { firstPassed: boolean; secondPassed: boolean };
 }
 
 export interface RunOutcome {
