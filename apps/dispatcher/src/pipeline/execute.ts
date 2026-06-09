@@ -152,11 +152,20 @@ export function setupIntegrationBase(run: PipelineRun, target: PlanTarget): {
   } else if (mode === 'invalid') {
     throw new ExecuteError(invalidRepoReason(target.repo));
   } else {
-    // Self-target: clone the local Nyx repo so worktrees share an object store.
-    const basePath = `${config.cloneRootPrefix}${run.id}-base`;
-    if (existsSync(basePath)) rmSync(basePath, { recursive: true, force: true });
-    gitRun(`git clone --no-hardlinks "${config.root}" "${basePath}"`, '/tmp');
-    base = { kind: 'clone', path: basePath, cleanup: () => rmSync(basePath, { recursive: true, force: true }) };
+    // Self-mode pipeline is unsupported (C1). It used to clone ~/Nyx into a /tmp
+    // base, build the integration branch there, then DELETE that base at cleanup
+    // with no merge-back into ~/Nyx and no push — silent, success-reported total
+    // data loss on the documented no-[repo:] default path. handlePipelineInTick
+    // rejects these up front; this throw is the defense-in-depth backstop for any
+    // run that still reaches execution (e.g. a legacy in-flight self run). To
+    // build a new standalone project use [repo: local] (greenfield, persists to
+    // Data/projects); to modify Nyx itself use a [type: code] task.
+    throw new ExecuteError(
+      `self-mode pipeline is unsupported (no [repo:]): the build would land in a ` +
+        `/tmp clone that cleanup deletes with no merge-back. Use [repo: local] for a ` +
+        `new standalone project, [repo: owner/name] for a GitHub repo, or [type: code] ` +
+        `to modify Nyx itself.`,
+    );
   }
   const integrationBranch = `nyx-pipeline/${sanitize(run.id)}/integration`;
   gitRun(`git checkout -B "${integrationBranch}"`, base.path);

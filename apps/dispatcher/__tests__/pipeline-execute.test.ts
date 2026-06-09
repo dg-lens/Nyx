@@ -11,8 +11,10 @@ import { _setPipelineDb, createRun, getRun, updateRun } from '../src/pipeline/db
 import {
   coderBranch,
   defaultRunCoder,
+  ExecuteError,
   runExecuting,
   scheduleWaves,
+  setupIntegrationBase,
   type CoderContext,
   type CoderResult,
 } from '../src/pipeline/execute.js';
@@ -220,5 +222,23 @@ describe('defaultRunCoder (real git worktree)', () => {
       rmSync(base, { recursive: true, force: true });
       rmSync(wtPath, { recursive: true, force: true });
     }
+  });
+});
+
+describe('setupIntegrationBase (C1 self-mode data-loss guard)', () => {
+  test('throws for a self-mode run (no repo) instead of building in /tmp', () => {
+    const run = createRun({ id: 'pr_SELFTEST_a', taskId: 'SELFTEST', prompt: 'build a snake game', repo: null, now: 1 });
+    assert.throws(
+      () => setupIntegrationBase(run, { id: 'SELFTEST', description: 'build a snake game' }),
+      (e: unknown) => e instanceof ExecuteError && /self-mode pipeline is unsupported/.test((e as Error).message),
+    );
+  });
+
+  test('throws for an invalid repo (typo, not owner/name or greenfield keyword)', () => {
+    const run = createRun({ id: 'pr_BADREPO_a', taskId: 'BADREPO', prompt: 'x', repo: 'employee-portal', now: 1 });
+    assert.throws(
+      () => setupIntegrationBase(run, { id: 'BADREPO', description: 'x', repo: 'employee-portal' }),
+      ExecuteError,
+    );
   });
 });
