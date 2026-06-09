@@ -8,6 +8,54 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+/**
+ * The four notification categories every typed notifier event maps to. Drives
+ * both per-category delivery policy (Workflow mode) and Pushover priority.
+ */
+export type NotificationCategory = 'action-required' | 'failure' | 'delivery' | 'status';
+
+/**
+ * Per-category delivery policy:
+ * - `always`    — 24/7, ignores Workflow state.
+ * - `workflow`  — deliver only while Workflow is active (in-schedule OR a live override).
+ * - `workhours` — deliver only inside the scheduled window; a manual override does NOT enable it.
+ * - `digest`    — never interrupt; batched into the off-hours "what you missed" summary (N4).
+ * - `off`       — never delivered.
+ */
+export type CategoryPolicy = 'always' | 'workflow' | 'workhours' | 'digest' | 'off';
+
+/** A single working-window for one weekday. Empty `start`/`end` (== '') means no window that day. */
+export interface WorkflowDayWindow {
+  start: string;
+  end: string;
+}
+
+export interface NotificationsSettings {
+  channels: {
+    slack: boolean;
+    pushover: { enabled: boolean };
+  };
+  workflow: {
+    schedule: {
+      // Keyed by lowercase weekday (sun..sat). A missing/empty window = off that day.
+      mon: WorkflowDayWindow;
+      tue: WorkflowDayWindow;
+      wed: WorkflowDayWindow;
+      thu: WorkflowDayWindow;
+      fri: WorkflowDayWindow;
+      sat: WorkflowDayWindow;
+      sun: WorkflowDayWindow;
+      timezone: string;
+    };
+    manualOverride: {
+      active: boolean;
+      // ISO-8601 instant after which the override self-expires. null = no override armed.
+      expiresAt: string | null;
+    };
+  };
+  categories: Record<NotificationCategory, CategoryPolicy>;
+}
+
 export interface NyxSettings {
   pipeline: {
     concurrentCap: number;
@@ -33,6 +81,7 @@ export interface NyxSettings {
     check: boolean;
     autoApply: boolean;
   };
+  notifications: NotificationsSettings;
 }
 
 export const SETTINGS_DEFAULTS: NyxSettings = {
@@ -45,6 +94,34 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
   },
   plugins: { disabled: [] },
   updates: { check: true, autoApply: false },
+  notifications: {
+    // Slack on, Pushover off by default → with no settings.json present, behavior
+    // is exactly today's (Slack-only). Pushover opts in via settings + creds.
+    channels: { slack: true, pushover: { enabled: false } },
+    workflow: {
+      // No working windows defined out of the box. With every day empty, Workflow
+      // is inactive unless a manual override is armed — so 'workflow'/'workhours'
+      // categories stay quiet until the operator sets a schedule. The categories
+      // are still wired; the operator opts into scheduling via the desktop (N3).
+      schedule: {
+        mon: { start: '', end: '' },
+        tue: { start: '', end: '' },
+        wed: { start: '', end: '' },
+        thu: { start: '', end: '' },
+        fri: { start: '', end: '' },
+        sat: { start: '', end: '' },
+        sun: { start: '', end: '' },
+        timezone: 'UTC',
+      },
+      manualOverride: { active: false, expiresAt: null },
+    },
+    categories: {
+      'action-required': 'workflow',
+      failure: 'workflow',
+      delivery: 'workflow',
+      status: 'digest',
+    },
+  },
 };
 
 /**
@@ -65,6 +142,69 @@ function coerceGuard(value: unknown, fallback: 'global' | 'own' | 'off'): 'globa
   if (value === false) return 'off';
   if (value === 'global' || value === 'own' || value === 'off') return value;
   return fallback;
+}
+
+function coerceBool(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function coerceString(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+const VALID_POLICIES: readonly CategoryPolicy[] = ['always', 'workflow', 'workhours', 'digest', 'off'];
+function coercePolicy(value: unknown, fallback: CategoryPolicy): CategoryPolicy {
+  return (VALID_POLICIES as readonly string[]).includes(value as string) ? (value as CategoryPolicy) : fallback;
+}
+
+function coerceDayWindow(value: unknown, fallback: WorkflowDayWindow): WorkflowDayWindow {
+  const v = (value ?? {}) as Partial<WorkflowDayWindow>;
+  return { start: coerceString(v.start, fallback.start), end: coerceString(v.end, fallback.end) };
+}
+
+/**
+ * Merge a partial notifications block onto the defaults, coercing every field so
+ * a hand-edited or partial settings.json can never produce an invalid policy,
+ * a non-string timezone, or a missing channel flag.
+ */
+function coerceNotifications(
+  raw: unknown,
+  d: NotificationsSettings,
+): NotificationsSettings {
+  const r = (raw ?? {}) as Partial<NotificationsSettings>;
+  const sched = (r.workflow?.schedule ?? {}) as Partial<NotificationsSettings['workflow']['schedule']>;
+  const ds = d.workflow.schedule;
+  return {
+    channels: {
+      slack: coerceBool(r.channels?.slack, d.channels.slack),
+      pushover: { enabled: coerceBool(r.channels?.pushover?.enabled, d.channels.pushover.enabled) },
+    },
+    workflow: {
+      schedule: {
+        mon: coerceDayWindow(sched.mon, ds.mon),
+        tue: coerceDayWindow(sched.tue, ds.tue),
+        wed: coerceDayWindow(sched.wed, ds.wed),
+        thu: coerceDayWindow(sched.thu, ds.thu),
+        fri: coerceDayWindow(sched.fri, ds.fri),
+        sat: coerceDayWindow(sched.sat, ds.sat),
+        sun: coerceDayWindow(sched.sun, ds.sun),
+        timezone: coerceString(sched.timezone, ds.timezone),
+      },
+      manualOverride: {
+        active: coerceBool(r.workflow?.manualOverride?.active, d.workflow.manualOverride.active),
+        expiresAt:
+          typeof r.workflow?.manualOverride?.expiresAt === 'string'
+            ? r.workflow.manualOverride.expiresAt
+            : d.workflow.manualOverride.expiresAt,
+      },
+    },
+    categories: {
+      'action-required': coercePolicy(r.categories?.['action-required'], d.categories['action-required']),
+      failure: coercePolicy(r.categories?.failure, d.categories.failure),
+      delivery: coercePolicy(r.categories?.delivery, d.categories.delivery),
+      status: coercePolicy(r.categories?.status, d.categories.status),
+    },
+  };
 }
 
 export function loadSettings(dataDir: string): NyxSettings {
@@ -92,6 +232,7 @@ export function loadSettings(dataDir: string): NyxSettings {
         check: typeof raw.updates?.check === 'boolean' ? raw.updates.check : d.updates.check,
         autoApply: typeof raw.updates?.autoApply === 'boolean' ? raw.updates.autoApply : d.updates.autoApply,
       },
+      notifications: coerceNotifications(raw.notifications, d.notifications),
     };
   } catch {
     return SETTINGS_DEFAULTS;

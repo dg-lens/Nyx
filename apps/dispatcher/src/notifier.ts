@@ -2,6 +2,8 @@ import { WebClient } from '@slack/web-api';
 
 import { config } from './config.js';
 import { emitHook } from './plugins/hooks.js';
+import { CATEGORY_PRIORITY } from './notification-policy.js';
+import type { NotificationCategory } from './settings.js';
 
 let cached: WebClient | null = null;
 
@@ -82,11 +84,12 @@ async function postViaWebhook(text: string): Promise<boolean> {
   }
 }
 
-export async function dm(text: string): Promise<void> {
-  if (!notificationsEnabled) {
-    console.log(`[notifier:disabled] ${text}`);
-    return;
-  }
+/**
+ * Post one message to Slack (bot DM first, webhook fallback). Returns true if it
+ * reached Slack. This is the original `dm()` body, extracted so `deliver()` can
+ * fan out to it as one channel among several.
+ */
+async function postToSlack(text: string): Promise<boolean> {
   const c = client();
   if (c && config.slackUserId) {
     try {
@@ -94,31 +97,121 @@ export async function dm(text: string): Promise<void> {
       const channel = open.channel?.id;
       if (channel) {
         await c.chat.postMessage({ channel, text });
-        return;
+        return true;
       }
     } catch (err) {
       console.error('[notifier] slack DM failed:', err);
     }
   }
-  if (await postViaWebhook(text)) return;
+  return postViaWebhook(text);
+}
+
+/**
+ * Whether Pushover is usable: enabled in settings AND both creds present. Empty
+ * creds disable the channel regardless of the settings flag (plan decision #4),
+ * so a half-configured install silently no-ops Pushover instead of erroring.
+ */
+function pushoverEnabled(): boolean {
+  return (
+    config.settings.notifications.channels.pushover.enabled &&
+    !!config.pushoverUserKey &&
+    !!config.pushoverAppToken
+  );
+}
+
+/**
+ * Post one message to Pushover with the category's native priority. Returns true
+ * on a 2xx. Tokens are kept out of any thrown/logged text via redactSecrets.
+ * Uses the global fetch (Node 18+); no SDK dependency.
+ */
+async function postToPushover(category: NotificationCategory, text: string): Promise<boolean> {
+  try {
+    const res = await fetch('https://api.pushover.net/1/messages.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: config.pushoverAppToken,
+        user: config.pushoverUserKey,
+        message: text,
+        priority: CATEGORY_PRIORITY[category],
+      }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('[notifier] pushover post failed:', redactSecrets(String(err)));
+    return false;
+  }
+}
+
+/**
+ * Sink indirection so routing tests can capture which channels fired without
+ * hitting the real Slack/Pushover APIs. Production uses the real sinks; tests
+ * swap them via `_setSinksForTest` and restore with `_resetSinksForTest`.
+ */
+type SlackSink = (text: string) => Promise<boolean>;
+type PushoverSink = (category: NotificationCategory, text: string) => Promise<boolean>;
+let slackSink: SlackSink = postToSlack;
+let pushoverSink: PushoverSink = postToPushover;
+export function _setSinksForTest(sinks: { slack?: SlackSink; pushover?: PushoverSink }): void {
+  if (sinks.slack) slackSink = sinks.slack;
+  if (sinks.pushover) pushoverSink = sinks.pushover;
+}
+export function _resetSinksForTest(): void {
+  slackSink = postToSlack;
+  pushoverSink = postToPushover;
+}
+
+/**
+ * Category-aware router: fan one message out to every ENABLED channel. Slack is
+ * gated on the settings flag; Pushover on its flag + creds. When neither channel
+ * is configured (no creds, default Pushover-off, Slack token absent) this falls
+ * back to a console log — identical to the pre-refactor `dm()` no-slack path, so
+ * an install with no notifications config behaves exactly as before.
+ *
+ * NOTE (Track 6 scope): this does NOT yet apply `shouldDeliver`/Workflow-mode
+ * suppression. The pure policy helpers ship in this phase (schema + helpers),
+ * but suppression is wired only once the off-hours digest (N4) exists — otherwise
+ * suppressed messages would be silently dropped rather than batched.
+ */
+export async function deliver(category: NotificationCategory, text: string): Promise<void> {
+  if (!notificationsEnabled) {
+    console.log(`[notifier:disabled] ${text}`);
+    return;
+  }
+  let reached = false;
+  if (config.settings.notifications.channels.slack && (await slackSink(text))) reached = true;
+  if (pushoverEnabled() && (await pushoverSink(category, text))) reached = true;
+  if (!reached) console.log(`[notifier:undelivered] ${text}`);
+}
+
+/**
+ * Generic Slack-only sink, kept for callers that want a raw operator DM with no
+ * category semantics. Typed events should route through `deliver(category, …)`.
+ */
+export async function dm(text: string): Promise<void> {
+  if (!notificationsEnabled) {
+    console.log(`[notifier:disabled] ${text}`);
+    return;
+  }
+  if (config.settings.notifications.channels.slack && (await postToSlack(text))) return;
   console.log(`[notifier:no-slack] ${text}`);
 }
 
 export async function taskDispatched(taskId: string, type: string, model: string, gate: string): Promise<void> {
-  await dm(`▶ Picking up ${taskId} (${type}, ${model}, gate: ${gate})`);
+  await deliver('status', `▶ Picking up ${taskId} (${type}, ${model}, gate: ${gate})`);
 }
 
 export async function taskCompleted(taskId: string, durationMin: number, gateSummary: string, finalize: string): Promise<void> {
-  await dm(`✅ ${taskId} shipped. ${durationMin} min, ${gateSummary}. ${finalize}`);
+  await deliver('status', `✅ ${taskId} shipped. ${durationMin} min, ${gateSummary}. ${finalize}`);
 }
 
 export async function taskFailed(taskId: string, stage: string, snippet: string): Promise<void> {
   const log = redactSecrets(snippet).slice(0, 500);
-  await dm(`❌ ${taskId} failed at ${stage}. Failure: ${log}\nWorktree preserved.`);
+  await deliver('failure', `❌ ${taskId} failed at ${stage}. Failure: ${log}\nWorktree preserved.`);
 }
 
 export async function taskAbandoned(taskId: string, lastFailure: string): Promise<void> {
-  await dm(`⛔ ${taskId} abandoned after 3 failures. Last failure: ${redactSecrets(lastFailure).slice(0, 500)}`);
+  await deliver('failure', `⛔ ${taskId} abandoned after 3 failures. Last failure: ${redactSecrets(lastFailure).slice(0, 500)}`);
 }
 
 /**
@@ -132,22 +225,22 @@ export async function taskHalted(
 ): Promise<void> {
   const head = pattern ? `🛑 *${taskId}* halted (${pattern})` : `🛑 *${taskId}* halted for review`;
   const tail = `\n\nTo unblock:\n  \`nyx resume ${taskId}\``;
-  await dm(`${head}\n\n${redactSecrets(report).slice(0, 1500)}${tail}`);
+  await deliver('action-required', `${head}\n\n${redactSecrets(report).slice(0, 1500)}${tail}`);
 }
 
 export async function taskAmbiguityEscalated(taskId: string, report: string): Promise<void> {
   const head = `❓ *${taskId}* needs a design decision before it can proceed`;
   const tail = `\n\nReply in the decision context, then:\n  \`nyx resume ${taskId}\``;
-  await dm(`${head}\n\n${redactSecrets(report).slice(0, 1500)}${tail}`);
+  await deliver('action-required', `${head}\n\n${redactSecrets(report).slice(0, 1500)}${tail}`);
 }
 
 export async function prCreated(taskId: string, prUrl: string): Promise<void> {
-  await dm(`📬 ${taskId} → PR opened: ${prUrl}`);
+  await deliver('delivery', `📬 ${taskId} → PR opened: ${prUrl}`);
 }
 
 /** A pipeline task was picked up and a run started (planning begins next). */
 export async function pipelineRunStarted(runId: string, taskId: string, repo: string | null): Promise<void> {
-  await dm(`▶ *${taskId}* — pipeline run started (run \`${runId}\`${repo ? ` · ${repo}` : ''}). Planning now.`);
+  await deliver('status', `▶ *${taskId}* — pipeline run started (run \`${runId}\`${repo ? ` · ${repo}` : ''}). Planning now.`);
 }
 
 /** An operator gate decision was received; the run is resuming (or stopping). */
@@ -158,7 +251,7 @@ export async function pipelineResumed(
   kind: string,
 ): Promise<void> {
   const verb = kind === 'abort' ? 'aborting' : kind === 'revise' || kind === 'rollback' ? 're-planning' : 'resuming';
-  await dm(`▶ *${taskId}* — ${gate} decision \`${kind}\` received; ${verb} (run \`${runId}\`).`);
+  await deliver('status', `▶ *${taskId}* — ${gate} decision \`${kind}\` received; ${verb} (run \`${runId}\`).`);
 }
 
 /** Terminal delivery — PR-ready + gate-green. */
@@ -170,7 +263,7 @@ export async function pipelineDelivered(
 ): Promise<void> {
   const where = prUrl ? `PR (review + merge): ${prUrl}` : 'PR-ready on the integration branch';
   const deploy = deployTargets.length ? `\n⚠️ Manual deploy: ${deployTargets.join(', ')}.` : '';
-  await dm(`✅ *${taskId}* — pipeline delivered (run \`${runId}\`). ${where}. Deploy is your manual step.${deploy}`);
+  await deliver('delivery', `✅ *${taskId}* — pipeline delivered (run \`${runId}\`). ${where}. Deploy is your manual step.${deploy}`);
 }
 
 /**
@@ -202,7 +295,8 @@ export async function pipelineAwaitingGate(
           `nyx pipeline rollback ${runId}`,
           `nyx pipeline abort ${runId}`,
         ];
-  await dm(
+  await deliver(
+    'action-required',
     `${icon} *${taskId}* — ${gate} gate reached (run \`${runId}\`).\n` +
       `${summary}\n` +
       `Brief: \`nyx pipeline status ${runId}\`\n\n` +
@@ -216,13 +310,13 @@ export async function pipelineAwaitingGate(
 export async function claudeCrashed(taskId: string, exitCode: number, stderr: string): Promise<void> {
   const scrubbed = redactSecrets(stderr).trim();
   const tail = scrubbed ? scrubbed.slice(-500) : 'empty';
-  await dm(`⚠️ Claude exited code ${exitCode} on ${taskId}. Stderr: ${tail}`);
+  await deliver('failure', `⚠️ Claude exited code ${exitCode} on ${taskId}. Stderr: ${tail}`);
 }
 
 export async function queueIdle(): Promise<void> {
-  await dm(`🟢 All tasks checked. Queue idle.`);
+  await deliver('status', `🟢 All tasks checked. Queue idle.`);
 }
 
 export async function queueStale(hours: number): Promise<void> {
-  await dm(`🟡 No successful task in ${hours} hours.`);
+  await deliver('status', `🟡 No successful task in ${hours} hours.`);
 }

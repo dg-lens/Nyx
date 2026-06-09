@@ -65,6 +65,12 @@ export const config = {
   slackWebhookUrl: process.env.SLACK_WEBHOOK_URL ?? '',
   operatorName: process.env.OPERATOR_NAME ?? 'Operator',
 
+  // ── Pushover (optional second notification channel) ──
+  // Bitwarden/env-backed, read like the Slack creds. Both empty → Pushover is
+  // disabled regardless of the settings.notifications.channels.pushover flag.
+  pushoverUserKey: process.env.PUSHOVER_USER_KEY ?? '',
+  pushoverAppToken: process.env.PUSHOVER_APP_TOKEN ?? '',
+
   // System identity. `NAME` (set in .env — the first var) is the configurable
   // name of this agent instance; rename your install by changing it. Consumers
   // (prompts, notifications, dashboard) should read `config.systemName` rather
