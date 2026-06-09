@@ -25,7 +25,10 @@ export type GateSensitiveCategory =
   | 'pytest-config'
   | 'js-test-config'
   | 'package-scripts'
-  | 'ci-workflow';
+  | 'ci-workflow'
+  | 'python-project-config'
+  | 'ts-compiler-config'
+  | 'eslint-config';
 
 export interface GateSensitiveHit {
   path: string;
@@ -41,11 +44,30 @@ export interface GateSensitiveResult {
 // regardless of the directory they live in. A conftest.py anywhere on the
 // pytest rootdir path is collected; pytest.ini/tox.ini/setup.cfg carry pytest
 // config; the JS configs are picked up by the test runner from any dir.
+//
+// pyproject.toml carries the [tool.pytest.*]/[tool.mypy]/[tool.ruff] tables the
+// Python gate (pytest + mypy + ruff) reads — editing it can relax strictness,
+// flip `addopts`, or narrow `testpaths`. tsconfig.json drives `tsc --noEmit`
+// (strict/skipLibCheck/exclude can hide type errors the gate is meant to
+// catch). Both are flagged on basename alone like the pytest configs above.
 const EXACT_BASENAMES: ReadonlyArray<readonly [RegExp, GateSensitiveCategory]> = [
   [/^conftest\.py$/, 'pytest-config'],
   [/^pytest\.ini$/, 'pytest-config'],
   [/^tox\.ini$/, 'pytest-config'],
   [/^setup\.cfg$/, 'pytest-config'],
+  [/^pyproject\.toml$/, 'python-project-config'],
+  [/^tsconfig(?:\.[\w.-]+)?\.json$/, 'ts-compiler-config'],
+];
+
+// ESLint config files matched by basename. Both the legacy `.eslintrc*` family
+// (any extension, or extensionless `.eslintrc`) and the flat-config
+// `eslint.config.{js,cjs,mjs,ts,mts,cts}` are picked up by the linter from the
+// nearest dir up the tree, so a change anywhere can loosen the rules the `lint`
+// gate enforces (disable a rule, add an `ignorePatterns`, widen `overrides`).
+const ESLINT_CONFIG_PATTERNS: ReadonlyArray<RegExp> = [
+  /^\.eslintrc$/,
+  /^\.eslintrc\.(?:[cm]?js|json|ya?ml)$/,
+  /^eslint\.config\.(?:[cm]?[jt]s)$/,
 ];
 
 // Test-runner config files matched by a basename pattern (any extension the
@@ -87,6 +109,9 @@ function classify(path: string): GateSensitiveCategory | null {
   }
   for (const re of JS_CONFIG_PATTERNS) {
     if (re.test(base)) return 'js-test-config';
+  }
+  for (const re of ESLINT_CONFIG_PATTERNS) {
+    if (re.test(base)) return 'eslint-config';
   }
   if (base === 'package.json') return 'package-scripts';
   return null;

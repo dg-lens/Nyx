@@ -105,6 +105,45 @@ describe('detectGateSensitiveChanges — pure classification', () => {
     assert.ok(r.hits.every((h) => h.category === 'package-scripts'));
   });
 
+  test('flags pyproject.toml at any depth as python-project-config', () => {
+    const r = detectGateSensitiveChanges([
+      'pyproject.toml',
+      'apps/api/pyproject.toml',
+    ]);
+    assert.deepEqual(r.paths, ['pyproject.toml', 'apps/api/pyproject.toml']);
+    assert.ok(r.hits.every((h) => h.category === 'python-project-config'));
+  });
+
+  test('flags tsconfig.json and named variants as ts-compiler-config', () => {
+    const files = [
+      'tsconfig.json',
+      'tsconfig.base.json',
+      'tsconfig.build.json',
+      'apps/web/tsconfig.json',
+    ];
+    const r = detectGateSensitiveChanges(files);
+    assert.deepEqual(r.paths, files, 'every tsconfig variant should be flagged');
+    assert.ok(r.hits.every((h) => h.category === 'ts-compiler-config'));
+  });
+
+  test('flags legacy .eslintrc* and flat eslint.config.* as eslint-config', () => {
+    const files = [
+      '.eslintrc',
+      '.eslintrc.js',
+      '.eslintrc.cjs',
+      '.eslintrc.json',
+      '.eslintrc.yml',
+      '.eslintrc.yaml',
+      'eslint.config.js',
+      'eslint.config.mjs',
+      'eslint.config.ts',
+      'apps/web/.eslintrc.json',
+    ];
+    const r = detectGateSensitiveChanges(files);
+    assert.deepEqual(r.paths, files, 'every eslint config form should be flagged');
+    assert.ok(r.hits.every((h) => h.category === 'eslint-config'));
+  });
+
   test('does NOT flag ordinary source / doc / dep files', () => {
     const r = detectGateSensitiveChanges([
       'src/index.ts',
@@ -130,6 +169,29 @@ describe('detectGateSensitiveChanges — pure classification', () => {
       'conftest.py.orig',
       'src/setupTestsHelper.ts',
     ]);
+    assert.deepEqual(r, { hits: [], paths: [] });
+  });
+
+  test('does NOT match near-miss pyproject/tsconfig/eslint filenames', () => {
+    // pyproject.toml.bak, mytsconfig.json, tsconfig.json.bak, .eslintrc.md,
+    // eslint.config.json (flat config is never JSON) must all be ignored.
+    const r = detectGateSensitiveChanges([
+      'pyproject.toml.bak',
+      'mytsconfig.json',
+      'tsconfig.json.bak',
+      'tsconfig.txt',
+      '.eslintrc.md',
+      'eslint.config.json',
+      'eslintrc.js',
+      'src/pyproject.py',
+    ]);
+    assert.deepEqual(r, { hits: [], paths: [] });
+  });
+
+  test('does NOT flag setup.py or requirements.txt as python config', () => {
+    // Only pyproject.toml (+ the existing setup.cfg/tox.ini/pytest.ini) carry
+    // the [tool.*] gate config; setup.py / requirements.txt do not.
+    const r = detectGateSensitiveChanges(['setup.py', 'requirements.txt']);
     assert.deepEqual(r, { hits: [], paths: [] });
   });
 
@@ -241,6 +303,25 @@ describe('assessGateTrust — narrows package.json by on-disk scripts', () => {
     // package.json dropped (no gate scripts), conftest kept
     assert.deepEqual(r.paths, ['tests/conftest.py']);
     assert.equal(r.hits[0]?.category, 'pytest-config');
+  });
+
+  test('always keeps tsconfig/pyproject/eslint hits (only package.json narrows)', () => {
+    writeFileSync(
+      resolve(tmp, 'package.json'),
+      JSON.stringify({ dependencies: { left: '1.0.0' } }),
+    );
+    const r = assessGateTrust(tmp, [
+      'tsconfig.json',
+      'pyproject.toml',
+      'eslint.config.js',
+      'package.json',
+    ]);
+    // package.json dropped (no gate scripts); the three config files survive.
+    assert.deepEqual(r.paths, ['tsconfig.json', 'pyproject.toml', 'eslint.config.js']);
+    assert.deepEqual(
+      r.hits.map((h) => h.category),
+      ['ts-compiler-config', 'python-project-config', 'eslint-config'],
+    );
   });
 
   test('returns empty for a diff with no test-infra at all', () => {
