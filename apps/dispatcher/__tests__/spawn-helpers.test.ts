@@ -14,7 +14,65 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
-import { spawnWithTimeout, killTree, STALLED_EXIT_CODE } from '../src/spawn-helpers.js';
+import { spawnWithTimeout, killTree, STALLED_EXIT_CODE, detectRateLimit } from '../src/spawn-helpers.js';
+
+// ── detectRateLimit ──────────────────────────────────────────────────────────
+
+describe('detectRateLimit', () => {
+  test('detects the rate_limit_error machine signature', () => {
+    assert.equal(detectRateLimit('{"type":"error","error":{"type":"rate_limit_error"}}').rateLimited, true);
+  });
+
+  test('detects overloaded_error', () => {
+    assert.equal(detectRateLimit('Error: overloaded_error from API').rateLimited, true);
+  });
+
+  test('detects a 429 only when rate-limit context co-occurs', () => {
+    assert.equal(detectRateLimit('HTTP 429: rate limit exceeded').rateLimited, true);
+    assert.equal(detectRateLimit('Too Many Requests').rateLimited, true);
+  });
+
+  test('a bare 429 with NO rate-limit wording does not trip (avoids false cooldown)', () => {
+    // e.g. a test fixture asserting `expect(x).toBe(429)` in the agent's output.
+    assert.equal(detectRateLimit('assert status === 429 // some HTTP code in a test').rateLimited, false);
+    assert.equal(detectRateLimit('all 348 tests passed in 429ms').rateLimited, false);
+  });
+
+  test('clean output is not rate-limited', () => {
+    assert.equal(detectRateLimit('VERDICT: fixed — added the helper').rateLimited, false);
+    assert.equal(detectRateLimit('').rateLimited, false);
+  });
+
+  test('parses Retry-After seconds into retryAfterMs', () => {
+    const r = detectRateLimit('rate_limit_error; Retry-After: 30');
+    assert.equal(r.rateLimited, true);
+    assert.equal(r.retryAfterMs, 30_000);
+  });
+
+  test('rate-limited without a Retry-After leaves retryAfterMs undefined', () => {
+    const r = detectRateLimit('rate_limit_error');
+    assert.equal(r.rateLimited, true);
+    assert.equal(r.retryAfterMs, undefined);
+  });
+
+  test('a rate-limited spawn result carries the flag through SpawnResult', async () => {
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'echo "rate_limit_error" >&2; exit 1'],
+      { cwd: '/tmp', env: process.env, captureStdout: true },
+      5000,
+    );
+    assert.equal(result.rateLimited, true);
+  });
+
+  test('a clean spawn result is not rate-limited', async () => {
+    const result = await spawnWithTimeout(
+      '/bin/sh', ['-c', 'echo ok; exit 0'],
+      { cwd: '/tmp', env: process.env, captureStdout: true },
+      5000,
+    );
+    assert.equal(result.rateLimited, false);
+  });
+});
 
 // ── killTree ─────────────────────────────────────────────────────────────────
 

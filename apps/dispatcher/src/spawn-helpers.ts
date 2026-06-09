@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { registerClaude, deregisterClaude } from './claude-registry.js';
+import { registerClaude, deregisterClaude, type ClaudeMeta } from './claude-registry.js';
 
 /**
  * Distinct exit code for a spawn killed by the stdout-silence watchdog. Kept
@@ -22,6 +22,11 @@ export interface SpawnWithTimeoutOptions {
    * heartbeat; `timeoutMs` remains the hard outer wall-clock cap.
    */
   silenceTimeoutMs?: number;
+  // Class + task attribution for the claude registry. The type-aware
+  // concurrency model counts GIT vs ISO spawns to keep the aggregate Max-plan
+  // budget. Defaults to ISO (the safe, non-GIT-blocking) class when omitted, so
+  // pre-existing callers compile unchanged.
+  claudeMeta?: ClaudeMeta;
 }
 
 export interface SpawnResult {
@@ -32,6 +37,37 @@ export interface SpawnResult {
   killedByTimeout: boolean;
   /** True when the silence watchdog (not the wall-clock timeout) killed the spawn. */
   stalledBySilence: boolean;
+  // True when the child's output carried a rate-limit signal (429 /
+  // rate_limit_error / overloaded_error). The dispatcher treats this as a
+  // capacity event (cooldown + leave the task queued), NOT a code defect.
+  rateLimited: boolean;
+  // Parsed from a Retry-After header echoed in the child output, if present.
+  retryAfterMs?: number;
+}
+
+/**
+ * Scan spawned-claude output for a rate-limit / overload signal. Matches the
+ * provider's machine signatures (`rate_limit_error`, `overloaded_error`), the
+ * bare `429` status only when it co-occurs with rate-limit wording (so a `429`
+ * inside an unrelated test fixture or log line doesn't trip a false cooldown),
+ * and a `Retry-After` header to size the backoff precisely. Returns the parsed
+ * retry-after in ms when present.
+ *
+ * Conservative by construction: a false negative just means we don't back off
+ * (the next spawn 429s again and we catch it then); a false positive would
+ * stall the queue, so the bare-number path is gated on rate-limit context.
+ */
+export function detectRateLimit(output: string): { rateLimited: boolean; retryAfterMs?: number } {
+  const hasSignature = /rate[_-]?limit|overloaded_error|too many requests/i.test(output);
+  const has429 = /\b429\b/.test(output) && /rate|limit|retry|overload/i.test(output);
+  const rateLimited = hasSignature || has429;
+  if (!rateLimited) return { rateLimited: false };
+  const m = output.match(/retry[- ]?after['":\s]*?(\d+(?:\.\d+)?)/i);
+  if (m && m[1]) {
+    const secs = Number.parseFloat(m[1]);
+    if (Number.isFinite(secs) && secs > 0) return { rateLimited: true, retryAfterMs: Math.round(secs * 1000) };
+  }
+  return { rateLimited: true };
 }
 
 /**
@@ -80,7 +116,7 @@ export function spawnWithTimeout(
       stdio: ['ignore', pipeStdout ? 'pipe' : 'ignore', 'pipe'],
       detached: true,
     });
-    if (child.pid !== undefined) registerClaude(child.pid);
+    if (child.pid !== undefined) registerClaude(child.pid, options.claudeMeta ?? { class: 'iso' });
 
     let stdout = '';
     let stderr = '';
@@ -162,6 +198,10 @@ export function spawnWithTimeout(
         : stalledBySilence
           ? `\n[${label}] stalled — no output for ${options.silenceTimeoutMs}ms`
           : '';
+      // Scan both streams (stderr is always piped; stdout only when captured) so
+      // a rate-limit/overload signal is caught regardless of which stream the
+      // CLI surfaced it on.
+      const rl = detectRateLimit(`${stderr}\n${stdout}`);
       resolve({
         exitCode: stalledBySilence ? STALLED_EXIT_CODE : killedByTimeout ? 124 : code ?? 1,
         stdout,
@@ -169,6 +209,8 @@ export function spawnWithTimeout(
         durationMs: Date.now() - start,
         killedByTimeout,
         stalledBySilence,
+        rateLimited: rl.rateLimited,
+        ...(rl.retryAfterMs != null ? { retryAfterMs: rl.retryAfterMs } : {}),
       });
     });
 
@@ -182,6 +224,7 @@ export function spawnWithTimeout(
         durationMs: Date.now() - start,
         killedByTimeout: false,
         stalledBySilence: false,
+        rateLimited: false,
       });
     });
   });

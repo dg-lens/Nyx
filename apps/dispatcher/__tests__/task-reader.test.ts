@@ -363,3 +363,56 @@ describe('[repo:] validation (C2 command-injection guard)', () => {
     assert.equal(t!.invalidTags.length, 0);
   });
 });
+
+// ─── pickNextTask classFilter (Track 3) ──────────────────────────────────────
+
+describe('pickNextTask classFilter (type-aware concurrency)', () => {
+  const mixed =
+    `## Active Tasks\n\n` +
+    `- [ ] BRIEF-1 — research brief\n      [type: assistant] [gate: none]\n` +
+    `- [ ] CODE-1 — fix a bug\n      [type: code] [gate: none]\n` +
+    `- [ ] SCAN-1 — analyze repo\n      [type: analysis] [gate: none]\n` +
+    `- [ ] PIPE-1 — ship a feature\n      [type: pipeline] [gate: none]\n`;
+
+  test("classFilter: 'iso' yields only analysis/assistant/content, in file order", () => {
+    write(mixed);
+    const q = readQueue(queuePath);
+    // Standing list: highest-priority then file order. BRIEF-1 (assistant) is first ISO.
+    const first = pickNextTask(q, { now: atSlot(1), classFilter: 'iso' });
+    assert.equal(first?.id, 'BRIEF-1');
+    // After deferring BRIEF-1, the next ISO is SCAN-1 (analysis) — CODE-1/PIPE-1 are GIT.
+    const second = pickNextTask(q, { now: atSlot(1), classFilter: 'iso', skipThisTick: new Set(['BRIEF-1']) });
+    assert.equal(second?.id, 'SCAN-1');
+    // With both ISO tasks taken, no ISO candidate remains.
+    const none = pickNextTask(q, { now: atSlot(1), classFilter: 'iso', skipThisTick: new Set(['BRIEF-1', 'SCAN-1']) });
+    assert.equal(none, null);
+  });
+
+  test("classFilter: 'git' yields only code/pipeline", () => {
+    write(mixed);
+    const q = readQueue(queuePath);
+    const first = pickNextTask(q, { now: atSlot(1), classFilter: 'git' });
+    assert.equal(first?.id, 'CODE-1');
+    const second = pickNextTask(q, { now: atSlot(1), classFilter: 'git', skipThisTick: new Set(['CODE-1']) });
+    assert.equal(second?.id, 'PIPE-1');
+    const none = pickNextTask(q, { now: atSlot(1), classFilter: 'git', skipThisTick: new Set(['CODE-1', 'PIPE-1']) });
+    assert.equal(none, null);
+  });
+
+  test('omitting classFilter preserves legacy all-class behavior', () => {
+    write(mixed);
+    const q = readQueue(queuePath);
+    assert.equal(pickNextTask(q, { now: atSlot(1) })?.id, 'BRIEF-1');
+  });
+
+  test('classFilter respects priority within a class', () => {
+    write(
+      `## Active Tasks\n\n` +
+      `- [ ] BRIEF-LOW — low\n      [type: assistant] [gate: none] [priority: low]\n` +
+      `- [ ] BRIEF-HI — high\n      [type: assistant] [gate: none] [priority: high]\n` +
+      `- [ ] CODE-1 — code\n      [type: code] [gate: none]\n`,
+    );
+    const q = readQueue(queuePath);
+    assert.equal(pickNextTask(q, { now: atSlot(1), classFilter: 'iso' })?.id, 'BRIEF-HI');
+  });
+});

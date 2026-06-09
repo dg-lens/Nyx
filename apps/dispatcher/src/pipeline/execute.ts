@@ -227,6 +227,7 @@ const realCoderSpawn: CoderSpawn = async (a) => {
       captureStdout: config.costMeteringEnabled,
       label: a.label,
       silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
+      claudeMeta: { class: 'git' },
     },
     a.timeoutMs,
   );
