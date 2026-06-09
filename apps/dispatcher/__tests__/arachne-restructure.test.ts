@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -28,6 +28,9 @@ function vault(): string {
 
 const node = (dir: string, id: string, fm: string, body = 'BODY') =>
   writeFileSync(join(dir, 'nodes', id + '.md'), `---\n${fm}\n---\n\n${body}\n`);
+
+const arr = (v: unknown): string[] =>
+  v == null ? [] : Array.isArray(v) ? v.map(String) : [String(v)];
 
 describe('provenance-gated injection (B.5)', () => {
   test('agent + review:pending node is searchable but NOT injectable', () => {
@@ -183,12 +186,71 @@ describe('write-through dedup router (B.1)', () => {
     });
     assert.equal(r.action, 'CONTRADICT');
     const idx = buildIndex(dir);
-    assert.ok(idx.some((n) => n.id === 'gate-on'), 'original preserved');
-    assert.ok(idx.some((n) => n.id === 'gate-off'), 'new claim preserved');
-    const onRaw = readFileSync(join(dir, 'nodes', 'gate-on.md'), 'utf8');
-    const offRaw = readFileSync(join(dir, 'nodes', 'gate-off.md'), 'utf8');
-    assert.match(onRaw, /contradicts: gate-off/);
-    assert.match(offRaw, /contradicts: gate-on/);
+    const on = idx.find((n) => n.id === 'gate-on');
+    const off = idx.find((n) => n.id === 'gate-off');
+    assert.ok(on, 'original preserved + still parses');
+    assert.ok(off, 'new claim preserved + still parses');
+    const contradicts = (n: typeof on): string[] =>
+      arr((n!.edges as Record<string, unknown>)['contradicts']);
+    assert.ok(contradicts(on).includes('gate-off'), 'original links the contradiction');
+    assert.ok(contradicts(off).includes('gate-on'), 'new claim links the contradiction');
+  });
+
+  test('CONTRADICT against a BLOCK-form edges node preserves both nodes + the existing edges', () => {
+    // The corpus authors `edges:` in BLOCK form. The old regex assumed inline
+    // `edges: {...}` and orphaned the indented block, producing invalid YAML that
+    // parseNode threw on and buildIndex silently dropped — erasing the operator
+    // node. The round-trip mutator must keep BOTH nodes parseable and preserve the
+    // pre-existing edges. See node arachne-frontmatter-mutation-must-roundtrip-yaml.
+    const dir = vault();
+    writeFileSync(
+      join(dir, 'nodes', 'gate-on.md'),
+      [
+        '---',
+        'id: gate-on',
+        'kind: invariant',
+        'title: Always run the gate',
+        'summary: always run the gate before commit',
+        'loc: [stack.nyx.dispatch]',
+        'load: match',
+        'weight: 6',
+        'provenance: operator',
+        'status: active',
+        'edges:',
+        '  relates: [gate-policy, commit-flow]',
+        '  contradicts: [legacy-skip]',
+        '---',
+        '',
+        'RULE: always run the gate before commit.',
+        '',
+      ].join('\n'),
+    );
+    const before = buildIndex(dir);
+    assert.ok(before.some((n) => n.id === 'gate-on'), 'block-form node parses before the write');
+
+    const r = routeWrite(dir, {
+      id: 'gate-off',
+      kind: 'invariant',
+      title: 'Never run the gate',
+      summary: 'never run the gate before commit, skip it',
+      loc: ['stack.nyx.dispatch'],
+      body: 'RULE: do not run the gate, never block on it.',
+    });
+    assert.equal(r.action, 'CONTRADICT');
+
+    const idx = buildIndex(dir);
+    const on = idx.find((n) => n.id === 'gate-on');
+    const off = idx.find((n) => n.id === 'gate-off');
+    // The data-loss assertion: the operator node MUST survive the agent write.
+    assert.ok(on, 'BLOCK-form operator node survives the CONTRADICT write (not dropped)');
+    assert.ok(off, 'new agent node present');
+
+    const edges = on!.edges as Record<string, unknown>;
+    assert.deepEqual(arr(edges['relates']), ['gate-policy', 'commit-flow'], 'pre-existing relates preserved');
+    const onContradicts = arr(edges['contradicts']);
+    assert.ok(onContradicts.includes('legacy-skip'), 'pre-existing contradicts entry preserved');
+    assert.ok(onContradicts.includes('gate-off'), 'new contradiction appended, not clobbered');
+    assert.ok(arr((off!.edges as Record<string, unknown>)['contradicts']).includes('gate-on'), 'reverse edge linked');
   });
 });
 

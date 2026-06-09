@@ -1,7 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { config } from './config.js';
+import { writeNode } from './memory/arachne.js';
 
 export const WISDOM_FILE = 'NYX_WISDOM.md';
 
@@ -187,10 +188,6 @@ function wisdomLoc(wisdom: WisdomCapture): string[] {
   return fromScope.length > 0 ? fromScope : ['stack.nyx'];
 }
 
-function yamlQuote(v: string): string {
-  return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-}
-
 /**
  * Write a captured lesson into the memory vault. The graph is the source of
  * truth, so a new node MUST carry the exact schema the engine reads —
@@ -198,8 +195,14 @@ function yamlQuote(v: string): string {
  * Previously this hand-rolled `scope`/`visibility`/`load: on-demand`, none of
  * which the engine reads (it reads `loc`/`audience`, and `on-demand` is not a
  * valid `load`), so every captured node was written but invisible to injection,
- * MOCs, and search — the H1 defect. title/summary/triggers are yamlQuote'd so a
- * colon in a value (e.g. an error-string summary) can't break the frontmatter.
+ * MOCs, and search — the H1 defect.
+ *
+ * The create path now routes through the engine's own `writeNode` rather than
+ * hand-emitting YAML, so capture and the engine can never drift again: one
+ * serializer stamps the canonical frontmatter (and quotes colon-bearing
+ * summaries/titles safely). See node
+ * arachne-write-through-dedup-and-provenance-gate.
+ *
  * If the node already exists it is already well-formed + indexed, so the lesson
  * is appended (never clobber) — dedup/merge is the curator's job.
  */
@@ -224,35 +227,25 @@ function routeToGraph(wisdom: WisdomCapture, taskId: string): { fileModified: st
     const title = wisdom.title ?? wisdom.id.replace(/-/g, ' ');
     const triggers = (wisdom.triggers ?? []).map((t) => t.trim()).filter(Boolean);
 
-    const content = [
-      '---',
-      `id: ${wisdom.id}`,
-      `kind: ${kind}`,
-      `title: ${yamlQuote(title)}`,
-      `summary: ${yamlQuote(summary)}`,
-      `loc: [${loc.join(', ')}]`,
-      'load: match',
-      'audience: [coder, reviewer]',
-      'weight: 4',
-      ...(triggers.length > 0 ? [`triggers: [${triggers.map(yamlQuote).join(', ')}]`] : []),
-      'provenance: agent',
-      'confidence: medium',
-      'status: active',
-      'review: pending',
-      `created: ${date}`,
-      `updated: ${date}`,
-      '---',
-      '',
-      `# ${title}`,
-      '',
-      wisdom.paragraph,
-      '',
-      `<!-- captured by wisdom-capture from ${taskId} -->`,
-      '',
-    ].join('\n');
-
-    writeFileSync(filePath, content, 'utf8');
-    return { fileModified: filePath };
+    // `writeNode` writes into <dir>/nodes; nodesDir is that leaf, so pass its parent.
+    const written = writeNode(dirname(nodesDir), {
+      id: wisdom.id,
+      kind,
+      title,
+      summary,
+      loc,
+      load: 'match',
+      audience: ['coder', 'reviewer'],
+      weight: 4,
+      ...(triggers.length > 0 ? { triggers } : {}),
+      provenance: 'agent',
+      confidence: 'medium',
+      status: 'active',
+      review: 'pending',
+      created: date,
+      body: `# ${title}\n\n${wisdom.paragraph}\n\n<!-- captured by wisdom-capture from ${taskId} -->`,
+    });
+    return { fileModified: written };
   } catch {
     return { fileModified: null };
   }

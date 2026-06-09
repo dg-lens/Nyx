@@ -7,7 +7,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 export type Role = 'dispatcher' | 'planner' | 'coder' | 'reviewer' | 'operator' | 'all';
 
@@ -336,8 +336,25 @@ export interface WriteInput {
   supersedes?: string;
 }
 
+/**
+ * Quote a scalar only when leaving it bare would produce invalid or mis-parsed
+ * YAML — a colon (the H1 trap: `summary: x: y` parses as a nested map and throws),
+ * a leading `#`/`!`/`&`/`*`/`>`/`|`/`@`/quote/`[`/`{`, or surrounding whitespace.
+ * Plain words (`kind: lesson`, `load: match`) stay unquoted so the output matches
+ * the hand-authored corpus shape.
+ */
+const needsQuote = (s: string): boolean =>
+  s === '' || /[:#]/.test(s) || /^[\s!&*>|@'"[\]{}#-]/.test(s) || /\s$/.test(s);
+
+const fmScalar = (v: unknown): string => {
+  const s = String(v);
+  return typeof v === 'string' && needsQuote(s)
+    ? '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'
+    : s;
+};
+
 const fmLine = ([k, v]: [string, unknown]): string =>
-  `${k}: ${Array.isArray(v) ? '[' + v.map(String).join(', ') + ']' : JSON.stringify(v).replace(/^"|"$/g, '')}`;
+  `${k}: ${Array.isArray(v) ? '[' + v.map(fmScalar).join(', ') + ']' : fmScalar(v)}`;
 
 /** Inbound write: append a leaf as agent-provenance, pending review. Returns the file path. */
 export function writeNode(dir: string, n: WriteInput): string {
@@ -554,56 +571,75 @@ export function supersedeNode(dir: string, predecessor: NodeMeta, successor: Wri
   return path;
 }
 
-/** Rewrite ONLY a node's frontmatter to mark it superseded; body is left intact. */
-function stampSuperseded(file: string, successorId: string, date: string): void {
+/**
+ * Mutate ONLY a node's frontmatter via a full parse→mutate→serialize round-trip,
+ * leaving the body verbatim. This is the ONLY sanctioned way to edit an existing
+ * node's frontmatter.
+ *
+ * Regex surgery on a single frontmatter line corrupts BLOCK-form maps: the live
+ * corpus authors `edges:` as
+ *
+ *   edges:
+ *     relates: [a, b]
+ *     contradicts: [c]
+ *
+ * A regex tuned for the inline shape (`edges: {...}`) rewrites the `edges:` line
+ * and orphans the indented block beneath it → invalid YAML → `parseNode` throws →
+ * `buildIndex`'s `catch {}` SILENTLY DROPS the node from the index. An agent-driven
+ * contradiction/supersede write can thus erase an operator-authored node from
+ * retrieval with no error surfaced — pure data loss. Parsing the whole frontmatter
+ * into an object, mutating the object, and re-serializing is robust to both inline
+ * and block forms. See node `arachne-frontmatter-mutation-must-roundtrip-yaml`.
+ */
+function mutateFrontmatter(file: string, mutate: (fm: Record<string, unknown>) => void): void {
   if (!existsSync(file)) return;
   const text = readFileSync(file, 'utf8');
   if (!text.startsWith('---')) return;
   const end = text.indexOf('\n---', 3);
   if (end === -1) return;
-  let fm = text.slice(3, end);
-  fm = /^status:/m.test(fm)
-    ? fm.replace(/^status:.*$/m, 'status: superseded')
-    : fm + '\nstatus: superseded';
-  fm = /^review:/m.test(fm) ? fm.replace(/^review:.*$/m, 'review: superseded') : fm;
-  fm = /^updated:/m.test(fm) ? fm.replace(/^updated:.*$/m, `updated: ${date}`) : fm;
-  fm += `\nvalid_until: ${date}\nsuperseded_by: ${successorId}`;
-  writeFileSync(file, `---${fm}${text.slice(end)}`, 'utf8');
+  const fm = (parseYaml(text.slice(3, end)) as Record<string, unknown>) ?? {};
+  mutate(fm);
+  // stringify emits a trailing newline; strip it so the closing `---` sits flush.
+  const serialized = stringifyYaml(fm).replace(/\n+$/, '');
+  writeFileSync(file, `---\n${serialized}\n${text.slice(end + 1)}`, 'utf8');
+}
+
+/** Rewrite ONLY a node's frontmatter to mark it superseded; body is left intact. */
+function stampSuperseded(file: string, successorId: string, date: string): void {
+  mutateFrontmatter(file, (fm) => {
+    fm['status'] = 'superseded';
+    if (fm['review'] != null) fm['review'] = 'superseded';
+    if (fm['updated'] != null) fm['updated'] = date;
+    fm['valid_until'] = date;
+    fm['superseded_by'] = successorId;
+  });
 }
 
 /** Add an id to a node's edges.contradicts list, in place, frontmatter-only. */
 function linkContradiction(file: string, otherId: string): void {
-  if (!existsSync(file)) return;
-  const text = readFileSync(file, 'utf8');
-  if (!text.startsWith('---')) return;
-  const end = text.indexOf('\n---', 3);
-  if (end === -1) return;
-  let fm = text.slice(3, end);
-  const existing = /^edges:\s*(.*)$/m.exec(fm);
-  if (existing) {
-    if (!existing[1]!.includes(otherId)) {
-      fm = /\}\s*$/.test(existing[1]!)
-        ? fm.replace(/^edges:.*$/m, (m) => m.replace(/\}\s*$/, `, contradicts: ${otherId}}`))
-        : fm.replace(/^edges:.*$/m, `edges: {contradicts: ${otherId}}`);
-    }
-  } else {
-    fm += `\nedges: {contradicts: ${otherId}}`;
-  }
-  writeFileSync(file, `---${fm}${text.slice(end)}`, 'utf8');
+  mutateFrontmatter(file, (fm) => {
+    const edges =
+      fm['edges'] && typeof fm['edges'] === 'object' && !Array.isArray(fm['edges'])
+        ? (fm['edges'] as Record<string, unknown>)
+        : {};
+    const list = Array.isArray(edges['contradicts'])
+      ? (edges['contradicts'] as unknown[]).map(String)
+      : edges['contradicts'] != null
+        ? [String(edges['contradicts'])]
+        : [];
+    if (!list.includes(otherId)) list.push(otherId);
+    edges['contradicts'] = list;
+    fm['edges'] = edges;
+  });
 }
 
 /** Increment a node's weight by 1 (ExpeL importance seed, B.6) — frontmatter only. */
 function bumpWeight(file: string): void {
-  if (!existsSync(file)) return;
-  const text = readFileSync(file, 'utf8');
-  if (!text.startsWith('---')) return;
-  const end = text.indexOf('\n---', 3);
-  if (end === -1) return;
-  const fm = text.slice(3, end);
-  const m = /^weight:\s*(\d+(?:\.\d+)?)/m.exec(fm);
-  if (!m) return;
-  const next = Number(m[1]) + 1;
-  writeFileSync(file, `---${fm.replace(/^weight:.*$/m, `weight: ${next}`)}${text.slice(end)}`, 'utf8');
+  mutateFrontmatter(file, (fm) => {
+    const w = Number(fm['weight']);
+    if (!Number.isFinite(w)) return;
+    fm['weight'] = w + 1;
+  });
 }
 
 export function nodeCount(dir: string): number {
