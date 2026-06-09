@@ -17,21 +17,35 @@ import { openDb } from './db.js';
  * on-401 is the steady-state break, not an exception. Reactive refresh also
  * "fails the first time fifty agents wake at 8am" (thundering herd on expiry).
  *
- * The fix is PROACTIVE: at tick time, before spawning an MCP-dependent task,
- * check each credential's absolute `expires_at`; if past `refreshAtFraction` of
- * its TTL, attempt a refresh BEFORE the spawn so the token is fresh when the
- * agent reaches for it. Persist atomically (temp-file + rename — Nyx's
- * cortana.md.tmp discipline) with an ABSOLUTE expiry, never a relative duration.
+ * SCOPE HONESTY — what this module actually does, and what it does NOT.
  *
- * Scope honesty: Nyx does not own the host's `claude mcp` OAuth flow (the Claude
- * CLI manages those connections and their browser re-auth). What Nyx CAN do
- * out-of-process is (a) TRACK per-server credential TTL it has been told about,
- * (b) decide proactively when one is stale, and (c) when refresh isn't possible
- * headlessly (the common case — re-auth needs a browser), emit a STRUCTURED
- * operator action instead of letting the spawn drift to a timeout. This module
- * is that tracker + decision layer; the actual token storage for MCPs Nyx fully
- * controls lives in per-server files under ~/.config at chmod 600 (mirrors the
- * bitwarden/<project>.token convention).
+ * Nyx does NOT own the host's `claude mcp` OAuth flow: the Claude CLI manages the
+ * claude.ai connector connections and their browser re-auth, and `claude mcp list`
+ * reports only connected / needs-auth — never a token expiry. So Nyx CANNOT learn
+ * a connector's TTL out-of-process, which means the purely-PROACTIVE "refresh at
+ * 80% of the TTL window" path has no data source for those connectors and would be
+ * a no-op (the original dead-wiring defect: `mcp_credentials` was never populated,
+ * so `classifyAuth` returned `unknown` for everything and `healAuth` flagged
+ * nothing). We do NOT pretend otherwise.
+ *
+ * What this module genuinely does, REACTIVELY, is the load-bearing half:
+ *   (a) when a spawn's stream-json shows an MCP call failing with an auth signature
+ *       (401/403/invalid_grant/…), `recordAuthFailure` marks that server's
+ *       credential EXPIRED in `mcp_credentials` — giving the TTL classifier real
+ *       data for the first time;
+ *   (b) the NEXT tick's pre-spawn `healAuth` then sees that server as `expired` and
+ *       emits `task.mcp.auth_stale`, and the caller (run-once) reifies it as a
+ *       structured operator-action halt — because the generic Opus diagnostic
+ *       cannot drive a browser re-auth, so a plain failure would just burn an audit
+ *       pass.
+ *
+ * The PROACTIVE-TTL path (`classifyAuth` → `stale`, `recordCredential` with a real
+ * `ttlMs`/`expiresAt`, `persistToken`) is RETAINED but only fires for MCPs whose
+ * token Nyx genuinely controls and was told the TTL of (the per-server token files
+ * under ~/.config at chmod 600, mirroring the bitwarden/<project>.token convention).
+ * For everything else the reactive path above is the real mechanism. This is the
+ * narrowing the directive asked for: no dead proactive claim, the reactive route is
+ * wired and used.
  */
 
 export interface CredentialState {
@@ -94,6 +108,35 @@ export function recordCredential(
        expires_at = excluded.expires_at,
        last_refreshed_at = excluded.last_refreshed_at`,
   ).run(serverId, expiresAt, now);
+}
+
+/**
+ * REACTIVE auth-failure record. Called when a spawn's stream-json showed an MCP
+ * call failing with an auth signature (recordSpawnOutcome returned `auth`). Marks
+ * that server's credential EXPIRED so the next tick's `healAuth` flags it and the
+ * caller routes it to the operator-action path. THIS is what gives the otherwise-
+ * un-fed TTL classifier real data — without it `mcp_credentials` stays empty and
+ * the whole auth-healer is a no-op (the defect). Best-effort, never throws on a
+ * caller's hot path: a DB error is swallowed (the breaker still suppressed the
+ * server, so the reactive route degrades gracefully to breaker-only).
+ *
+ * Setting `expires_at = now` (not now-1) makes the very next `classifyAuth` at any
+ * `now' >= now` report `expired`; we set `last_refreshed_at` to null so the
+ * proactive-window math can't later mistake this forced-expiry for a fresh anchor.
+ */
+export function recordAuthFailure(serverId: string, now: number = Date.now()): void {
+  try {
+    const d = open();
+    d.prepare(
+      `INSERT INTO mcp_credentials (server_id, expires_at, last_refreshed_at)
+       VALUES (?, ?, NULL)
+       ON CONFLICT(server_id) DO UPDATE SET
+         expires_at = excluded.expires_at,
+         last_refreshed_at = NULL`,
+    ).run(serverId, now);
+  } catch {
+    /* reactive bookkeeping is best-effort; the breaker is the hard suppressor */
+  }
 }
 
 /**

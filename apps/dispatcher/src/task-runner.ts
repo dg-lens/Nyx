@@ -12,7 +12,7 @@ import { applyPolicy, probeReadiness, resolveWithheld } from './mcp-resilience.j
 import { buildRequiredContextBlock, parseReadingRefs, resolveReadingRefs } from './reading-resolver.js';
 import { redactCredentialPatterns, redactValues } from './redaction.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
-import { costMeteringArgs, extractResultText, parseUsage, type SpawnUsage } from './spawn-usage.js';
+import { costMeteringArgs, extractResultText, parseMcpToolEvents, parseUsage, type McpToolEvent, type SpawnUsage } from './spawn-usage.js';
 import { classOf } from './concurrency.js';
 import { fetchProjectSecretValues } from './secrets/bitwarden-client.js';
 import { resolveProject } from './secrets/project-registry.js';
@@ -26,6 +26,15 @@ export interface ClaudeResult {
   durationMs: number;
   /** Locally-estimated cost/tokens from the JSON envelope; null when metering is off or the envelope was unparseable. */
   usage?: SpawnUsage | null;
+  /**
+   * MCP tool calls extracted from a stream-json spawn (assistant/analysis), with
+   * each call's server-qualified name + error status. The breaker bookkeeping in
+   * run-once attributes failures per server off these. Parsed from the RAW NDJSON
+   * here (before reconcileMeteredOutput strips it down to the result text) and
+   * value-scrubbed, so run-once gets the structured signal without re-handling raw
+   * tool output. Absent/empty for non-MCP task types and single-json spawns.
+   */
+  mcpToolEvents?: McpToolEvent[];
   // Set when the spawn's output carried a rate-limit/overload signal. The
   // dispatcher leaves the task queued + opens a cooldown rather than failing it.
   rateLimited?: boolean;
@@ -445,12 +454,21 @@ export async function invokeClaude(
 ): Promise<ClaudeResult> {
   let prompt = buildPrompt(task, opts);
   prompt = (await emitHook('task.promptBuild', { task, prompt })).prompt;
+  // MCP-dependent task types emit stream-json so the post-spawn breaker can
+  // attribute each MCP tool call (and its result's error status) to the specific
+  // server — the single-result envelope drops those per-turn tool blocks, which is
+  // why the breaker never accumulated. The final NDJSON `result` line is the same
+  // envelope single-json emits, so cost metering + the VERDICT sentinel are
+  // unaffected (reconcileMeteredOutput parses it from the last line). Code/coder
+  // spawns keep single-json — they run no MCP tools and don't need the stream.
+  const meterFormat: 'json' | 'stream-json' =
+    task.type === 'assistant' || task.type === 'analysis' ? 'stream-json' : 'json';
   const claudeArgs = [
     '-p',
     prompt,
     '--model', task.model,
     ...permissionArgs(task),
-    ...(config.costMeteringEnabled ? costMeteringArgs() : []),
+    ...(config.costMeteringEnabled ? costMeteringArgs({ format: meterFormat }) : []),
     '--add-dir', cwd,
   ];
   const { command, args, extraEnv } = buildSpawnInvocation(task, claudeArgs);
@@ -470,6 +488,16 @@ export async function invokeClaude(
     silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
     claudeMeta: { class: classOf(task.type), taskId: task.id },
   }, config.claudeTaskTimeoutMs);
+  // Extract MCP tool events from the RAW stream-json BEFORE reconciliation strips
+  // stdout down to the result text. Done for MCP-dependent types regardless of exit
+  // code — a non-zero/stalled spawn is precisely when a wedged MCP call should
+  // count toward its breaker. The events' result text is value-scrubbed below so no
+  // secret a tool echoed reaches the breaker/audit path.
+  const rawToolEvents =
+    (task.type === 'assistant' || task.type === 'analysis')
+      ? parseMcpToolEvents(result.stdout)
+      : [];
+
   // Reconcile the metered JSON envelope (extract the agent's result text + usage)
   // when metering is on and the spawn exited cleanly, THEN scrub secret values from
   // the result before it leaves task-runner. A non-zero exit keeps stdout raw.
@@ -489,5 +517,7 @@ export async function invokeClaude(
     },
     extraEnv,
   );
-  return { ...scrubbed, usage: metered.usage };
+  const scrubText = (s: string): string => redactCredentialPatterns(redactValues(s, Object.values(extraEnv)));
+  const mcpToolEvents = rawToolEvents.map((e) => ({ ...e, resultText: scrubText(e.resultText) }));
+  return { ...scrubbed, usage: metered.usage, mcpToolEvents };
 }

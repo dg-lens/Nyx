@@ -79,6 +79,12 @@ export interface McpSettings {
     // probe must never become the hang it prevents, so the timeout is tight.
     enabled: boolean;
     timeoutMs: number;
+    // Whether a `! Needs authentication` server is withheld pre-spawn. OFF by
+    // default — the prior collect-everything design let the spawn try and the
+    // reactive 401 classifier handles a true failure; proactively withholding a
+    // needs-auth server denies one whose token may still work. A hard
+    // `✗ Failed to connect` is ALWAYS withheld regardless of this flag.
+    withholdNeedsAuth: boolean;
   };
   auth: {
     // Proactive auth-healer: refresh when past this fraction of the TTL window
@@ -154,7 +160,7 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
     // default), 5-minute cooldown = one tick. probe ON but cheap. defaultPolicy
     // `auto` = every discovered MCP stays in the allowlist (today's behavior).
     breaker: { failureThreshold: 3, cooldownMs: 5 * 60_000 },
-    probe: { enabled: true, timeoutMs: 4000 },
+    probe: { enabled: true, timeoutMs: 4000, withholdNeedsAuth: false },
     auth: { refreshAtFraction: 0.8, defaultTtlMs: 60 * 60_000 },
     policy: { defaultPolicy: 'auto', tools: {} },
   },
@@ -316,6 +322,7 @@ function coerceMcp(raw: unknown, d: McpSettings): McpSettings {
     probe: {
       enabled: coerceBool(r.probe?.enabled, d.probe.enabled),
       timeoutMs: clampNumber(r.probe?.timeoutMs, d.probe.timeoutMs, 500, 30_000),
+      withholdNeedsAuth: coerceBool(r.probe?.withholdNeedsAuth, d.probe.withholdNeedsAuth),
     },
     auth: {
       refreshAtFraction: clampNumber(r.auth?.refreshAtFraction, d.auth.refreshAtFraction, 0.1, 1),

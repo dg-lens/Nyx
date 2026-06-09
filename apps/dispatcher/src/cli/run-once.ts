@@ -55,8 +55,8 @@ import { runPreflight } from '../preflight.js';
 import { STALLED_EXIT_CODE } from '../spawn-helpers.js';
 import { redactCredentialPatterns } from '../redaction.js';
 import { listMcpServers } from '../mcp-discovery.js';
-import { recordSpawnOutcome } from '../mcp-resilience.js';
-import { healAuth } from '../mcp-auth-healer.js';
+import { authFailedServers, recordSpawnOutcome } from '../mcp-resilience.js';
+import { healAuth, recordAuthFailure } from '../mcp-auth-healer.js';
 import { buildPrompt, invokeClaude, invokeWisdomCapture } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
@@ -428,18 +428,37 @@ async function attemptTask(
   });
 
   // ── Post-spawn MCP breaker bookkeeping (G-D) ──
-  // For MCP-dependent task types, classify the spawn output for an MCP failure
-  // (auth 401/403 vs transport 5xx/timeout) and update the cross-process breaker
-  // per referenced server: a failure increments toward opening the breaker, a
-  // clean run closes a half-open one. This is what makes the breaker survive the
-  // cold-per-spawn model — the state lives in nyx.db, not the dead child. The
-  // emitted breaker_opened/closed rows are the post-mortem join the MCP-heavy hang
-  // T4 entries lacked. Best-effort: any throw here never affects the task outcome.
+  // For MCP-dependent task types, attribute each MCP tool call in the spawn's
+  // stream-json output to its server and update the cross-process breaker per
+  // server: a failed call (auth 401/403 vs transport 5xx/timeout) increments toward
+  // opening the breaker, a successful call closes a half-open one. This is what
+  // makes the breaker survive the cold-per-spawn model — the state lives in nyx.db,
+  // not the dead child — and what makes it actually accumulate (the single-result
+  // envelope dropped the tool tokens, so the prior text-regex path saw nothing).
+  // The breaker_opened/closed rows are the post-mortem join the MCP-heavy hang T4
+  // entries lacked. Best-effort: any throw here never affects the task outcome.
+  //
+  // CRUCIALLY: the returned auth-kind is USED, not discarded. An auth-classed
+  // failure marks the failing servers' credentials expired (mcp_credentials) so the
+  // NEXT tick's pre-spawn healAuth flags them and routes to the operator-action
+  // path — the generic Opus diagnostic can't drive a browser re-auth, so without
+  // this an auth failure just burns audit passes. We re-derive the per-server auth
+  // set from the same stream-json tool events recordSpawnOutcome used, so only the
+  // server that actually 401'd is marked, not every server the spawn touched.
   if (task.type === 'assistant' || task.type === 'analysis') {
     try {
-      recordSpawnOutcome(`${claudeResult.stderr}\n${claudeResult.stdout}`, {
-        exitCode: claudeResult.exitCode,
-      });
+      const combined = `${claudeResult.stderr}\n${claudeResult.stdout}`;
+      const events = claudeResult.mcpToolEvents ?? [];
+      const kind = recordSpawnOutcome(combined, { exitCode: claudeResult.exitCode, events });
+      if (kind === 'auth') {
+        const authServers = authFailedServers(events, combined);
+        for (const server of authServers) recordAuthFailure(server);
+        audit('task.mcp.auth_failure', 'dispatcher', { taskId: task.id, servers: authServers });
+        void notify.dm(
+          `🔑 *${task.id}* — an MCP server returned an auth error (${authServers.join(', ') || 'unattributed'}). ` +
+            `Re-auth the connector; the breaker has suppressed it for this cooldown.`,
+        );
+      }
     } catch {
       /* breaker bookkeeping is best-effort; never affect task flow */
     }

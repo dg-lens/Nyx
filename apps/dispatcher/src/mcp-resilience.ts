@@ -6,6 +6,7 @@ import { dirname } from 'node:path';
 import { audit } from './audit.js';
 import { config } from './config.js';
 import { openDb } from './db.js';
+import { parseMcpToolEvents, type McpToolEvent } from './spawn-usage.js';
 
 /**
  * MCP-plane operational resilience (G-D / wave-stack-2 theme B).
@@ -250,6 +251,19 @@ export interface McpProbeStatus {
   serverId: string;
   connected: boolean;
   needsAuth: boolean;
+  /**
+   * Whether the readiness layer should WITHHOLD this server pre-spawn. This is the
+   * DELIBERATELY NARROW reading (defect 4): only a HARD `✗ Failed to connect` /
+   * `disconnected` withholds. A `! Needs authentication` server does NOT withhold
+   * by default — it reverses the prior collect-everything design to let the spawn
+   * try (the reactive auth classifier in recordSpawnOutcome catches a true 401 and
+   * trips the breaker, and the agent's own prompt tells it to report an unavailable
+   * MCP and continue). Withholding a needs-auth server proactively means a token
+   * that's actually still valid, or one the agent could use read-only, is silently
+   * denied. Operators who DO want the stricter posture set
+   * `settings.mcp.probe.withholdNeedsAuth: true`.
+   */
+  withhold: boolean;
 }
 
 function sanitize(name: string): string {
@@ -262,15 +276,20 @@ function sanitize(name: string): string {
  */
 export function parseMcpHealth(out: string): McpProbeStatus[] {
   const statuses: McpProbeStatus[] = [];
+  const withholdNeedsAuth = config.settings.mcp.probe.withholdNeedsAuth;
   for (const raw of out.split('\n')) {
     const line = raw.trim();
     if (!line || line.startsWith('Checking MCP')) continue;
     const m = line.match(/^(.+?):\s+https?:\/\/(.*)$/);
     if (!m || !m[1]) continue;
     const tail = (m[2] ?? '').toLowerCase();
-    const connected = /✓|\bconnected\b/.test(tail) && !/✗|✘|failed|disconnect/.test(tail);
+    const failed = /✗|✘|failed|disconnect/.test(tail);
+    const connected = (/✓|\bconnected\b/.test(tail) && !failed);
     const needsAuth = /needs authentication|not authenticated|! auth/i.test(tail);
-    statuses.push({ serverId: `mcp__${sanitize(m[1])}`, connected, needsAuth });
+    // Withhold ONLY a hard-failed server by default. A needs-auth server is left
+    // in unless the operator opted into the stricter posture — see McpProbeStatus.
+    const withhold = failed || (needsAuth && withholdNeedsAuth);
+    statuses.push({ serverId: `mcp__${sanitize(m[1])}`, connected, needsAuth, withhold });
   }
   return statuses;
 }
@@ -332,7 +351,12 @@ export function resolveWithheld(
   const allowed: string[] = [];
   const withheld: WithholdResult['withheld'] = [];
   for (const server of availableServers) {
-    if (isOpen(server, now)) {
+    // Breaker check on the CANONICAL key (defect 2): the breaker may have been
+    // opened by attribution under the same canonical id, so we must look it up
+    // the same way. canonicalServerId is a no-op for an already-`mcp__<server>`
+    // discovery entry, so this never changes the matched row for local servers.
+    const key = canonicalServerId(server) ?? server;
+    if (isOpen(key, now)) {
       withheld.push({ server, reason: 'breaker-open' });
       continue;
     }
@@ -340,7 +364,7 @@ export function resolveWithheld(
     // probe didn't list (probe failed, or CLI doesn't report it) is left in —
     // the breaker is the authoritative suppressor, the probe is best-effort.
     const p = probeByid.get(server);
-    if (p && !p.connected) {
+    if (p && p.withhold) {
       withheld.push({ server, reason: 'probe-disconnected' });
       continue;
     }
@@ -350,14 +374,51 @@ export function resolveWithheld(
 }
 
 /**
+ * Canonicalize ANY MCP token — a discovered allowlist entry (`mcp__Slack`), a
+ * full tool token (`mcp__Slack__send_message`), or a live UUID-prefixed connector
+ * tool (`mcp__87a5b867-5c2d-4ac4-9fbf-333d78862c36__slack_send_message`) — down to
+ * its `mcp__<server>` breaker key. THIS IS THE NAMESPACE-ALIGNMENT FIX (defect 2):
+ * the breaker is keyed on the value this returns, and BOTH the discovery/withhold
+ * path (which canonicalizes its `mcp__<server>` allowlist entries — a no-op for
+ * already-canonical tokens) AND the post-spawn attribution path (which canonicalizes
+ * the live tool token) route through it, so a server that trips the breaker under one
+ * spelling is suppressed under the other.
+ *
+ * The server segment is everything between the leading `mcp__` and the FIRST `__`
+ * that separates server from tool. Critically, the server segment MAY contain
+ * hyphens (claude.ai connectors prefix a UUID like `87a5b867-5c2d-…`); the old
+ * regex's `[A-Za-z0-9_]+?` stopped at the first hyphen and returned an empty/garbage
+ * key, so a UUID-named connector never matched its own breaker row. We allow hyphens
+ * in the server segment and split on the `__` delimiter (not a single `_`) so the
+ * UUID survives intact.
+ */
+export function canonicalServerId(token: string): string | null {
+  if (!token.startsWith('mcp__')) return null;
+  const rest = token.slice('mcp__'.length);
+  // The server↔tool boundary is the first `__`. Everything before it (hyphens,
+  // alphanumerics, single underscores) is the server segment.
+  const sep = rest.indexOf('__');
+  const server = sep === -1 ? rest : rest.slice(0, sep);
+  if (!server) return null;
+  return `mcp__${server}`;
+}
+
+/**
  * Extract the `mcp__<server>` tokens an agent's output actually exercised, by
  * scanning for the `mcp__<server>__<tool>` tool-call shape the CLI surfaces.
- * Returns the SERVER-level tokens (deduped) so breaker bookkeeping is attributed
- * to the right server, not the individual tool.
+ * Returns the canonical SERVER-level tokens (deduped) so breaker bookkeeping is
+ * attributed to the right server, not the individual tool.
+ *
+ * This is the REGEX FALLBACK path (defect 1): it runs only when the structured
+ * stream-json tool events aren't available (a plain-text or single-json stdout).
+ * The server-segment character class now includes hyphens so a UUID-prefixed
+ * connector token is captured whole instead of being truncated at the first hyphen.
  */
 export function serversReferencedIn(output: string): string[] {
   const seen = new Set<string>();
-  const re = /\bmcp__([A-Za-z0-9_]+?)__[A-Za-z0-9_]+/g;
+  // Server segment: alphanumerics, single underscores, and hyphens (UUIDs), up to
+  // the `__` that begins the tool segment. Non-greedy so it stops at the first `__`.
+  const re = /\bmcp__([A-Za-z0-9_-]+?)__[A-Za-z0-9_]+/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(output)) !== null) {
     if (m[1]) seen.add(`mcp__${m[1]}`);
@@ -366,26 +427,67 @@ export function serversReferencedIn(output: string): string[] {
 }
 
 /**
- * Post-spawn breaker bookkeeping for an assistant/analysis task. Classifies the
- * spawn output for an MCP failure and updates the breaker for every server the
- * output referenced:
- *   - failure detected → recordFailure(kind) for each referenced server (opens the
- *     breaker once the threshold is crossed),
- *   - no failure AND the spawn exited cleanly → recordSuccess for each referenced
- *     server (closes a half-open breaker, resets the counter).
+ * Post-spawn breaker bookkeeping for an assistant/analysis task. THIS is where the
+ * breaker actually accumulates from a live spawn (defect 1). Two signal tiers:
  *
- * Returns the classified failure kind so the caller can route an auth failure to
- * the operator-action path. Best-effort: this is bookkeeping, never fatal.
+ *  1. **stream-json tool events (authoritative).** When the spawn ran with
+ *     `--output-format stream-json`, every MCP tool call and its result is in the
+ *     NDJSON. We attribute PER CALL: a tool whose `tool_result` errored records a
+ *     failure against THAT call's server (classified auth vs transport from the
+ *     result text); a tool that succeeded records a success against its server.
+ *     This is precise — a failed Slack call and a successful Notion call in the
+ *     same spawn trip only Slack's breaker. The single-result `--output-format
+ *     json` envelope cannot do this: it drops the per-turn tool blocks, so the
+ *     agent's prose never names the `mcp__server__tool` token (proven: a real
+ *     Sanity 401 surfaced as prose with ZERO `mcp__` tokens in the envelope —
+ *     which is exactly why the breaker was dead).
  *
- * Why attribute to "referenced" servers rather than all discovered: a Slack
- * timeout shouldn't trip the Notion breaker. The output naming `mcp__slack__…` is
- * the only signal available out-of-process about which server was in play.
+ *  2. **regex + whole-output classifier (fallback).** If no structured tool events
+ *     are present (plain-text stdout, single-json, an older CLI), fall back to the
+ *     prior behavior: classify the whole output and attribute to every server the
+ *     text references. Coarser (a Slack failure can't be isolated from a Notion
+ *     reference in the same blob) but better than nothing.
+ *
+ * Returns the dominant classified failure kind (auth wins over transport over none)
+ * so the caller can route an auth failure to the operator-action path. Best-effort:
+ * this is bookkeeping, never fatal. Every breaker key is `canonicalServerId(...)`
+ * so it matches the discovery/withhold namespace (defect 2).
  */
 export function recordSpawnOutcome(
   output: string,
-  opts: { exitCode: number; now?: number } = { exitCode: 0 },
+  opts: { exitCode: number; now?: number; events?: McpToolEvent[] } = { exitCode: 0 },
 ): McpFailureKind {
   const now = opts.now ?? Date.now();
+  // Prefer events the caller already parsed-and-scrubbed (run-once passes the
+  // ClaudeResult.mcpToolEvents). Fall back to parsing `output` directly so the
+  // text-only call signature still works (tests, single-json spawns).
+  const events = opts.events ?? parseMcpToolEvents(output);
+
+  if (events.length > 0) {
+    // Tier 1: authoritative per-call attribution from stream-json tool events.
+    let dominant: McpFailureKind = 'none';
+    for (const ev of events) {
+      const server = canonicalServerId(ev.tool);
+      if (!server) continue;
+      if (ev.isError) {
+        // Classify this specific call's failure from its result text. A result
+        // text with no recognizable signature (a generic tool error) defaults to
+        // transport — it's a real failure that should count toward the breaker.
+        const k = classifyMcpFailure(ev.resultText);
+        const kind: Exclude<McpFailureKind, 'none'> = k === 'auth' ? 'auth' : 'transport';
+        recordFailure(server, kind, now);
+        if (kind === 'auth') dominant = 'auth';
+        else if (dominant === 'none') dominant = 'transport';
+      } else {
+        // A successful call closes a half-open breaker / resets the counter for
+        // THAT server regardless of the overall spawn exit code.
+        recordSuccess(server, now);
+      }
+    }
+    return dominant;
+  }
+
+  // Tier 2: fallback to whole-output classification + regex server extraction.
   const kind = classifyMcpFailure(output);
   const servers = serversReferencedIn(output);
   if (kind !== 'none') {
@@ -394,6 +496,33 @@ export function recordSpawnOutcome(
     for (const s of servers) recordSuccess(s, now);
   }
   return kind;
+}
+
+/**
+ * The canonical `mcp__<server>` ids whose calls failed with an AUTH signature in a
+ * spawn. Used by run-once to drive the reactive auth-healer (mark those servers'
+ * credentials expired + DM the operator). Prefers the structured stream-json tool
+ * events (per-call auth classification, the same authoritative signal
+ * recordSpawnOutcome uses); when no events are present AND the whole-output
+ * classifier says auth, falls back to attributing every regex-referenced server in
+ * the combined output. Pass the already-parsed-and-scrubbed `events` from the
+ * ClaudeResult; `fallbackText` is the combined stderr+stdout for the regex path.
+ */
+export function authFailedServers(events: McpToolEvent[], fallbackText: string): string[] {
+  const seen = new Set<string>();
+  if (events.length > 0) {
+    for (const ev of events) {
+      if (!ev.isError) continue;
+      if (classifyMcpFailure(ev.resultText) !== 'auth') continue;
+      const server = canonicalServerId(ev.tool);
+      if (server) seen.add(server);
+    }
+    return [...seen];
+  }
+  if (classifyMcpFailure(fallbackText) === 'auth') {
+    for (const s of serversReferencedIn(fallbackText)) seen.add(s);
+  }
+  return [...seen];
 }
 
 /**

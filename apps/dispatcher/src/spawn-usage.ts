@@ -30,10 +30,22 @@ export interface SpawnUsage {
 }
 
 /**
- * Flags appended to every metered `claude -p` invocation. Kept as a function (not
- * a const) so callers spread it at the call site and the intent reads at the spawn.
+ * Flags appended to a metered `claude -p` invocation. Kept as a function (not a
+ * const) so callers spread it at the call site and the intent reads at the spawn.
+ *
+ * `format: 'json'` (default) emits a SINGLE result object — the right shape for
+ * code/coder spawns that only need cost + the VERDICT sentinel. `format:
+ * 'stream-json'` emits NDJSON (per-turn tool_use/tool_result events + a final
+ * `result` line) and REQUIRES `--verbose`; MCP-dependent task types use it so the
+ * breaker can attribute failures to the specific server that 401'd / timed out
+ * (`parseMcpToolEvents`). Both shapes feed the same `parseUsage`/`extractResultText`
+ * (the parser scans the NDJSON's last line for the identical result envelope), so
+ * cost metering and sentinel detection are unaffected by the format choice.
  */
-export function costMeteringArgs(): string[] {
+export function costMeteringArgs(opts: { format?: 'json' | 'stream-json' } = {}): string[] {
+  if (opts.format === 'stream-json') {
+    return ['--output-format', 'stream-json', '--verbose'];
+  }
   return ['--output-format', 'json'];
 }
 
@@ -71,17 +83,44 @@ function numOrNull(v: unknown): number | null {
 }
 
 /**
- * Parse the `--output-format json` envelope. `claude -p` emits a SINGLE JSON
- * object on stdout (not the streaming NDJSON of `--output-format stream-json`),
- * so the whole captured stdout is one object. Returns null on any parse/shape
- * failure so the caller can fall back to raw-stdout sentinel parsing.
+ * Parse the result envelope out of a metered spawn's stdout. Handles BOTH
+ * `--output-format json` (a SINGLE JSON object — the whole stdout) AND
+ * `--output-format stream-json` (NDJSON, where the LAST line is the same
+ * `type: 'result'` envelope, byte-identical to the single-json form, preceded by
+ * per-turn `assistant`/`user`/`system` event lines). The MCP-dependent task types
+ * spawn with stream-json so their tool-use events can be attributed to the breaker
+ * (see `mcpServersFailedIn`); code/coder spawns stay on single-json. This parser
+ * is a strict superset, so both shapes flow through `parseUsage`/`extractResultText`
+ * unchanged. Returns null on any parse/shape failure so the caller can fall back to
+ * raw-stdout sentinel parsing.
  */
 function parseEnvelope(stdout: string): ResultEnvelope | null {
   const trimmed = stdout.trim();
-  if (!trimmed.startsWith('{')) return null;
+  if (!trimmed) return null;
+  // Single-json fast path: the whole stdout is one object.
+  if (trimmed.startsWith('{') && !trimmed.includes('\n')) {
+    return parseOneEnvelope(trimmed);
+  }
+  // stream-json (or single-json that happens to span lines): scan from the end
+  // for the `type: 'result'` line. The result message is always emitted last, so
+  // a reverse scan finds it in O(1) for the common case without parsing every
+  // event line. Fall back to a whole-blob parse if no line qualifies (e.g. an
+  // older single-json blob pretty-printed across lines).
+  const lines = trimmed.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = (lines[i] ?? '').trim();
+    if (!line.startsWith('{')) continue;
+    const env = parseOneEnvelope(line);
+    if (env) return env;
+  }
+  return parseOneEnvelope(trimmed);
+}
+
+/** Parse one JSON object string into a result envelope, or null. */
+function parseOneEnvelope(text: string): ResultEnvelope | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(trimmed);
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }
@@ -104,6 +143,104 @@ export function extractResultText(stdout: string): string | null {
   const env = parseEnvelope(stdout);
   if (!env) return null;
   return typeof env.result === 'string' ? env.result : '';
+}
+
+/**
+ * One MCP tool invocation extracted from a stream-json spawn: the server-qualified
+ * tool name the agent actually called (`mcp__<server>__<tool>`) paired with whether
+ * its matching `tool_result` came back an error. This is the ONLY out-of-process
+ * signal that names which MCP server was exercised AND whether it failed — the
+ * single-result `--output-format json` envelope drops the per-turn tool blocks
+ * entirely (the agent's prose `result` text describes a failure but never names the
+ * `mcp__server__tool` token), which is why the breaker accumulated nothing before.
+ */
+export interface McpToolEvent {
+  /** The full `mcp__<server>__<tool>` token the agent invoked. */
+  tool: string;
+  /** True when the paired tool_result block carried is_error (or an error body). */
+  isError: boolean;
+  /** The tool_result text, when present — fed to the auth/transport classifier. */
+  resultText: string;
+}
+
+interface StreamMessageBlock {
+  type?: string;
+  name?: string;
+  id?: string;
+  tool_use_id?: string;
+  is_error?: boolean;
+  content?: unknown;
+}
+
+interface StreamLine {
+  type?: string;
+  message?: { content?: StreamMessageBlock[] };
+}
+
+/** Flatten a tool_result `content` value (string | array of {type,text}) to text. */
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) =>
+        c && typeof c === 'object' && typeof (c as { text?: unknown }).text === 'string'
+          ? (c as { text: string }).text
+          : '',
+      )
+      .join('\n');
+  }
+  return '';
+}
+
+/**
+ * Extract every MCP tool invocation (and its result's error status) from a
+ * stream-json spawn's NDJSON stdout. Walks `assistant` messages for `tool_use`
+ * blocks whose `name` starts with `mcp__`, then pairs each with its `tool_result`
+ * (matched by `tool_use_id`) from the following `user` message to learn whether the
+ * call errored. Tools that never produced a result (spawn killed mid-call) are
+ * reported with `isError: true` — a tool that started but never returned is exactly
+ * the wedged-MCP case the breaker exists to suppress.
+ *
+ * Pure + tolerant: a non-NDJSON stdout (single-json, plain text) yields an empty
+ * list, so callers fall back to the regex scanner. Never throws.
+ */
+export function parseMcpToolEvents(stdout: string): McpToolEvent[] {
+  const trimmed = stdout.trim();
+  if (!trimmed.includes('\n') || !trimmed.includes('"tool_use"')) return [];
+  const calls = new Map<string, { tool: string }>();
+  const results = new Map<string, { isError: boolean; text: string }>();
+  for (const raw of trimmed.split('\n')) {
+    const line = raw.trim();
+    if (!line.startsWith('{')) continue;
+    let parsed: StreamLine;
+    try {
+      parsed = JSON.parse(line) as StreamLine;
+    } catch {
+      continue;
+    }
+    const blocks = parsed.message?.content;
+    if (!Array.isArray(blocks)) continue;
+    for (const b of blocks) {
+      if (b.type === 'tool_use' && typeof b.name === 'string' && b.name.startsWith('mcp__') && b.id) {
+        calls.set(b.id, { tool: b.name });
+      } else if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+        const text = toolResultText(b.content);
+        results.set(b.tool_use_id, { isError: b.is_error === true, text });
+      }
+    }
+  }
+  const events: McpToolEvent[] = [];
+  for (const [id, call] of calls) {
+    const res = results.get(id);
+    events.push({
+      tool: call.tool,
+      // No paired result → the tool call never returned (spawn died mid-call):
+      // treat as an error so a wedged MCP still counts toward its breaker.
+      isError: res ? res.isError : true,
+      resultText: res?.text ?? '',
+    });
+  }
+  return events;
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   emptyCostActuals,
   extractResultText,
   parseCostActuals,
+  parseMcpToolEvents,
   parseUsage,
 } from '../src/spawn-usage.js';
 
@@ -46,8 +47,83 @@ const ENVELOPE = JSON.stringify({
 });
 
 describe('costMeteringArgs', () => {
-  test('emits --output-format json', () => {
+  test('emits --output-format json by default', () => {
     assert.deepEqual(costMeteringArgs(), ['--output-format', 'json']);
+  });
+  test('emits stream-json + --verbose for the MCP-attribution format', () => {
+    assert.deepEqual(costMeteringArgs({ format: 'stream-json' }), ['--output-format', 'stream-json', '--verbose']);
+  });
+});
+
+// A faithful stream-json transcript: per-turn event lines + a final `result` line
+// that is byte-identical to the single-json envelope. Mirrors the live CLI shape.
+const STREAM_JSON = [
+  JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1' }),
+  JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'mcp__Sanity__whoami', input: {} }] },
+  }),
+  JSON.stringify({
+    type: 'user',
+    message: {
+      content: [{ type: 'tool_result', tool_use_id: 'tu_1', is_error: true, content: 'bearer token is invalid or expired: HTTP 401' }],
+    },
+  }),
+  JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'tu_2', name: 'mcp__Notion__search', input: {} }] },
+  }),
+  JSON.stringify({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: 'tu_2', is_error: false, content: [{ type: 'text', text: '3 results' }] }] },
+  }),
+  ENVELOPE,
+].join('\n');
+
+describe('extractResultText / parseUsage are robust to stream-json (superset)', () => {
+  test('extractResultText finds the result envelope on the LAST NDJSON line', () => {
+    assert.equal(extractResultText(STREAM_JSON), 'VERDICT: fixed — added rate limiting to the auth endpoint');
+  });
+  test('parseUsage reads cost/tokens from the stream-json result line', () => {
+    const u = parseUsage(STREAM_JSON);
+    assert.ok(u);
+    assert.equal(u!.estimatedCostUsd, 0.0147809);
+    assert.equal(u!.inputTokens, 456);
+  });
+});
+
+describe('parseMcpToolEvents — per-call MCP attribution from stream-json', () => {
+  test('pairs each tool_use with its tool_result error status', () => {
+    const events = parseMcpToolEvents(STREAM_JSON);
+    const byTool = new Map(events.map((e) => [e.tool, e]));
+    assert.equal(events.length, 2);
+    assert.equal(byTool.get('mcp__Sanity__whoami')?.isError, true);
+    assert.match(byTool.get('mcp__Sanity__whoami')!.resultText, /HTTP 401/);
+    assert.equal(byTool.get('mcp__Notion__search')?.isError, false);
+    assert.equal(byTool.get('mcp__Notion__search')?.resultText, '3 results');
+  });
+  test('ignores non-mcp tool_use blocks (Read/Grep/etc.)', () => {
+    const out = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r', name: 'Read', input: {} }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r', is_error: false, content: 'file body' }] } }),
+      ENVELOPE,
+    ].join('\n');
+    assert.deepEqual(parseMcpToolEvents(out), []);
+  });
+  test('a tool_use with no paired result is reported as an error (wedged call)', () => {
+    const out = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x', name: 'mcp__Slack__send', input: {} }] } }),
+    ].join('\n');
+    // The single-line input has no newline so it short-circuits to [] — guard the
+    // newline requirement by appending an (unrelated) line.
+    const multi = `${out}\n${JSON.stringify({ type: 'system' })}`;
+    const events = parseMcpToolEvents(multi);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.isError, true);
+  });
+  test('returns empty for single-json (no tool_use blocks) and plain text', () => {
+    assert.deepEqual(parseMcpToolEvents(ENVELOPE), []);
+    assert.deepEqual(parseMcpToolEvents('ASSISTANT COMPLETE\nplain output'), []);
   });
 });
 

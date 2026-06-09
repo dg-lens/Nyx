@@ -28,6 +28,10 @@ export type AuditEvent =
   | 'task.mcp.servers_withheld'
   | 'task.mcp.policy_decision'
   | 'task.mcp.auth_stale'
+  // Reactive auth-failure: a spawn's stream-json showed an MCP call 401/403; the
+  // failing server's credential is marked expired so the next tick's healAuth
+  // routes it to the operator-action path. See mcp-auth-healer.recordAuthFailure.
+  | 'task.mcp.auth_failure'
   | 'task.gate.completed'
   | 'task.committed'
   | 'task.merged'

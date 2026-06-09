@@ -7,6 +7,8 @@ import {
   _resetProbeCache,
   _setHealthDb,
   applyPolicy,
+  authFailedServers,
+  canonicalServerId,
   classifyMcpFailure,
   effectiveState,
   getHealth,
@@ -19,6 +21,7 @@ import {
   resolveWithheld,
   serversReferencedIn,
 } from '../src/mcp-resilience.js';
+import { parseMcpToolEvents } from '../src/spawn-usage.js';
 import { config } from '../src/config.js';
 
 let healthDb: DatabaseSync;
@@ -173,6 +176,156 @@ describe('serversReferencedIn', () => {
   test('returns empty when no mcp tool tokens are present', () => {
     assert.deepEqual(serversReferencedIn('plain output, no tools'), []);
   });
+
+  test('captures a UUID-prefixed connector server whole (hyphen-tolerant regex)', () => {
+    // The live claude.ai connector tool shape — the old regex stopped at the first
+    // hyphen and returned a garbage/empty key, so the connector never matched its
+    // own breaker row. The fixed regex keeps the UUID intact.
+    const out = 'mcp__87a5b867-5c2d-4ac4-9fbf-333d78862c36__slack_send_message failed';
+    assert.deepEqual(serversReferencedIn(out), ['mcp__87a5b867-5c2d-4ac4-9fbf-333d78862c36']);
+  });
+});
+
+describe('canonicalServerId (namespace alignment, defect 2)', () => {
+  test('a discovery entry is already canonical (no-op)', () => {
+    assert.equal(canonicalServerId('mcp__Slack'), 'mcp__Slack');
+  });
+  test('a full tool token reduces to its server key', () => {
+    assert.equal(canonicalServerId('mcp__Slack__send_message'), 'mcp__Slack');
+  });
+  test('a UUID-prefixed connector tool keeps the UUID in the server key', () => {
+    assert.equal(
+      canonicalServerId('mcp__87a5b867-5c2d-4ac4-9fbf-333d78862c36__slack_send_message'),
+      'mcp__87a5b867-5c2d-4ac4-9fbf-333d78862c36',
+    );
+  });
+  test('attribution and discovery land on the SAME key for a local server', () => {
+    // The withhold path canonicalizes its discovery entry; the attribution path
+    // canonicalizes the live tool token. For a local (display-name) server both
+    // yield the identical breaker key, so a tripped breaker actually suppresses.
+    assert.equal(
+      canonicalServerId('mcp__Sanity'),
+      canonicalServerId('mcp__Sanity__whoami'),
+    );
+  });
+  test('a non-mcp token is rejected', () => {
+    assert.equal(canonicalServerId('Read'), null);
+    assert.equal(canonicalServerId('mcp__'), null);
+  });
+});
+
+// A faithful stream-json fixture: an `assistant` tool_use followed by a `user`
+// tool_result, then the final `result` line. Matches the empirical CLI shape.
+function streamJson(
+  calls: Array<{ id: string; tool: string; isError?: boolean; resultText?: string }>,
+): string {
+  const lines: string[] = [];
+  lines.push(JSON.stringify({ type: 'system', subtype: 'init' }));
+  for (const c of calls) {
+    lines.push(
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: c.id, name: c.tool, input: {} }] } }),
+    );
+    lines.push(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: c.id, is_error: c.isError === true, content: c.resultText ?? 'ok' },
+          ],
+        },
+      }),
+    );
+  }
+  lines.push(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ASSISTANT COMPLETE' }));
+  return lines.join('\n');
+}
+
+describe('breaker accumulates from REAL stream-json tool events (the dead-wiring fix)', () => {
+  test('a per-call MCP failure opens that server\'s breaker after the threshold', () => {
+    // The whole point: a live spawn whose Slack call 503s, repeated, opens Slack's
+    // breaker — using ONLY the structured tool events, never prose.
+    const out = streamJson([{ id: 't1', tool: 'mcp__Slack__send_message', isError: true, resultText: 'HTTP 503 upstream' }]);
+    for (let i = 0; i < THRESHOLD; i++) recordSpawnOutcome(out, { exitCode: 0 });
+    assert.equal(isOpen('mcp__Slack'), true, 'Slack breaker must open from real tool-event signal');
+  });
+
+  test('a UUID-connector call failure opens the breaker on the UUID key', () => {
+    const server = 'mcp__87a5b867-5c2d-4ac4-9fbf-333d78862c36';
+    const out = streamJson([
+      { id: 'u1', tool: `${server}__slack_send_message`, isError: true, resultText: 'socket hang up' },
+    ]);
+    for (let i = 0; i < THRESHOLD; i++) recordSpawnOutcome(out, { exitCode: 0 });
+    assert.equal(isOpen(server), true);
+  });
+
+  test('a failed call and a successful call in one spawn only trip the failed server', () => {
+    const out = streamJson([
+      { id: 'a', tool: 'mcp__Slack__send_message', isError: true, resultText: 'HTTP 503' },
+      { id: 'b', tool: 'mcp__Notion__search', isError: false, resultText: 'ok' },
+    ]);
+    for (let i = 0; i < THRESHOLD; i++) recordSpawnOutcome(out, { exitCode: 0 });
+    assert.equal(isOpen('mcp__Slack'), true);
+    assert.equal(isOpen('mcp__Notion'), false, 'a successful Notion call must not trip Notion');
+  });
+
+  test('a generic (no-signature) tool error counts as a transport failure', () => {
+    const out = streamJson([{ id: 'g', tool: 'mcp__Drive__list', isError: true, resultText: 'Error: the tool failed' }]);
+    const kind = recordSpawnOutcome(out, { exitCode: 0 });
+    assert.equal(kind, 'transport', 'an error result with no auth signature still counts');
+    assert.equal(getHealth('mcp__Drive').consecutive_failures, 1);
+  });
+
+  test('a tool_use with no paired tool_result (spawn died mid-call) counts as a failure', () => {
+    // Only the assistant tool_use line, no user tool_result — the wedged-MCP case.
+    const out = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x', name: 'mcp__Slack__send_message', input: {} }] } }),
+      JSON.stringify({ type: 'result', subtype: 'error', is_error: true, result: '' }),
+    ].join('\n');
+    recordSpawnOutcome(out, { exitCode: 124 });
+    assert.equal(getHealth('mcp__Slack').consecutive_failures, 1);
+  });
+
+  test('a successful stream-json spawn closes a half-open breaker', () => {
+    const t0 = 1_000_000;
+    for (let i = 0; i < THRESHOLD; i++) recordFailure('mcp__Slack', 'transport', t0);
+    const out = streamJson([{ id: 'ok', tool: 'mcp__Slack__read_channel', isError: false }]);
+    const kind = recordSpawnOutcome(out, { exitCode: 0, now: t0 + COOLDOWN });
+    assert.equal(kind, 'none');
+    assert.equal(getHealth('mcp__Slack').state, 'closed');
+  });
+
+  test('caller-supplied events are preferred over re-parsing output', () => {
+    const events = parseMcpToolEvents(
+      streamJson([{ id: 'p', tool: 'mcp__Slack__send_message', isError: true, resultText: 'HTTP 401' }]),
+    );
+    const kind = recordSpawnOutcome('unrelated stripped result text', { exitCode: 0, events });
+    assert.equal(kind, 'auth');
+  });
+});
+
+describe('authFailedServers (reactive auth-healer routing, defect 3)', () => {
+  test('returns only the servers whose calls 401\'d, from stream events', () => {
+    const events = parseMcpToolEvents(
+      streamJson([
+        { id: 'a', tool: 'mcp__Calendar__list', isError: true, resultText: 'HTTP 401 Unauthorized' },
+        { id: 'b', tool: 'mcp__Slack__send', isError: true, resultText: 'HTTP 503' },
+        { id: 'c', tool: 'mcp__Notion__search', isError: false },
+      ]),
+    );
+    assert.deepEqual(authFailedServers(events, ''), ['mcp__Calendar']);
+  });
+
+  test('falls back to the regex path when no events are present', () => {
+    assert.deepEqual(
+      authFailedServers([], 'mcp__Calendar__list_events → HTTP 401'),
+      ['mcp__Calendar'],
+    );
+  });
+
+  test('returns empty when there is no auth failure', () => {
+    const events = parseMcpToolEvents(streamJson([{ id: 'a', tool: 'mcp__Slack__send', isError: true, resultText: 'HTTP 503' }]));
+    assert.deepEqual(authFailedServers(events, ''), []);
+  });
 });
 
 describe('recordSpawnOutcome', () => {
@@ -217,9 +370,27 @@ Sanity: https://mcp.sanity.io (HTTP) - ✗ Failed to connect
     const out = parseMcpHealth(sample);
     const byId = new Map(out.map((s) => [s.serverId, s]));
     assert.equal(byId.get('mcp__claude_ai_Slack')?.connected, true);
+    assert.equal(byId.get('mcp__claude_ai_Slack')?.withhold, false);
     assert.equal(byId.get('mcp__claude_ai_Google_Calendar')?.connected, false);
     assert.equal(byId.get('mcp__claude_ai_Google_Calendar')?.needsAuth, true);
+    // Defect 4: a needs-auth server is NOT withheld by default — the spawn tries
+    // and the reactive classifier catches a true 401.
+    assert.equal(byId.get('mcp__claude_ai_Google_Calendar')?.withhold, false);
     assert.equal(byId.get('mcp__Sanity')?.connected, false);
+    // A hard `✗ Failed to connect` IS withheld.
+    assert.equal(byId.get('mcp__Sanity')?.withhold, true);
+  });
+
+  test('withholds a needs-auth server when withholdNeedsAuth is enabled', () => {
+    const prior = config.settings.mcp.probe.withholdNeedsAuth;
+    config.settings.mcp.probe.withholdNeedsAuth = true;
+    try {
+      const sample = `claude.ai Google Calendar: https://calendarmcp.googleapis.com/mcp/v1 - ! Needs authentication\n`;
+      const out = parseMcpHealth(sample);
+      assert.equal(out[0]?.withhold, true);
+    } finally {
+      config.settings.mcp.probe.withholdNeedsAuth = prior;
+    }
   });
 });
 
@@ -232,14 +403,24 @@ describe('resolveWithheld', () => {
     assert.equal(r.withheld[0]?.reason, 'breaker-open');
   });
 
-  test('withholds a probe-disconnected server', () => {
+  test('withholds a probe-disconnected (hard-failed) server', () => {
     const probe = [
-      { serverId: 'mcp__Slack', connected: true, needsAuth: false },
-      { serverId: 'mcp__Notion', connected: false, needsAuth: false },
+      { serverId: 'mcp__Slack', connected: true, needsAuth: false, withhold: false },
+      { serverId: 'mcp__Notion', connected: false, needsAuth: false, withhold: true },
     ];
     const r = resolveWithheld(['mcp__Slack', 'mcp__Notion'], { probe });
     assert.deepEqual(r.allowed, ['mcp__Slack']);
     assert.equal(r.withheld[0]?.reason, 'probe-disconnected');
+  });
+
+  test('does NOT withhold a needs-auth server by default (let the spawn try)', () => {
+    // Defect 4: the prior design reversed collect-everything by withholding any
+    // needs-auth server. The reactive 401 classifier now handles a true failure, so
+    // a needs-auth server (withhold=false from parseMcpHealth's default) stays in.
+    const probe = [{ serverId: 'mcp__Calendar', connected: false, needsAuth: true, withhold: false }];
+    const r = resolveWithheld(['mcp__Calendar'], { probe });
+    assert.deepEqual(r.allowed, ['mcp__Calendar']);
+    assert.equal(r.withheld.length, 0);
   });
 
   test('a half-open server is NOT withheld (the spawn is its probe)', () => {

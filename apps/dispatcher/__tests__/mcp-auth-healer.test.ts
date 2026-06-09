@@ -8,6 +8,7 @@ import {
   classifyAuth,
   getCredential,
   healAuth,
+  recordAuthFailure,
   recordCredential,
 } from '../src/mcp-auth-healer.js';
 import { config } from '../src/config.js';
@@ -102,5 +103,33 @@ describe('healAuth', () => {
         .get() as { n: number }
     ).n;
     assert.equal(events, 0);
+  });
+});
+
+describe('recordAuthFailure — reactive credential population (the dead-no-op fix)', () => {
+  test('a recorded auth failure makes the server expired for the NEXT healAuth', () => {
+    const now = 1_000_000;
+    // Before: no credential → classifyAuth is `unknown` and healAuth flags nothing
+    // (this was the no-op: mcp_credentials was never populated).
+    assert.equal(classifyAuth('mcp__Calendar', now), 'unknown');
+    assert.equal(healAuth(['mcp__Calendar'], { now }).needsAuth.length, 0);
+
+    recordAuthFailure('mcp__Calendar', now);
+
+    // After: the next tick sees it expired and routes it to the operator path.
+    assert.equal(classifyAuth('mcp__Calendar', now + 1), 'expired');
+    const r = healAuth(['mcp__Calendar'], { now: now + 1 });
+    assert.equal(r.needsAuth.length, 1);
+    assert.equal(r.needsAuth[0]?.server, 'mcp__Calendar');
+    assert.equal(r.needsAuth[0]?.health, 'expired');
+  });
+
+  test('re-recording an auth failure is idempotent (upsert)', () => {
+    const now = 1_000_000;
+    recordAuthFailure('mcp__Calendar', now);
+    recordAuthFailure('mcp__Calendar', now + 5000);
+    const c = getCredential('mcp__Calendar');
+    assert.equal(c?.expires_at, now + 5000);
+    assert.equal(c?.last_refreshed_at, null);
   });
 });
