@@ -54,6 +54,8 @@ import { redactCredentialPatterns } from '../redaction.js';
 import { buildPrompt, invokeClaude, invokeWisdomCapture } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
+import { changedFilesWorkingTree } from '../deploy-detector.js';
+import { assessGateTrust } from '../gate-trust.js';
 import {
   finalizeAnalysis,
   finalizeAssistant,
@@ -545,6 +547,30 @@ async function attemptTask(
       audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'expects', failure_log: failureLog });
       await notify.taskFailed(task.id, 'expects', failureLog);
       return { status: 'failed-recoverable', failureLog };
+    }
+  }
+
+  // ── Gate-trust flag (finding G-C) ──
+  // The gate just ran INSIDE the worktree the agent controls. If the agent's
+  // diff touched gate-controlling test-infra (conftest.py, jest/vitest config,
+  // a CI workflow, the package.json scripts block, pyproject.toml/tsconfig.json/
+  // eslint config), the green verdict could have been steered rather than earned
+  // (the SWE-bench conftest hole). CAREFUL POLICY: flag for operator review — do
+  // NOT fail. A task whose purpose IS editing test/lint config is legitimate and
+  // must pass; we only surface the touched paths so the operator can confirm the
+  // gate wasn't gamed. This is self-contained: the audit event + dedicated DM
+  // fire here, at the detection point. Code tasks only — analysis/content/
+  // assistant tasks neither run a gate nor commit a code diff.
+  if (task.type === 'code') {
+    const changed = changedFilesWorkingTree(workingDir.path);
+    const trust = assessGateTrust(workingDir.path, changed);
+    if (trust.paths.length > 0) {
+      audit('task.gate.test_infra_touched', 'dispatcher', {
+        taskId: task.id,
+        paths: trust.paths,
+        categories: [...new Set(trust.hits.map((h) => h.category))],
+      });
+      await notify.taskGateTestInfraTouched(task.id, trust.paths);
     }
   }
 

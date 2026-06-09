@@ -233,6 +233,19 @@ export async function taskAmbiguityEscalated(taskId: string, report: string): Pr
   await deliver('action-required', `${head}\n\n${redactSecrets(report).slice(0, 1500)}${tail}`);
 }
 
+/**
+ * Finding G-C: the gate passed, but the agent's diff touched gate-controlling
+ * test-infra (conftest.py, jest/vitest config, CI workflow, package.json
+ * scripts). Non-blocking — the task still completed. The operator should
+ * eyeball the flagged paths to confirm the green verdict was earned, not steered.
+ */
+export async function taskGateTestInfraTouched(taskId: string, paths: string[]): Promise<void> {
+  const list = paths.slice(0, 20).map((p) => `  • ${p}`).join('\n');
+  await dm(
+    `🧪 *${taskId}* passed the gate, but its diff touched test-infra files — review for gate-trust:\n${list}`,
+  );
+}
+
 export async function prCreated(taskId: string, prUrl: string): Promise<void> {
   await deliver('delivery', `📬 ${taskId} → PR opened: ${prUrl}`);
 }
