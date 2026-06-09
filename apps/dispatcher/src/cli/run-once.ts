@@ -18,6 +18,7 @@ import {
   tasksFiredInWindow,
   verifyChainPeriodic,
 } from '../audit.js';
+import { runEvalLoop } from '../eval/online-eval-runner.js';
 import { runAudit, MAX_AUDIT_PASSES } from '../audit-runner.js';
 import type { FlightPlan } from '../composer/types.js';
 import {
@@ -1296,6 +1297,18 @@ async function main(): Promise<void> {
   // cooldown) the tick is deliberately not idle — no idle/stale alert fires.
 
   await maybeUpdateCheck();
+
+  // Trace→eval→lesson loop FOUNDATION (G-A). Runs at the TAIL of the tick, off
+  // the hot path: sample a % of clean terminal runs + 100% of flagged ones, score
+  // them with a cheap judge into the off-chain eval_scores table, and DM on a 7d
+  // quality regression. Cadence-gated internally; a no-op unless evaluation is
+  // enabled. Wrapped so a judge/DB hiccup in the eval layer can never fail a tick
+  // that already did its real work.
+  try {
+    await runEvalLoop();
+  } catch (err) {
+    console.error('[nyx] eval loop threw (non-fatal):', (err as Error).message);
+  }
 
   await emitHook('tick.after', { slot: slotOf(), pid: process.pid });
   lock.release();
