@@ -76,19 +76,34 @@ function toGate(r: Record<string, unknown>): Gate {
   };
 }
 
-/** Origin pushes a gate brief. Upsert by id so a re-push (retry) is idempotent
- * and never clobbers a decision already made. */
-export async function pushGate(pool: Pool, g: GateInput, origin: string): Promise<string> {
+/** Origin pushes a gate brief. Upsert by (origin, id) so a re-push (retry) is
+ * idempotent and never clobbers a decision already made — AND so one gate_push
+ * platform can never absorb/hijack another origin's gate id (M9: cross-origin
+ * squat). `origin` is the AUTHENTICATED platform identity (server passes
+ * platform.id, not a client param), so a foreign-origin row keyed on the same
+ * id is rejected rather than silently retargeted. */
+export async function pushGate(
+  pool: Pool, g: GateInput, origin: string,
+): Promise<{ ok: true; id: string } | { ok: false; error: string; code: number }> {
   const options = g.options && g.options.length ? g.options : defaultOptions(g.gate_kind);
+  // A pre-existing row under this id owned by a DIFFERENT origin must never be
+  // touched. The ON CONFLICT WHERE below already refuses to mutate it, but we
+  // return an explicit error instead of a silent no-op so the caller learns the
+  // id is squatted rather than believing its push landed.
+  const existing = await pool.query(`SELECT origin FROM gates WHERE id = $1`, [g.id]);
+  const owner = existing.rows[0] ? (existing.rows[0] as { origin: string }).origin : null;
+  if (owner !== null && owner !== origin) {
+    return { ok: false, error: 'gate id belongs to another origin', code: 409 };
+  }
   await pool.query(
     `INSERT INTO gates (id, origin, reviewer, run_id, task_id, repo, gate_kind, summary, options, status)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open')
      ON CONFLICT (id) DO UPDATE SET
        summary = EXCLUDED.summary, options = EXCLUDED.options
-       WHERE gates.status = 'open'`,
+       WHERE gates.status = 'open' AND gates.origin = EXCLUDED.origin`,
     [g.id, origin, g.reviewer, g.run_id, g.task_id ?? '', g.repo ?? null, g.gate_kind, g.summary ?? '', options],
   );
-  return g.id;
+  return { ok: true, id: g.id };
 }
 
 /** Reviewer inbox: open gates assigned to this reviewer. */
