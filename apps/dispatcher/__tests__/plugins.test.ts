@@ -1,11 +1,12 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, test, beforeEach } from 'node:test';
 
 import { defineHook, onHook, emitHook, _resetHooks, _setHookErrorHandler } from '../src/plugins/hooks.js';
-import { loadPlugins } from '../src/plugins/loader.js';
+import { loadPlugins, CORE_VERSION, satisfiesCoreVersion } from '../src/plugins/loader.js';
 import { makePluginContext } from '../src/plugins/context.js';
 
 beforeEach(() => {
@@ -133,5 +134,36 @@ describe('loadPlugins', () => {
       skipped: () => {},
     });
     assert.deepEqual(result, []);
+  });
+});
+
+describe('CORE_VERSION <-> stock-plugin coreVersion gate (P0 regression)', () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+  test('CORE_VERSION tracks the root package.json version (drift guard)', () => {
+    const rootPkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as { version: string };
+    assert.equal(
+      CORE_VERSION,
+      rootPkg.version,
+      `CORE_VERSION (${CORE_VERSION}) must equal root package.json (${rootPkg.version}); a stale value silently skips every stock plugin`,
+    );
+  });
+
+  test('every stock plugin manifest is satisfied by CORE_VERSION (zero version-skips)', () => {
+    const pluginsDir = resolve(repoRoot, 'plugins');
+    assert.ok(existsSync(pluginsDir), 'stock plugins dir exists');
+    const stock = readdirSync(pluginsDir).filter((d) => existsSync(resolve(pluginsDir, d, 'nyx-plugin.json')));
+    assert.ok(stock.length >= 3, `expected stock plugins (memory, memory-surface, slack); found: ${stock.join(', ')}`);
+    for (const d of stock) {
+      const m = JSON.parse(readFileSync(resolve(pluginsDir, d, 'nyx-plugin.json'), 'utf8')) as {
+        name: string;
+        coreVersion?: string;
+      };
+      if (!m.coreVersion) continue;
+      assert.ok(
+        satisfiesCoreVersion(m.coreVersion, CORE_VERSION),
+        `stock plugin "${m.name}" declares coreVersion ${m.coreVersion}, which CORE_VERSION ${CORE_VERSION} does NOT satisfy -> it would be skipped (memory injection / Slack dead)`,
+      );
+    }
   });
 });

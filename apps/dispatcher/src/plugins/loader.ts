@@ -10,8 +10,17 @@ import type { NyxPlugin, PluginContext, PluginManifest } from './sdk.js';
 import { SDK_VERSION } from './sdk.js';
 import { config } from '../config.js';
 
-/** Core's running version, compared against a plugin manifest's `coreVersion` range. */
-export const CORE_VERSION = '0.3.0';
+/**
+ * Core's running version, compared against a plugin manifest's `coreVersion`
+ * range. MUST track the root package.json version (the shipping Nyx version per
+ * CHANGELOG). A stale value here silently skips EVERY stock plugin — `memory`
+ * (the `## MEMORY` injection), `memory-surface`, and `slack` all declare
+ * `coreVersion: ">=1.2.0"`, so a `CORE_VERSION` below 1.2.0 disables memory
+ * injection + Slack stack-wide with only a `plugin.skipped` audit line. The
+ * regression test in plugins.test.ts pins this to the root version AND asserts
+ * every stock manifest is satisfied, so it cannot drift out of range again.
+ */
+export const CORE_VERSION = '1.2.1';
 
 function parseSemver(v: string): [number, number, number] | null {
   const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v.trim());
@@ -33,7 +42,7 @@ function cmpSemver(a: [number, number, number], b: [number, number, number]): nu
  * (`>=`, `>`, `<=`, `<`, `=`) plus bare versions and `*`. A range we cannot
  * parse returns `true` (fail-open) so an unknown format never blocks a load.
  */
-function satisfiesCoreVersion(range: string, core: string): boolean {
+export function satisfiesCoreVersion(range: string, core: string): boolean {
   const trimmed = range.trim();
   if (trimmed === '' || trimmed === '*') return true;
   const coreV = parseSemver(core);

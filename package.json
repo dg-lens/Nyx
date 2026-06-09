@@ -1,6 +1,6 @@
 {
   "name": "nyx",
-  "version": "0.3.0",
+  "version": "1.2.1",
   "private": true,
   "description": "Nyx — a drop-in autonomous agent-management framework. Dispatch decomposes, the dispatcher executes.",
   "packageManager": "pnpm@11.5.2",

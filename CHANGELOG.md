@@ -2,6 +2,11 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.2.1 — 2026-06-09
+
+### Fixed
+- **Plugin loader version gate (P0).** `CORE_VERSION` + the `package.json` versions were stale at `0.3.0` while every stock plugin manifest (`memory`, `memory-surface`, `slack`) declares `coreVersion: ">=1.2.0"` — so the loader silently skipped all three on **every** install, disabling `## MEMORY` injection, the memory-surface write/query plane, and Slack gate notifications stack-wide (only a `plugin.skipped` audit line surfaced it). Aligned the core version to the shipping `1.2.x` line and added a regression test that pins `CORE_VERSION` to the root `package.json` version and asserts every stock manifest is satisfied (zero version-skips), so it can't drift out of range again.
+
 ## v1.2.0 — 2026-06-04
 
 ### Plugin system
