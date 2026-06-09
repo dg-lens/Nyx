@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { basename, resolve } from 'node:path';
 
 import { config } from './config.js';
+import { redactCredentialPatterns } from './redaction.js';
 
 export interface WorkingDir {
   kind: 'worktree' | 'clone' | 'output';
@@ -17,12 +18,14 @@ export interface WorkingDir {
  * for a clone whose URL embeds `x-access-token:<TOKEN>@github.com`, the token is
  * in that message verbatim. That message flows into the hash-chained audit DB
  * and Slack, so it MUST be scrubbed at the throw site. Redacts the configured
- * GitHub token + the `x-access-token:…@` URL credential form generically.
+ * GitHub token + the `x-access-token:…@` URL credential form generically, then
+ * applies the shared credential-shape backstop (github_pat_, ghp_, sk-, …) for
+ * any other token shape that surfaced in the error text.
  */
 export function redactSecrets(s: string): string {
   let out = s.replace(/(x-access-token:)[^@/\s]+(@)/g, '$1***$2');
   if (config.githubToken) out = out.split(config.githubToken).join('***');
-  return out;
+  return redactCredentialPatterns(out);
 }
 
 // Hard cap on any single git/gh invocation. A stalled fetch/push/PR-create

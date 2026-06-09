@@ -9,6 +9,7 @@ import { config } from './config.js';
 import { emitHook } from './plugins/hooks.js';
 import { listMcpServers } from './mcp-discovery.js';
 import { buildRequiredContextBlock, parseReadingRefs, resolveReadingRefs } from './reading-resolver.js';
+import { redactCredentialPatterns, redactValues } from './redaction.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
 import { costMeteringArgs, extractResultText, parseUsage, type SpawnUsage } from './spawn-usage.js';
 import { fetchProjectSecretValues } from './secrets/bitwarden-client.js';
@@ -347,12 +348,32 @@ export async function invokeWisdomCapture(task: ParsedTask, cwd: string): Promis
     label: 'nyx-wisdom',
     silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
   }, WISDOM_TIMEOUT_MS);
-  // Wisdom output is read from NYX_WISDOM.md, not stdout, so no sentinel-reconcile
-  // is needed here — stdout is left as the runner returns it.
+  // Wisdom output is read from NYX_WISDOM.md, not stdout, so no cost-reconcile is
+  // needed; still scrub secret values from stdout/stderr before the result leaves.
+  return scrubResult(result, extraEnv);
+}
+
+/**
+ * The injected per-task Bitwarden secret VALUES (`extraEnv`) live only in the
+ * child's spawn env, never in the dispatcher's `process.env`, so the downstream
+ * redaction layers keyed on `process.env` cannot see them. If any tool the agent
+ * ran echoed one (a stack trace, `set -x`, an HTTP error printing a connection
+ * string), it would otherwise reach the IMMUTABLE hash-chained audit DB and Slack
+ * verbatim. Redact here — at the one site where the resolved values are known —
+ * before the result leaves task-runner. The generic credential-shape backstop
+ * also catches token shapes (github_pat_, ghp_, sk-, xox*-, AKIA…) that are not
+ * the dispatcher's own configured secrets.
+ */
+function scrubResult(
+  result: { exitCode: number; stdout: string; stderr: string; durationMs: number },
+  extraEnv: Record<string, string>,
+): ClaudeResult {
+  const values = Object.values(extraEnv);
+  const scrub = (s: string): string => redactCredentialPatterns(redactValues(s, values));
   return {
     exitCode: result.exitCode,
-    stdout: result.stdout,
-    stderr: result.stderr,
+    stdout: scrub(result.stdout),
+    stderr: scrub(result.stderr),
     durationMs: result.durationMs,
   };
 }
@@ -388,17 +409,15 @@ export async function invokeClaude(
     label: 'nyx',
     silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
   }, config.claudeTaskTimeoutMs);
-  // Only reconcile when metering is on AND the spawn exited cleanly. A non-zero
-  // exit (crash, timeout, stall) may leave partial/non-JSON stdout the redaction
-  // path wants verbatim; keep it raw and report no usage in that case.
+  // Reconcile the metered JSON envelope (extract the agent's result text + usage)
+  // when metering is on and the spawn exited cleanly, THEN scrub secret values from
+  // the result before it leaves task-runner. A non-zero exit keeps stdout raw.
   const metered = config.costMeteringEnabled && result.exitCode === 0
     ? reconcileMeteredOutput(result.stdout)
     : { stdout: result.stdout, usage: null };
-  return {
-    exitCode: result.exitCode,
-    stdout: metered.stdout,
-    stderr: result.stderr,
-    durationMs: result.durationMs,
-    usage: metered.usage,
-  };
+  const scrubbed = scrubResult(
+    { exitCode: result.exitCode, stdout: metered.stdout, stderr: result.stderr, durationMs: result.durationMs },
+    extraEnv,
+  );
+  return { ...scrubbed, usage: metered.usage };
 }

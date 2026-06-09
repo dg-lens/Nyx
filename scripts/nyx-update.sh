@@ -50,6 +50,14 @@ fi
 
 cd "$NYX_REPO_ROOT"
 echo "Updating Nyx core — $NYX_REPO_ROOT"
+if [ -n "$(git status --porcelain)" ]; then
+  echo "Refusing to update: $NYX_REPO_ROOT has uncommitted or untracked changes." >&2
+  echo "This update runs 'git reset --hard origin/main' + 'git clean -fd', which would" >&2
+  echo "destroy them irrecoverably. Commit or stash your work first:" >&2
+  echo "  git -C \"$NYX_REPO_ROOT\" stash push --include-untracked" >&2
+  echo "then re-run 'nyx update'." >&2
+  exit 1
+fi
 git fetch origin
 git reset --hard origin/main
 git clean -fd

@@ -185,6 +185,16 @@ function open(): DatabaseSync {
       last_hash TEXT    NOT NULL
     );
   `);
+  // last_full_at records the wall-clock of the most recent full fromGenesis
+  // walk, so the per-tick path can force one daily (M11 — a tampered checkpoint
+  // can't hide a sub-checkpoint chain break from a periodic full re-hash).
+  // Idempotent: ALTER throws if the column already exists, which is the steady
+  // state, so swallow it.
+  try {
+    db.exec(`ALTER TABLE system_audit_chainpoint ADD COLUMN last_full_at TEXT`);
+  } catch {
+    /* column already present */
+  }
   insertStmt = db.prepare(
     `INSERT INTO system_audit (at, event, actor, payload, row_hash, prev_hash) VALUES (?, ?, ?, ?, ?, ?)`
   );
@@ -398,9 +408,10 @@ export interface ChainVerification {
  *
  * Pass `fromGenesis: true` to force a full walk from the genesis hash and ignore
  * the checkpoint (the `nyx audit --chain` integrity command). A full walk that
- * passes also refreshes the checkpoint.
+ * passes also refreshes the checkpoint and stamps `last_full_at` (default: real
+ * wall-clock; `now` overrides it so tests can drive the periodic schedule).
  */
-export function verifyChain(opts: { fromGenesis?: boolean } = {}): ChainVerification {
+export function verifyChain(opts: { fromGenesis?: boolean; now?: number } = {}): ChainVerification {
   const d = open();
 
   let expectedPrev = GENESIS_HASH;
@@ -439,7 +450,15 @@ export function verifyChain(opts: { fromGenesis?: boolean } = {}): ChainVerifica
     lastHash = row.row_hash;
   }
 
-  if (lastId > startAfterId) {
+  // A full fromGenesis walk that passes re-establishes trust in every row, so
+  // it stamps last_full_at even when no new rows were appended (lastId may equal
+  // startAfterId on an idle chain). The incremental path only advances on growth.
+  if (opts.fromGenesis) {
+    d.prepare(
+      `INSERT INTO system_audit_chainpoint (id, last_id, last_hash, last_full_at) VALUES (0, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET last_id = excluded.last_id, last_hash = excluded.last_hash, last_full_at = excluded.last_full_at`,
+    ).run(lastId, lastHash, new Date(opts.now ?? Date.now()).toISOString());
+  } else if (lastId > startAfterId) {
     d.prepare(
       `INSERT INTO system_audit_chainpoint (id, last_id, last_hash) VALUES (0, ?, ?)
        ON CONFLICT(id) DO UPDATE SET last_id = excluded.last_id, last_hash = excluded.last_hash`,
@@ -447,4 +466,33 @@ export function verifyChain(opts: { fromGenesis?: boolean } = {}): ChainVerifica
   }
 
   return { ok: true, totalRows };
+}
+
+const FULL_VERIFY_INTERVAL_MS = 24 * 60 * 60_000;
+
+/**
+ * Per-tick chain verification with a periodic full re-hash (M11). The default
+ * incremental `verifyChain()` trusts the `system_audit_chainpoint` row as its
+ * prev-hash anchor and only re-hashes rows newer than it — so anyone who can
+ * write nyx.db could alter a row at id ≤ last_id AND bump the checkpoint past
+ * it, and the routine check would pass while hiding the tamper. Forcing a full
+ * fromGenesis walk at least once per `FULL_VERIFY_INTERVAL_MS` re-hashes the
+ * entire chain, so a sub-checkpoint tamper cannot stay hidden longer than that
+ * window. `forceFull` overrides the interval (used by tests / a manual trigger).
+ *
+ * The interval read is the chainpoint's `last_full_at`; a missing/never-set
+ * value (fresh DB) forces an immediate full walk. The returned `wasFull` lets
+ * the caller record which mode ran in the audit payload.
+ */
+export function verifyChainPeriodic(opts: { forceFull?: boolean; now?: number } = {}): ChainVerification & { wasFull: boolean } {
+  const d = open();
+  const now = opts.now ?? Date.now();
+  const cp = d
+    .prepare(`SELECT last_full_at FROM system_audit_chainpoint WHERE id = 0`)
+    .get() as { last_full_at: string | null } | undefined;
+  const lastFullMs = cp?.last_full_at ? Date.parse(cp.last_full_at) : Number.NaN;
+  const due = Number.isNaN(lastFullMs) || now - lastFullMs >= FULL_VERIFY_INTERVAL_MS;
+  const fromGenesis = opts.forceFull === true || due;
+  const result = verifyChain({ fromGenesis, now });
+  return { ...result, wasFull: fromGenesis };
 }

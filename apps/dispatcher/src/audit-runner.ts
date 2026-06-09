@@ -30,6 +30,7 @@ import {
 } from './audit-classifier.js';
 import { config } from './config.js';
 import { detectMainBranch } from './git-ops.js';
+import { redactCredentialPatterns, redactValues } from './redaction.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
 import { buildSpawnInvocation } from './task-runner.js';
 import type { ParsedTask } from './types.js';
@@ -392,7 +393,15 @@ async function runDiagnosticAgent(ctx: AuditContext): Promise<AuditOutcome> {
   // routes around the bws-shell-wrapping pitfall that v0.6.8 fixed.
   const { command, args, extraEnv } = buildSpawnInvocation(ctx.task, claudeArgs);
 
-  const result = await spawnDiagnostic(command, args, ctx.workingDir, extraEnv);
+  const raw = await spawnDiagnostic(command, args, ctx.workingDir, extraEnv);
+
+  // M10: the diagnostic spawn receives the same per-task Bitwarden secret VALUES
+  // (extraEnv) as the primary spawn, but unlike task-runner::scrubResult its
+  // output was reaching the IMMUTABLE audit DB (operator_report on halt) and
+  // Slack VERBATIM. Scrub here — at the one site where the resolved values are
+  // known — before stdout/stderr feed parseDiagnosticVerdict or any
+  // operatorReport.
+  const result = scrubDiagnosticResult(raw, extraEnv);
 
   // Parse the diagnostic agent's structured response. Convention:
   //   - Exit 0  + stdout contains "VERDICT: fixed"     → autofix_applied
@@ -507,6 +516,23 @@ function parseDiagnosticVerdict(stdout: string):
     if (haltMatch) return { kind: 'halt', note: (haltMatch[1] ?? '').trim() };
   }
   return { kind: 'unparseable' };
+}
+
+/**
+ * M10: scrub the diagnostic spawn's captured output before any of it can reach
+ * the IMMUTABLE audit DB (operator_report on halt) or Slack. The per-task
+ * Bitwarden secret VALUES live only in `extraEnv` (never in this process's
+ * env), so the process.env-keyed redaction layers downstream cannot see them —
+ * this is the one site where the resolved values are known. Mirrors
+ * task-runner::scrubResult: exact-value pass over extraEnv, then the generic
+ * credential-shape backstop for token shapes not in extraEnv.
+ */
+export function scrubDiagnosticResult<
+  T extends { stdout: string; stderr: string },
+>(result: T, extraEnv: Record<string, string>): T {
+  const values = Object.values(extraEnv);
+  const scrub = (s: string): string => redactCredentialPatterns(redactValues(s, values));
+  return { ...result, stdout: scrub(result.stdout), stderr: scrub(result.stderr) };
 }
 
 function spawnDiagnostic(

@@ -3,6 +3,7 @@ import { WebClient } from '@slack/web-api';
 import { config } from './config.js';
 import { emitHook } from './plugins/hooks.js';
 import { CATEGORY_PRIORITY } from './notification-policy.js';
+import { redactCredentialPatterns } from './redaction.js';
 import type { NotificationCategory } from './settings.js';
 
 let cached: WebClient | null = null;
@@ -31,8 +32,10 @@ const SECRET_ENV_PREFIXES = [
  * passes: (1) exact-match the live values of every injected secret env var, so a
  * subprocess that echoes its env (set -x, a stack trace, a tool dumping
  * process.env) can't leak them; (2) pattern-match well-known secret token
- * shapes (sk-ant-…, ghp_…, xoxb-…) as a backstop for secrets not in this
- * process's env. Always call this before slicing/DM/audit of subprocess output.
+ * shapes (sk-ant-…, github_pat_…, ghp_…, xoxb-…, AKIA…) via the shared
+ * `redactCredentialPatterns` backstop for secrets not in this process's env —
+ * including GitHub's default fine-grained `github_pat_` PATs a subprocess may
+ * echo. Always call this before slicing/DM/audit of subprocess output.
  */
 export function redactSecrets(text: string): string {
   if (!text) return text;
@@ -45,11 +48,7 @@ export function redactSecrets(text: string): string {
     if (!isSecret) continue;
     out = out.split(value).join('[REDACTED]');
   }
-  out = out
-    .replace(/sk-ant-[A-Za-z0-9_-]{10,}/g, '[REDACTED]')
-    .replace(/\bgh[posru]_[A-Za-z0-9]{20,}/g, '[REDACTED]')
-    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, '[REDACTED]');
-  return out;
+  return redactCredentialPatterns(out);
 }
 
 /**
