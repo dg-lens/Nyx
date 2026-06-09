@@ -57,6 +57,14 @@ export const config = {
   contextDir: resolve(DATA_DIR, 'context'),
 
   lockfilePath: '/tmp/nyx-dispatch.lock',
+  // GIT-class single-flight mutex (code + pipeline). Held for the lifetime of a
+  // GIT task's spawn+finalize so a `main()` invocation never starts a SECOND GIT
+  // task (e.g. a resumed pipeline phase + a queued code task in one tick). NOTE:
+  // it does NOT by itself yield cross-tick GIT/ISO overlap — the shell lock in
+  // nyx-dispatch.sh serializes whole tick processes, so a later launchd tick
+  // can't start while a long GIT task runs. See git-task-lock.ts for the full
+  // scope. Distinct from lockfilePath (which serializes tick processes).
+  gitTaskLockPath: '/tmp/nyx-git-task.lock',
   finalizeSentinelPath: '/tmp/nyx-finalize-in-progress.json',
   cloneRootPrefix: '/tmp/nyx-clone-',
 
@@ -136,6 +144,23 @@ export const config = {
   // is essential (see moc-nyx-pipeline (Arachne)). Each coder runs
   // in its own git worktree off the integration base.
   pipelineCoderConcurrency: int('PIPELINE_CODER_CONCURRENCY', SETTINGS.pipeline.concurrentCap),
+  // Type-aware concurrency (Track 3). maxConcurrentIso bounds the ISO pool
+  // (analysis/assistant/content) one tick fills and drains; maxConcurrentClaude
+  // is the aggregate live-spawn ceiling across BOTH classes (the one GIT task's
+  // spawn + a pipeline's internal coders + the ISO pool) so the shared Max-plan
+  // OAuth quota is never blown. effectiveIsoCap = min(maxConcurrentIso,
+  // maxConcurrentClaude - liveOwnClaudeCount()). Conservative defaults; raise as
+  // dispatch.rate_limited telemetry shows headroom.
+  maxConcurrentIso: int('MAX_CONCURRENT_ISO', SETTINGS.dispatcher.maxConcurrentIso),
+  maxConcurrentClaude: int('MAX_CONCURRENT_CLAUDE', SETTINGS.dispatcher.maxConcurrentClaude),
+  // Cooldown applied after a 429/rate_limit/overloaded signal: NEW spawns are
+  // suppressed (tasks stay queued, NOT failed) until the window passes. Used as
+  // the fallback when the provider sends no Retry-After header.
+  rateLimitCooldownMs: int('RATE_LIMIT_COOLDOWN_MS', 5 * 60_000),
+  // Per-launch jitter when filling the ISO pool so N spawns don't hit the API in
+  // the same instant and trip a burst limit. Each launch sleeps a random value
+  // in [0, isoLaunchJitterMs).
+  isoLaunchJitterMs: int('ISO_LAUNCH_JITTER_MS', 500),
   dispatchIntervalMinutes: int('DISPATCH_INTERVAL_MINUTES', 15),
   logRetentionDays: int('LOG_RETENTION_DAYS', 7),
   gateStageTimeoutMs: int('GATE_STAGE_TIMEOUT_MS', 5 * 60_000),

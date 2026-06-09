@@ -78,11 +78,15 @@ export interface GateResult {
 }
 
 export interface RunOutcome {
+  // 'rate-limited' is NOT a failure: the spawn 429'd/overloaded, so the task is
+  // left queued ([ ], no [FAILED]) and a global cooldown opens. The tick must
+  // skip its completion/failure bookkeeping for this status.
   taskId: string;
-  status: 'completed' | 'failed' | 'skipped' | 'abandoned';
+  status: 'completed' | 'failed' | 'skipped' | 'abandoned' | 'rate-limited';
   durationMs: number;
   prUrl?: string;
   outputPath?: string;
   failureLog?: string;
   testsPassed?: number;
+  retryAfterMs?: number;
 }

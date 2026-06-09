@@ -19,6 +19,7 @@ logs/
 outputs/
 worktrees/
 context/
+run/
 
 # Per-operator Claude Code session config — never version-controlled
 .claude/

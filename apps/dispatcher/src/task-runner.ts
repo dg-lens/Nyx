@@ -12,6 +12,7 @@ import { buildRequiredContextBlock, parseReadingRefs, resolveReadingRefs } from 
 import { redactCredentialPatterns, redactValues } from './redaction.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
 import { costMeteringArgs, extractResultText, parseUsage, type SpawnUsage } from './spawn-usage.js';
+import { classOf } from './concurrency.js';
 import { fetchProjectSecretValues } from './secrets/bitwarden-client.js';
 import { resolveProject } from './secrets/project-registry.js';
 import type { ParsedTask } from './types.js';
@@ -24,6 +25,10 @@ export interface ClaudeResult {
   durationMs: number;
   /** Locally-estimated cost/tokens from the JSON envelope; null when metering is off or the envelope was unparseable. */
   usage?: SpawnUsage | null;
+  // Set when the spawn's output carried a rate-limit/overload signal. The
+  // dispatcher leaves the task queued + opens a cooldown rather than failing it.
+  rateLimited?: boolean;
+  retryAfterMs?: number;
 }
 
 /**
@@ -347,6 +352,9 @@ export async function invokeWisdomCapture(task: ParsedTask, cwd: string): Promis
     captureStdout: true,
     label: 'nyx-wisdom',
     silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
+    // Wisdom capture only runs for code (GIT-class) tasks, inside the GIT task's
+    // own lifetime — count it as GIT so it's attributed to the right budget.
+    claudeMeta: { class: 'git', taskId: task.id },
   }, WISDOM_TIMEOUT_MS);
   // Wisdom output is read from NYX_WISDOM.md, not stdout, so no cost-reconcile is
   // needed; still scrub secret values from stdout/stderr before the result leaves.
@@ -365,7 +373,7 @@ export async function invokeWisdomCapture(task: ParsedTask, cwd: string): Promis
  * the dispatcher's own configured secrets.
  */
 function scrubResult(
-  result: { exitCode: number; stdout: string; stderr: string; durationMs: number },
+  result: { exitCode: number; stdout: string; stderr: string; durationMs: number; rateLimited?: boolean; retryAfterMs?: number },
   extraEnv: Record<string, string>,
 ): ClaudeResult {
   const values = Object.values(extraEnv);
@@ -375,6 +383,8 @@ function scrubResult(
     stdout: scrub(result.stdout),
     stderr: scrub(result.stderr),
     durationMs: result.durationMs,
+    rateLimited: result.rateLimited,
+    ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
   };
 }
 
@@ -408,15 +418,25 @@ export async function invokeClaude(
     captureStdout: true,
     label: 'nyx',
     silenceTimeoutMs: config.claudeSilenceTimeoutMs || undefined,
+    claudeMeta: { class: classOf(task.type), taskId: task.id },
   }, config.claudeTaskTimeoutMs);
   // Reconcile the metered JSON envelope (extract the agent's result text + usage)
   // when metering is on and the spawn exited cleanly, THEN scrub secret values from
   // the result before it leaves task-runner. A non-zero exit keeps stdout raw.
+  // scrubResult also threads through the rate-limit/overload signal so the
+  // dispatcher can leave the task queued + open a cooldown rather than fail it.
   const metered = config.costMeteringEnabled && result.exitCode === 0
     ? reconcileMeteredOutput(result.stdout)
     : { stdout: result.stdout, usage: null };
   const scrubbed = scrubResult(
-    { exitCode: result.exitCode, stdout: metered.stdout, stderr: result.stderr, durationMs: result.durationMs },
+    {
+      exitCode: result.exitCode,
+      stdout: metered.stdout,
+      stderr: result.stderr,
+      durationMs: result.durationMs,
+      rateLimited: result.rateLimited,
+      ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
+    },
     extraEnv,
   );
   return { ...scrubbed, usage: metered.usage };

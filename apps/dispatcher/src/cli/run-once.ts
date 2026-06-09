@@ -31,6 +31,8 @@ import { isAwaiting, isTerminal, type DecisionKind, type PipelineStatus } from '
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
 import { config } from '../config.js';
 import { liveOwnClaudeCount } from '../claude-registry.js';
+import { liveGitTaskExists, removeGitLock, writeGitLock } from '../git-task-lock.js';
+import { runTwoClassTick } from '../tick-scheduler.js';
 import { emitHook, initPlugins } from '../plugins/index.js';
 import { drainPendingActions, insertUnderActiveTasks } from '../control/actions.js';
 import { listPending, markApplied, markFailed } from '../control/db.js';
@@ -277,6 +279,16 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
     if (result.status === 'completed' || result.status === 'failed-final') {
       return result.outcome;
     }
+    if (result.status === 'rate-limited') {
+      // Capacity, not a defect: bubble up so the tick leaves the task queued and
+      // opens the cooldown. Do NOT enter the audit pipeline.
+      return {
+        taskId: task.id,
+        status: 'rate-limited',
+        durationMs: Date.now() - startedAt,
+        ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
+      };
+    }
     if (result.status === 'ambiguity-escalated') {
       audit('task.ambiguity.escalated', 'dispatcher', { taskId: task.id, ambiguity_file: AMBIGUITY_FILE });
       void notify.taskAmbiguityEscalated(task.id, result.report);
@@ -354,7 +366,8 @@ type AttemptResult =
   | { status: 'completed'; outcome: RunOutcome }
   | { status: 'failed-final'; outcome: RunOutcome }
   | { status: 'failed-recoverable'; failureLog: string }
-  | { status: 'ambiguity-escalated'; report: string };
+  | { status: 'ambiguity-escalated'; report: string }
+  | { status: 'rate-limited'; retryAfterMs?: number };
 
 /**
  * One attempt at the work: invoke Claude, run gate, finalize. Emits the usual
@@ -411,6 +424,22 @@ async function attemptTask(
       total_tokens: u.totalTokens,
       num_turns: u.numTurns,
     });
+  }
+
+  // Rate-limit/overload: NOT a code defect. Surface it as a distinct result so
+  // the tick leaves the task queued ([ ], no [FAILED]) and opens a global
+  // cooldown — re-running it through the audit pipeline would burn compute on a
+  // capacity problem the audit agent can't fix. `rateLimited` is set by
+  // spawnWithTimeout ONLY on a non-zero exit carrying a machine signature
+  // (rate_limit_error / overloaded_error / a 429 with context) — a clean exit-0
+  // run never trips it, so a task that legitimately implements/tests rate
+  // limiting completes normally instead of livelocking.
+  if (claudeResult.rateLimited) {
+    audit('task.skipped.rate_limited', 'dispatcher', {
+      taskId: task.id,
+      ...(claudeResult.retryAfterMs != null ? { retryAfterMs: claudeResult.retryAfterMs } : {}),
+    });
+    return { status: 'rate-limited', ...(claudeResult.retryAfterMs != null ? { retryAfterMs: claudeResult.retryAfterMs } : {}) };
   }
 
   if (claudeResult.exitCode !== 0) {
@@ -855,6 +884,179 @@ async function auditInvalidTagged(queuePath: string): Promise<void> {
   }
 }
 
+/**
+ * Apply the completion/failure bookkeeping for ONE finished single-spawn task
+ * (code/analysis/assistant/content — NOT pipeline, which has its own reconcile
+ * path). Extracted from the legacy serial loop so BOTH the concurrent ISO drain
+ * and the synchronous GIT path reuse identical semantics: mark a standing task
+ * complete on success, emit task.completed/failed, notify, and tear down a
+ * failed external clone (unless the audit halted it, in which case the working
+ * dir is preserved for the operator).
+ *
+ * MUST be called sequentially (never inside a Promise.all map) because
+ * markTaskCompleted read-modify-writes the whole queue file — two concurrent
+ * completions would race the file. The drain loop awaits each settle in turn,
+ * so JS's single event loop gives us that serialization for free.
+ */
+async function applyTaskOutcome(task: ParsedTask, outcome: RunOutcome): Promise<void> {
+  const isStanding = task.slot == null && task.everyStepSlots == null;
+  if (outcome.status === 'completed') {
+    if (isStanding) {
+      markTaskCompleted(config.queuePath, task.id, {
+        durationMs: outcome.durationMs,
+        ...(outcome.testsPassed != null ? { testsPassed: outcome.testsPassed } : {}),
+        ...(outcome.prUrl ? { prUrl: outcome.prUrl } : {}),
+        ...(outcome.outputPath ? { outputPath: outcome.outputPath } : {}),
+      });
+    }
+    const mins = Math.max(1, Math.round(outcome.durationMs / 60_000));
+    const gateSum = outcome.testsPassed != null ? `${outcome.testsPassed} tests passed` : 'gate ok';
+    const fin = outcome.prUrl
+      ? `PR: ${outcome.prUrl}`
+      : outcome.outputPath
+      ? `output: ${outcome.outputPath}`
+      : isStanding
+      ? 'merged to main'
+      : `slot ${slotOf()} (${slotToTime(slotOf())}) fired`;
+    audit('task.completed', 'dispatcher', { taskId: task.id, durationMs: outcome.durationMs });
+    await notify.taskCompleted(task.id, mins, gateSum, fin);
+    return;
+  }
+
+  // Failure path. dispatchOne audits task.failed for setup/claude/gate failures,
+  // but finalize-stage failures only return status:failed without an audit row.
+  // Backstop: if the outcome carries a failureLog AND there's no fresh
+  // task.failed row, emit one. Always notify so the operator sees the dead end.
+  if (outcome.failureLog) {
+    const recentFailAt = lastEventAt('task.failed');
+    const isFresh = recentFailAt
+      ? new Date(recentFailAt).getTime() >= Date.now() - outcome.durationMs - 1000
+      : false;
+    if (!isFresh) {
+      audit('task.failed', 'dispatcher', {
+        taskId: task.id,
+        stage: 'finalize',
+        failure_log: outcome.failureLog,
+        durationMs: outcome.durationMs,
+      });
+      await notify.taskFailed(task.id, 'finalize', outcome.failureLog);
+    }
+  }
+  // Tear down a failed external clone ONLY if the audit pipeline did NOT halt
+  // the task — a halt preserves the working dir for operator inspection.
+  if (!isTaskHalted(task.id)) {
+    const cloneDir = `${config.cloneRootPrefix}${task.id}`;
+    if (existsSync(cloneDir)) {
+      try { rmSync(cloneDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * True iff a rate-limit cooldown opened by a prior tick (or earlier in this one)
+ * is still in effect. When open, ZERO new spawns of any class fire this tick —
+ * the queued tasks simply wait. This is the global brake the directive calls
+ * for: a 429 leaves work queued, never failed.
+ */
+function rateLimitCooldownActive(now: number = Date.now()): boolean {
+  const payload = lastEventPayload('dispatch.rate_limited');
+  if (!payload) return false;
+  const until = typeof payload['until'] === 'number' ? payload['until'] : 0;
+  return until > now;
+}
+
+/** Open (or extend) the rate-limit cooldown after a 429/overload outcome. */
+function openRateLimitCooldown(taskId: string, retryAfterMs?: number): void {
+  const cooldownMs = retryAfterMs && retryAfterMs > 0 ? retryAfterMs : config.rateLimitCooldownMs;
+  audit('dispatch.rate_limited', 'dispatcher', {
+    taskId,
+    until: Date.now() + cooldownMs,
+    cooldownMs,
+    ...(retryAfterMs != null ? { retryAfterMs } : {}),
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Shared pre-dispatch gates for a single-spawn (non-pipeline) task: halt-chain,
+ * the inFlight sentinel, and the legacy ≥3-raw-failures drain. Returns whether
+ * the task is dispatchable; on a skip it records the audit row + adds the id to
+ * `skippedThisTick` so the same tick doesn't re-pick it. Extracted so the ISO
+ * refill and the GIT path apply identical gating.
+ *
+ * Halt-check MUST precede inFlight (the documented working-dir-preservation
+ * invariant): inFlight on a halted task sees a dead sentinel pid and wipes the
+ * preserved dir. Order is retained here.
+ */
+async function prepareSingleSpawn(
+  task: ParsedTask,
+  skippedThisTick: Set<string>,
+): Promise<boolean> {
+  if (isTaskHalted(task.id)) {
+    audit('task.skipped.halt_chain', 'dispatcher', { taskId: task.id });
+    skippedThisTick.add(task.id);
+    return false;
+  }
+  const flightStatus = git.inFlight(task.id);
+  if (flightStatus === 'live') {
+    audit('task.skipped.in_flight', 'dispatcher', { taskId: task.id });
+    skippedThisTick.add(task.id);
+    return false;
+  }
+  if (flightStatus === 'stale_cleared') {
+    audit('task.stale_worktree_cleared', 'dispatcher', { taskId: task.id });
+    // Fall through — the ghost dir was cleaned up.
+  }
+  const failCount = failureCountForTask(task.id);
+  if (failCount >= 3) {
+    audit('task.halted_for_review', 'dispatcher', {
+      taskId: task.id,
+      pattern: 'legacy-3-strike',
+      operator_report: `Task accumulated ${failCount} failures before v0.7 audit pipeline existed. Inspect the audit history, then \`nyx resume ${task.id}\`.`,
+    });
+    await notify.taskAbandoned(task.id, `${failCount} prior failures`);
+    skippedThisTick.add(task.id);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Advance one `[type: pipeline]` task this tick + apply its queue reconcile.
+ * Extracted from the legacy loop so the GIT path runs it under the git lock. A
+ * pipeline phase that does real work IS the tick's GIT actor — the caller holds
+ * the lock for its lifetime. Returns true if a phase actually ran (so a
+ * subsequent ISO refill respects the global ceiling).
+ */
+async function advancePipelineTask(
+  task: ParsedTask,
+  resumedTaskIds: Set<string>,
+): Promise<void> {
+  try {
+    const result = await handlePipelineInTick(task, resumedTaskIds);
+    if (result.markComplete) {
+      const run = getRunByTaskId(task.id);
+      const durationMs = run ? Date.now() - run.created_at : 0;
+      markTaskCompleted(config.queuePath, task.id, { durationMs, ...(result.failed ? { failed: true } : {}) });
+      if (result.failed) {
+        audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'pipeline', failure_log: `pipeline run terminated: ${result.status}` });
+      } else {
+        audit('task.completed', 'dispatcher', { taskId: task.id, durationMs, type: 'pipeline' });
+      }
+      console.log(`[nyx] pipeline ${task.id} reconciled (${result.status})`);
+    } else {
+      console.log(`[nyx] pipeline ${task.id} advanced to ${result.status}`);
+    }
+  } catch (err) {
+    const e = err as Error;
+    await failPipelineWithNotice(task.id, e);
+    console.error(`[nyx] pipeline ${task.id} threw:`, e.stack ?? e.message);
+  }
+}
+
 async function processDecomposeActions(): Promise<number> {
   const pending = listPending().filter((a) => a.action === 'decompose_task');
   let decomposed = 0;
@@ -971,14 +1173,20 @@ async function main(): Promise<void> {
   );
   if (controlApplied > 0) console.log(`[nyx] control actions applied: ${controlApplied}`);
 
+  // Type-aware concurrency (Track 3). The blanket "any claude live → exit(0)"
+  // guard is gone — it serialized EVERY task type behind one in-flight claude,
+  // so a 25-min build starved every digest. Now:
+  //   - 'global' — conservative rollback: if ANY claude on the box is live (incl.
+  //     a concurrent Iris session), skip ALL spawning this tick. Reproduces the
+  //     legacy behavior with one setting, no code revert.
+  //   - 'own'/'off' — the two-class scheduler below runs: ISO tasks fan out up to
+  //     the cap, ONE GIT task runs under the git single-flight lock.
+  // The decision is taken here and consumed by the scheduler loop further down.
   const guard = config.settings.dispatcher.concurrencyGuard;
-  if (guard !== 'off') {
-    const busy = guard === 'own' ? liveOwnClaudeCount() > 0 : hasLiveClaude();
-    if (busy) {
-      audit('task.skipped.concurrent_claude', 'dispatcher', { mode: guard });
-      console.log(`[nyx] concurrent claude detected (${guard}). exit 0.`);
-      process.exit(0);
-    }
+  const globalGuardBusy = guard === 'global' && hasLiveClaude();
+  if (globalGuardBusy) {
+    audit('task.skipped.concurrent_claude', 'dispatcher', { mode: guard });
+    console.log(`[nyx] concurrent claude detected (${guard}). skipping spawns this tick.`);
   }
 
   await auditInvalidTagged(config.queuePath);
@@ -1018,9 +1226,6 @@ async function main(): Promise<void> {
   const window = slotWindow();
   const firedInSlot = tasksFiredInWindow(window.start, window.end);
 
-  let chainDepth = 0;
-  let producedWork = false;
-
   // A tick that decomposed an NL request does NOT also execute the resulting
   // tasks — decompose means "queue for review". They run on a later tick (the
   // 5-min daemon, or a manual `nyx tick` / the desktop Tick button).
@@ -1028,175 +1233,67 @@ async function main(): Promise<void> {
     console.log(`[nyx] decomposed ${decomposedThisTick} request(s); tasks queued — they run on the next tick.`);
   }
 
-  while (decomposedThisTick === 0 && chainDepth < config.maxChainDepth) {
-    const queue = readQueue(config.queuePath);
-    const next = pickNextTask(queue, { firedInSlot, skipThisTick: skippedThisTick });
-    if (!next) {
-      if (!producedWork) await maybeIdleOrStaleAlert();
-      break;
-    }
-
-    // Halt-check runs BEFORE inFlight. If inFlight runs first on a halted task,
-    // it sees a working dir whose sentinel PID is dead (the halting process
-    // exited) and wipes the dir as "stale_cleared" — destroying the preserved
-    // state the operator needs to salvage. Checking halt status first lets us
-    // skip without touching the dir at all.
-    if (isTaskHalted(next.id)) {
-      audit('task.skipped.halt_chain', 'dispatcher', { taskId: next.id });
-      skippedThisTick.add(next.id);
-      continue;
-    }
-
-    // ── Pipeline redirect ──
-    // [type: pipeline] tasks route into the stateful orchestrator instead of the
-    // single-spawn dispatchOne path. Bypasses inFlight/3-strike: the pipeline_runs
-    // table + the resume scan above own continuation across ticks.
-    if (next.type === 'pipeline') {
-      skippedThisTick.add(next.id);   // one advance per task per tick
-      firedInSlot.add(next.id);
-      producedWork = true;
-      try {
-        const result = await handlePipelineInTick(next, resumedTaskIds);
-        if (result.markComplete) {
-          const run = getRunByTaskId(next.id);
-          const durationMs = run ? Date.now() - run.created_at : 0;
-          // A failed/aborted terminal run is marked with the [FAILED] flag so the
-          // picker (baseFilter excludes [FAILED]) stops re-selecting it every tick;
-          // a done run is marked cleanly.
-          markTaskCompleted(config.queuePath, next.id, { durationMs, ...(result.failed ? { failed: true } : {}) });
-          // Keep task.completed in the audit chain so stale-alert + slot-window
-          // bookkeeping treat a delivered pipeline like any completed task. A
-          // failed/aborted run also emits a task.failed row so the operator and
-          // stale-alert bookkeeping see the terminal failure.
-          if (result.failed) {
-            audit('task.failed', 'dispatcher', { taskId: next.id, stage: 'pipeline', failure_log: `pipeline run terminated: ${result.status}` });
-          } else {
-            audit('task.completed', 'dispatcher', { taskId: next.id, durationMs, type: 'pipeline' });
-          }
-          console.log(`[nyx] pipeline ${next.id} reconciled (${result.status})`);
-        } else {
-          console.log(`[nyx] pipeline ${next.id} advanced to ${result.status}`);
-        }
-      } catch (err) {
-        const e = err as Error;
-        await failPipelineWithNotice(next.id, e);
-        console.error(`[nyx] pipeline ${next.id} threw:`, e.stack ?? e.message);
-      }
-      chainDepth++;
-      if (!config.autoChain) break;
-      continue;
-    }
-
-    const flightStatus = git.inFlight(next.id);
-    if (flightStatus === 'live') {
-      audit('task.skipped.in_flight', 'dispatcher', { taskId: next.id });
-      skippedThisTick.add(next.id);
-      continue;
-    }
-    if (flightStatus === 'stale_cleared') {
-      audit('task.stale_worktree_cleared', 'dispatcher', { taskId: next.id });
-      // Fall through to normal dispatch — the ghost dir has been cleaned up.
-    }
-
-    const isStanding = next.slot == null && next.everyStepSlots == null;
-
-    // v0.7: 3-strike abandonment is replaced by the audit-on-fail pipeline.
-    // Audit cap (MAX_AUDIT_PASSES) inside dispatchOne handles re-attempts;
-    // anything that gets past it emits task.halted_for_review which is filtered
-    // above. The only legacy path: pre-v0.7 task.failed events accumulated
-    // without an audit row. Drain those by treating ≥3 raw failures as halted.
-    const failCount = failureCountForTask(next.id);
-    if (failCount >= 3) {
-      audit('task.halted_for_review', 'dispatcher', {
-        taskId: next.id,
-        pattern: 'legacy-3-strike',
-        operator_report: `Task accumulated ${failCount} failures before v0.7 audit pipeline existed. Inspect the audit history, then \`nyx resume ${next.id}\`.`,
-      });
-      await notify.taskAbandoned(next.id, `${failCount} prior failures`);
-      skippedThisTick.add(next.id);
-      continue;
-    }
-
-    const outcome = await dispatchOne(next);
-    producedWork = true;
-    skippedThisTick.add(next.id);   // never re-pick within this tick
-    firedInSlot.add(next.id);       // never re-fire within this slot window
-
-    if (outcome.status === 'completed') {
-      if (isStanding) {
-        markTaskCompleted(config.queuePath, next.id, {
-          durationMs: outcome.durationMs,
-          ...(outcome.testsPassed != null ? { testsPassed: outcome.testsPassed } : {}),
-          ...(outcome.prUrl ? { prUrl: outcome.prUrl } : {}),
-          ...(outcome.outputPath ? { outputPath: outcome.outputPath } : {}),
-        });
-      }
-      // Slot-bound: queue file is unchanged. Audit log is the only record.
-      const mins = Math.max(1, Math.round(outcome.durationMs / 60_000));
-      const gateSum = outcome.testsPassed != null ? `${outcome.testsPassed} tests passed` : 'gate ok';
-      const fin = outcome.prUrl
-        ? `PR: ${outcome.prUrl}`
-        : outcome.outputPath
-        ? `output: ${outcome.outputPath}`
-        : isStanding
-        ? 'merged to main'
-        : `slot ${slotOf()} (${slotToTime(slotOf())}) fired`;
-      audit('task.completed', 'dispatcher', { taskId: next.id, durationMs: outcome.durationMs });
-      await notify.taskCompleted(next.id, mins, gateSum, fin);
-    } else {
-      // Failure path. dispatchOne audits task.failed for setup/claude/gate
-      // failures, but finalize-stage failures (e.g. `gh pr create` returned
-      // no URL, content task produced no artifacts) only return status:failed
-      // without emitting an audit. Backstop here: if the outcome carries a
-      // failureLog AND there's no recent task.failed row for this taskId,
-      // emit one. Always notify Slack so the operator sees the dead end.
-      if (outcome.failureLog) {
-        const recentFailAt = lastEventAt('task.failed');
-        // If the most recent task.failed is older than this dispatch's start,
-        // dispatchOne never emitted one — this is a finalize-stage failure.
-        const isFresh = recentFailAt
-          ? new Date(recentFailAt).getTime() >= Date.now() - outcome.durationMs - 1000
-          : false;
-        if (!isFresh) {
-          audit('task.failed', 'dispatcher', {
-            taskId: next.id,
-            stage: 'finalize',
-            failure_log: outcome.failureLog,
-            durationMs: outcome.durationMs,
-          });
-          await notify.taskFailed(next.id, 'finalize', outcome.failureLog);
-        }
-      }
-      // v0.6.3: external-clone cleanup on finalize-stage failures.
-      // v0.8.x update: ONLY tear down if the audit pipeline did NOT halt the
-      // task. When audit halts a task, the operator needs the preserved
-      // working dir to inspect the failure state and either fix it in place
-      // or understand what diagnostic info the agent had. Cleanup runs
-      // unconditionally on nyx-resume (which always wipes the dir).
-      //
-      // Pre-v0.7 the "every subsequent tick skips it via inFlight()" comment
-      // was the worry — but the halt-chain filter in pickNextTask now blocks
-      // re-dispatch separately. If the operator never resumes, the dir
-      // remains until they intervene; that's the design.
-      if (!isTaskHalted(next.id)) {
-        const cloneDir = `${config.cloneRootPrefix}${next.id}`;
-        if (existsSync(cloneDir)) {
-          try { rmSync(cloneDir, { recursive: true, force: true }); } catch { /* ignore */ }
-        }
-      }
-      // Standing tasks stay [ ] in Active for the next tick to retry. If the
-      // audit halted, halt-chain filter in pickNextTask blocks re-dispatch
-      // until nyx-resume.
-      if (!config.autoChain) break;
-    }
-
-    chainDepth++;
-    if (!config.autoChain) break;
+  // ── Type-aware scheduler (Track 3) ──
+  // The scheduling core lives in tick-scheduler.runTwoClassTick (unit-tested
+  // with fakes for peak-concurrency / cap / GIT-doesn't-block-ISO / crash
+  // isolation). Here we wire the real implementations. ISO tasks fan out
+  // concurrently up to effectiveIsoCap; ≤1 GIT task runs synchronously under the
+  // git single-flight lock; a 429 opens a global cooldown and leaves work queued.
+  // The concurrency is WITHIN this tick (ISO overlaps the one GIT task). It is
+  // NOT cross-tick: the shell lock in nyx-dispatch.sh keeps the next launchd tick
+  // from starting while this GIT task is awaited here (see git-task-lock.ts).
+  //
+  // 'global' guard busy OR an active 429 cooldown → ZERO spawns this tick; the
+  // queued tasks simply wait. A resumed pipeline phase (resumeDecidedRunsInTick)
+  // already consumed the GIT slot, so we pass gitSlotTaken accordingly.
+  const spawningAllowed =
+    decomposedThisTick === 0 && !globalGuardBusy && !rateLimitCooldownActive();
+  if (decomposedThisTick === 0 && !globalGuardBusy && rateLimitCooldownActive()) {
+    console.log('[nyx] rate-limit cooldown active — skipping all spawns this tick.');
   }
 
-  if (chainDepth >= config.maxChainDepth) {
-    audit('dispatch.chain_limit_reached', 'dispatcher', { depth: chainDepth });
+  if (spawningAllowed) {
+    const result = await runTwoClassTick(
+      {
+        pickNext: (classFilter) =>
+          pickNextTask(readQueue(config.queuePath), {
+            firedInSlot,
+            skipThisTick: skippedThisTick,
+            classFilter,
+          }),
+        prepareSingleSpawn: (task) => prepareSingleSpawn(task, skippedThisTick),
+        markScheduled: (task) => {
+          skippedThisTick.add(task.id);
+          firedInSlot.add(task.id);
+        },
+        dispatch: dispatchOne,
+        advancePipeline: (task) => advancePipelineTask(task, resumedTaskIds),
+        applyOutcome: applyTaskOutcome,
+        openCooldown: openRateLimitCooldown,
+        // effectiveIsoCap = min(maxConcurrentIso, ceiling - live spawns) so a
+        // coder-heavy pipeline phase and the ISO pool share one Max-plan budget.
+        effectiveIsoCap: () =>
+          Math.max(0, Math.min(config.maxConcurrentIso, config.maxConcurrentClaude - liveOwnClaudeCount())),
+        liveGitTaskExists: () => liveGitTaskExists(config.gitTaskLockPath),
+        writeGitLock: (taskId) => writeGitLock(config.gitTaskLockPath, taskId),
+        removeGitLock: () => removeGitLock(config.gitTaskLockPath),
+        isoLaunchJitterMs: config.isoLaunchJitterMs,
+        auditPoolDrained: (count) => audit('dispatch.iso_pool.drained', 'dispatcher', { count }),
+        auditIsoThrow: (reason) => audit('task.failed', 'dispatcher', { stage: 'iso-drain', failure_log: reason }),
+        sleep,
+        log: (msg) => console.log(`[nyx] ${msg}`),
+      },
+      { gitSlotTaken: resumedTaskIds.size > 0 },
+    );
+    if (result.gitTasksRun >= config.maxChainDepth) {
+      audit('dispatch.chain_limit_reached', 'dispatcher', { depth: result.gitTasksRun });
+    }
+    // A resumed pipeline phase IS work — it just doesn't go through the
+    // scheduler's launch path — so it suppresses the idle alert too.
+    if (!result.producedWork && resumedTaskIds.size === 0) await maybeIdleOrStaleAlert();
   }
+  // When spawning is suppressed (global-guard busy, decompose-only, or a 429
+  // cooldown) the tick is deliberately not idle — no idle/stale alert fires.
 
   await maybeUpdateCheck();
 

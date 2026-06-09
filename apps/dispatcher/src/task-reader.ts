@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 
 import type { GateStage, Model, ParsedTask, Priority, TaskType } from './types.js';
+import { classOf, type TaskClass } from './concurrency.js';
 import { config } from './config.js';
 import { isValidRepoTag } from './pipeline/target.js';
 
@@ -379,6 +380,12 @@ export interface PickerInput {
   firedInSlot?: Set<string>;
   /** Task IDs already deferred or running this tick. */
   skipThisTick?: Set<string>;
+  /**
+   * Type-aware concurrency (Track 3): narrow candidates to one class. The ISO
+   * refill loop passes `'iso'` (analysis/assistant/content); the single-GIT pick
+   * passes `'git'` (code/pipeline). Omitted → all classes (legacy behavior).
+   */
+  classFilter?: TaskClass;
 }
 
 /**
@@ -404,11 +411,13 @@ export function pickNextTask(q: QueueFile, input: PickerInput = {}): ParsedTask 
     ...q.active.filter(t => t.checked).map(t => t.id),
   ]);
 
+  const classFilter = input.classFilter;
   const baseFilter = (t: ParsedTask) =>
     !t.checked
     && !t.description.startsWith('[FAILED]')
     && t.invalidTags.length === 0
     && !skipped.has(t.id)
+    && (classFilter == null || classOf(t.type) === classFilter)
     && (!t.depends || t.depends.every(d => completedIds.has(d)));
 
   const slotMatches = (t: ParsedTask): boolean => {

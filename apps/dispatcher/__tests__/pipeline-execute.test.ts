@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, test, beforeEach } from 'node:test';
 
 import { _setAuditDb } from '../src/audit.js';
+import { config } from '../src/config.js';
 import { _setPipelineDb, createRun, getRun, updateRun } from '../src/pipeline/db.js';
 import {
   coderBranch,
@@ -191,6 +192,86 @@ describe('runExecuting (injected coder + base)', () => {
     createRun({ id: 'pr_noplan', taskId: 'T', prompt: 'x', now: 1000 });
     updateRun('pr_noplan', { status: 'executing' }, 1000);
     await assert.rejects(runExecuting(getRun('pr_noplan')!, { base: { basePath: '/x', integrationBranch: 'ib' } }));
+  });
+
+  test('coder concurrency is bounded by maxConcurrentClaude minus the live ISO pool', async () => {
+    // Many independent coders, but the aggregate ceiling (config.maxConcurrentClaude)
+    // is mostly consumed by a live ISO pool. Inject liveSpawnCount so only ONE slot
+    // of budget remains: AT MOST one coder runs at a time — coders + ISO never
+    // exceed the Max-plan quota even though pipelineCoderConcurrency is larger.
+    const ceiling = config.maxConcurrentClaude;
+    const liveIso = ceiling - 1; // leaves a budget of exactly 1
+    const coderCount = ceiling + 2;
+    const plans = Array.from({ length: coderCount }, (_, i) => fp(`C${i}`));
+
+    const run = createRun({ id: 'pr_budget', taskId: 'T', prompt: 'build', repo: 'org/repo', now: 1000 });
+    updateRun('pr_budget', { status: 'executing', plan_json: freezePlan(planWith(plans)) }, 1000);
+
+    let active = 0;
+    let peak = 0;
+    const trackingCoder = async (ctx: CoderContext): Promise<CoderResult> => {
+      active++;
+      peak = Math.max(peak, active);
+      await delay(5);
+      active--;
+      return {
+        task_id: ctx.plan.task_id,
+        branch: coderBranch(ctx.run.id, ctx.plan.task_id),
+        status: 'committed',
+        commit: `sha-${ctx.plan.task_id}`,
+        files_changed: ctx.plan.modifies,
+        exit_code: 0,
+        log: '',
+      };
+    };
+
+    const result = await runExecuting(getRun('pr_budget')!, {
+      runCoder: trackingCoder,
+      base: { basePath: '/tmp/fake-base', integrationBranch: 'ib' },
+      liveSpawnCount: () => liveIso,
+    });
+
+    assert.equal(result.coder_results.length, coderCount, 'all coders still run, just serialized under the budget');
+    assert.equal(peak, 1, `budget = maxConcurrentClaude(${ceiling}) - live(${liveIso}) = 1; saw peak ${peak}`);
+  });
+
+  test('coder concurrency uses the full budget when no ISO pool is live', async () => {
+    // With zero live spawns, the cap is the pipeline cap itself (independent coders
+    // all run at once up to it) — proving the budget bound never UNDER-throttles.
+    const ceiling = config.maxConcurrentClaude;
+    const pipelineCap = config.pipelineCoderConcurrency;
+    const expectedPeak = Math.min(pipelineCap, ceiling);
+    const coderCount = expectedPeak + 2;
+    const plans = Array.from({ length: coderCount }, (_, i) => fp(`C${i}`));
+
+    const run = createRun({ id: 'pr_fullbudget', taskId: 'T', prompt: 'build', repo: 'org/repo', now: 1000 });
+    updateRun('pr_fullbudget', { status: 'executing', plan_json: freezePlan(planWith(plans)) }, 1000);
+
+    let active = 0;
+    let peak = 0;
+    const trackingCoder = async (ctx: CoderContext): Promise<CoderResult> => {
+      active++;
+      peak = Math.max(peak, active);
+      await delay(5);
+      active--;
+      return {
+        task_id: ctx.plan.task_id,
+        branch: coderBranch(ctx.run.id, ctx.plan.task_id),
+        status: 'committed',
+        commit: `sha-${ctx.plan.task_id}`,
+        files_changed: ctx.plan.modifies,
+        exit_code: 0,
+        log: '',
+      };
+    };
+
+    await runExecuting(getRun('pr_fullbudget')!, {
+      runCoder: trackingCoder,
+      base: { basePath: '/tmp/fake-base', integrationBranch: 'ib' },
+      liveSpawnCount: () => 0,
+    });
+
+    assert.equal(peak, expectedPeak, `full budget = min(pipelineCap ${pipelineCap}, ceiling ${ceiling}); saw peak ${peak}`);
   });
 });
 

@@ -37,6 +37,14 @@ export type AuditEvent =
   | 'task.skipped.depends_unmet'
   | 'task.skipped.concurrent_claude'
   | 'task.skipped.halt_chain'
+  // Type-aware concurrency (Track 3): a GIT task is skipped this tick because
+  // another GIT task is mid-flight; the ISO pool / global ceiling is full; or a
+  // 429/overload cooldown is active. None of these is a failure.
+  | 'task.skipped.git_busy'
+  | 'task.skipped.iso_cap'
+  | 'task.skipped.rate_limited'
+  | 'dispatch.rate_limited'
+  | 'dispatch.iso_pool.drained'
   | 'task.tag.invalid'
   | 'task.preflight.failed'
   | 'task.reading_tag.absent'

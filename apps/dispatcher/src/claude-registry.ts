@@ -11,19 +11,48 @@
  * File-per-PID under <dataDir>/run/claude (touch on spawn, unlink on exit). The
  * count verifies liveness with `kill(pid, 0)` so a stale file from a crashed
  * spawn is ignored and swept — a stale entry can never wedge the guard.
+ *
+ * Each entry's content is JSON `{ class, taskId, at }`. The class/taskId are
+ * recorded for audit/diagnostic value; the live AGGREGATE count is what the
+ * budget math consumes (effectiveIsoCap and the pipeline coder cap both subtract
+ * the total live spawns from maxConcurrentClaude — a coder and a digest cost the
+ * same one Max-plan slot regardless of class). Pre-existing plain-number files
+ * (the old format) and malformed JSON still count toward liveness; they just
+ * carry no class/taskId attribution.
  */
 import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.js';
+import type { TaskClass } from './concurrency.js';
+
+export interface ClaudeMeta {
+  class: TaskClass;
+  taskId?: string;
+}
+
+interface RegistryEntry {
+  class: TaskClass;
+  taskId?: string;
+  at: number;
+}
 
 function defaultDir(): string {
   return join(config.dataDir, 'run', 'claude');
 }
 
-export function registerClaude(pid: number, dir: string = defaultDir()): void {
+export function registerClaude(
+  pid: number,
+  meta: ClaudeMeta = { class: 'iso' },
+  dir: string = defaultDir(),
+): void {
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, String(pid)), String(Date.now()));
+    const entry: RegistryEntry = {
+      class: meta.class,
+      ...(meta.taskId ? { taskId: meta.taskId } : {}),
+      at: Date.now(),
+    };
+    writeFileSync(join(dir, String(pid)), JSON.stringify(entry));
   } catch {
     /* best-effort: registry is an optimization, never block a spawn */
   }
@@ -47,7 +76,13 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Live Nyx-spawned claude count; sweeps dead/malformed registry entries. */
+/**
+ * Live Nyx-spawned claude count (aggregate, all classes); sweeps dead/malformed
+ * registry entries. This is the single number the budget math consumes:
+ * effectiveIsoCap and the pipeline coder cap both subtract it from
+ * maxConcurrentClaude so the ISO pool + the GIT task's spawn + a pipeline's
+ * coders share one Max-plan ceiling.
+ */
 export function liveOwnClaudeCount(dir: string = defaultDir()): number {
   if (!existsSync(dir)) return 0;
   let n = 0;

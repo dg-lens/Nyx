@@ -66,11 +66,22 @@ export interface NyxSettings {
   dispatcher: {
     maxChainDepth: number;
     taskTimeoutMs: number;
-    // 'global' = skip a tick if ANY claude CLI is running (single-tenant box).
-    // 'own'    = skip only if a NYX-spawned claude is still live (multi-tenant: a
-    //            box also running another agent system, e.g. a pm2 claude swarm).
-    // 'off'    = never skip; rely on the dispatch lockfile alone.
+    // Type-aware concurrency (Track 3):
+    // 'own'    = the two-class model (NEW DEFAULT). GIT-class {code,pipeline}
+    //            single-flight under the git lock; ISO-class
+    //            {analysis,assistant,content} run concurrently up to
+    //            maxConcurrentIso, alongside the one GIT task (within a tick).
+    // 'global' = conservative single-tenant rollback: skip ALL spawning this tick
+    //            if ANY claude CLI is live (incl. Iris/foreign). Reproduces the
+    //            legacy serialize-everything behavior with no code revert.
+    // 'off'    = no gating beyond the GIT single-flight lock; ISO unbounded up to
+    //            maxConcurrentIso, rely on the dispatch lockfile for ticks.
     concurrencyGuard: 'global' | 'own' | 'off';
+    // ISO-pool size one tick fills + drains (clamp [1,6]). The aggregate
+    // live-spawn ceiling across both classes (clamp [1,12]) — a coder-heavy
+    // pipeline phase shrinks the effective ISO cap so the Max-plan quota holds.
+    maxConcurrentIso: number;
+    maxConcurrentClaude: number;
     defaultModels: Record<string, string>;
   };
   plugins: { disabled: string[] };
@@ -89,7 +100,9 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
   dispatcher: {
     maxChainDepth: 2,
     taskTimeoutMs: 30 * 60_000,
-    concurrencyGuard: 'global',
+    concurrencyGuard: 'own',
+    maxConcurrentIso: 2,
+    maxConcurrentClaude: 4,
     defaultModels: { code: 'sonnet', analysis: 'opus', content: 'sonnet', assistant: 'haiku', pipeline: 'opus' },
   },
   plugins: { disabled: [] },
@@ -225,6 +238,8 @@ export function loadSettings(dataDir: string): NyxSettings {
         maxChainDepth: clampNumber(raw.dispatcher?.maxChainDepth, d.dispatcher.maxChainDepth, 1, 10),
         taskTimeoutMs: clampNumber(raw.dispatcher?.taskTimeoutMs, d.dispatcher.taskTimeoutMs, 60_000, 120 * 60_000),
         concurrencyGuard: coerceGuard(raw.dispatcher?.concurrencyGuard, d.dispatcher.concurrencyGuard),
+        maxConcurrentIso: clampNumber(raw.dispatcher?.maxConcurrentIso, d.dispatcher.maxConcurrentIso, 1, 6),
+        maxConcurrentClaude: clampNumber(raw.dispatcher?.maxConcurrentClaude, d.dispatcher.maxConcurrentClaude, 1, 12),
         defaultModels: { ...d.dispatcher.defaultModels, ...(raw.dispatcher?.defaultModels ?? {}) },
       },
       plugins: { disabled: Array.isArray(raw.plugins?.disabled) ? raw.plugins!.disabled : [] },
