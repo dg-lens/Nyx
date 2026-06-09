@@ -25,12 +25,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { audit } from '../audit.js';
+import { appendChainRow, audit } from '../audit.js';
 import { config } from '../config.js';
 import * as notify from '../notifier.js';
 import type { ParsedTask } from '../types.js';
-import { createRun, getRun, getRunByTaskId, runsAwaitingDecision, updateRun } from './db.js';
-import { runExecuting, type ExecuteResult } from './execute.js';
+import { checkpointTransition, claimRunForResume, completedPhases, createRun, getRun, getRunByTaskId, markPhaseCompleted, runsAwaitingDecision, updateRun } from './db.js';
+import { BaseMissingError, runExecuting, type ExecuteResult } from './execute.js';
 import { buildPreviewBrief, freezePlan, groupPhases, hasBlockingConflicts, parsePlanJson, previewRecommendation, type PlanningResult } from './flight-plan.js';
 import { runPlanning, type PlanTarget } from './planning.js';
 import { runMergeQueue, runRedux, type ReduxResult } from './redux.js';
@@ -94,14 +94,33 @@ function realPlan(run: PipelineRun): Promise<PlanningResult> {
 
 function transition(run: PipelineRun, to: PipelineStatus, patch: Partial<PipelineRun> = {}): PipelineRun {
   assertTransition(run.status, to);
-  const updated = updateRun(run.id, { ...patch, status: to }, now());
+  // Clear any stale resume lease when PARKING at a gate, so the operator's next
+  // decision is always claimable — a future-dated lease left over from the resume
+  // that drove the run TO this gate would otherwise fence the next legitimate
+  // resume out until it expired. The lease only fences concurrent resumes of one
+  // armed decision; a fresh gate arming starts the contest clean.
+  const leasePatch = isAwaiting(to) ? { resume_lease: null } : {};
+  // Same-transaction checkpoint (P3): commit the status mutation AND its audit
+  // event in one IMMEDIATE transaction so a crash between them can't leave the
+  // run row and the append-only chain disagreeing (row says X, chain never
+  // recorded the move to X). The audit append's own nested IMMEDIATE flattens
+  // into this outer transaction, so both land or neither does.
+  const updated = checkpointTransition(
+    run.id,
+    { ...patch, ...leasePatch, status: to },
+    now(),
+    () =>
+      // appendChainRow (NOT audit) — it appends to the chain on the same open
+      // transaction the checkpoint owns; calling audit() here would nest a BEGIN
+      // and throw.
+      appendChainRow('pipeline.stage.advanced', 'pipeline', {
+        runId: run.id,
+        from: run.status,
+        to,
+        ...(patch.current_stage ? { stage: patch.current_stage } : {}),
+      }),
+  );
   if (!updated) throw new Error(`pipeline run vanished mid-transition: ${run.id}`);
-  audit('pipeline.stage.advanced', 'pipeline', {
-    runId: run.id,
-    from: run.status,
-    to,
-    ...(patch.current_stage ? { stage: patch.current_stage } : {}),
-  });
   return updated;
 }
 
@@ -230,13 +249,41 @@ async function stageExecuting(run: PipelineRun, deps: ResolvedDeps): Promise<Pip
   if (phases.length === 0 || k >= phases.length) {
     return transition(run, 'shipping', { current_stage: 'shipping' });
   }
+
+  // Replay-skip (P3): a crash AFTER a phase merged clean but BEFORE the
+  // current_phase bump persisted would replay this same phase — re-spawning its
+  // coders and re-merging already-integrated work. The completed-phases
+  // projection is the durable "this phase is done" fact: if phase k is already
+  // recorded, don't re-run it — advance (or ship) directly. Only phases NOT in
+  // the set ever re-execute.
+  if (completedPhases(run.id).includes(k)) {
+    audit('pipeline.phase.replay_skipped', 'pipeline', { runId: run.id, phase: k });
+    if (k + 1 < phases.length) {
+      return updateRun(run.id, { current_phase: k + 1, diagnostic_round: 0 }, now())!;
+    }
+    return transition(run, 'shipping', { current_stage: 'shipping' });
+  }
+
   audit('pipeline.stage.advanced', 'pipeline', { runId: run.id, stage: `phase.${k}.started`, tasks: phases[k]!.length });
 
   // Clear a consumed corrective-wave directive (only applies to the first phase
   // of a fix re-run).
   if (run.fix_directive && k === 0) updateRun(run.id, { fix_directive: null }, now());
 
-  await deps.execute(run); // phase-k coders
+  // M2: a reused base evicted mid-run throws BaseMissingError, NOT a raw
+  // ENOENT-per-coder mass failure. Route it to a recoverable base-missing halt at
+  // the review gate so the operator can rollback (replan) or abort — the earlier
+  // phases' merged code lived only in the vanished base, so silently re-running
+  // here would discard them.
+  try {
+    await deps.execute(run); // phase-k coders
+  } catch (err) {
+    if (err instanceof BaseMissingError) {
+      audit('pipeline.base.missing', 'pipeline', { runId: run.id, phase: k, base: run.worktree_base });
+      return escalateToReview(run, 'base_missing');
+    }
+    throw err;
+  }
   let cur = getRun(run.id) ?? run;
   await deps.redux(cur); // merge phase-k clean
   cur = getRun(run.id) ?? cur;
@@ -263,6 +310,10 @@ async function stageExecuting(run: PipelineRun, deps: ResolvedDeps): Promise<Pip
   if (findingsCatastrophic(cur)) return escalateToReview(cur, 'catastrophic');
 
   if (heldCount(cur) === 0) {
+    // Phase k merged clean — record it in the durable completed-phases projection
+    // BEFORE the current_phase bump, so a crash in the window between the two
+    // replays into the skip branch above (advance) rather than re-running k.
+    markPhaseCompleted(cur.id, k, now());
     if (k + 1 < phases.length) {
       // Advance + YIELD: stay `executing`, reset the per-phase round counter.
       return updateRun(cur.id, { current_phase: k + 1, diagnostic_round: 0 }, now())!;
@@ -274,7 +325,7 @@ async function stageExecuting(run: PipelineRun, deps: ResolvedDeps): Promise<Pip
 }
 
 /** Park at the review gate with a brief + Slack ping. */
-function escalateToReview(run: PipelineRun, reason: 'catastrophic' | 'unresolved'): PipelineRun {
+function escalateToReview(run: PipelineRun, reason: 'catastrophic' | 'unresolved' | 'base_missing'): PipelineRun {
   const briefPath = writeBriefFile(run.id, buildReviewBrief(run, reason, null));
   const r = transition(run, 'awaiting_review', {
     bz_brief_path: briefPath,
@@ -516,8 +567,18 @@ export async function advancePipeline(run: PipelineRun, deps: AdvanceDeps = {}):
 export async function resumeDecidedRuns(deps: AdvanceDeps = {}): Promise<PipelineRun[]> {
   const out: PipelineRun[] = [];
   for (const run of runsAwaitingDecision()) {
+    // Resume-lease CAS (P3): claim the run for THIS tick before advancing it. If
+    // a concurrent tick (manual `nyx tick` racing the launchd tick) already
+    // claimed it, the CAS returns null and we skip — only one tick resumes a run,
+    // so its coders/delivery can't double-fire. The winner advances the claimed
+    // row (which carries the same decision).
+    const claimed = claimRunForResume(run.id, now());
+    if (!claimed) {
+      audit('pipeline.resume.contended', 'pipeline', { runId: run.id, taskId: run.task_id });
+      continue;
+    }
     try {
-      out.push(await advancePipeline(run, deps));
+      out.push(await advancePipeline(claimed, deps));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       audit('pipeline.failed', 'pipeline', { runId: run.id, taskId: run.task_id, stage: 'resume', error: message.slice(0, 1000) });

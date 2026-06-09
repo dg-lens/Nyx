@@ -13,6 +13,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+import { appendChainRow, runChecked } from '../audit.js';
 import { config } from '../config.js';
 import { openDb } from '../db.js';
 import type { OperatorDecision, PipelineRun, PipelineStatus } from './types.js';
@@ -57,6 +58,8 @@ function open(): DatabaseSync {
       coder_results      TEXT,
       fix_directive      TEXT,
       error              TEXT,
+      resume_lease       INTEGER,
+      completed_phases   TEXT,
       created_at         INTEGER NOT NULL,
       updated_at         INTEGER NOT NULL
     );
@@ -73,6 +76,12 @@ function open(): DatabaseSync {
     ['coder_results', 'TEXT'],
     ['fix_directive', 'TEXT'],
     ['current_phase', 'INTEGER NOT NULL DEFAULT 0'],
+    // P3 replay-safety. resume_lease holds the epoch-ms expiry of the resume
+    // lease a tick took on this run (the CAS anchor that stops two overlapping
+    // ticks resuming the same run); completed_phases is the JSON projection of
+    // phases a replay must NOT re-run.
+    ['resume_lease', 'INTEGER'],
+    ['completed_phases', 'TEXT'],
   ]);
   prepared = true;
   return db;
@@ -108,6 +117,8 @@ interface Row {
   coder_results: string | null;
   fix_directive: string | null;
   error: string | null;
+  resume_lease: number | null;
+  completed_phases: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -142,6 +153,8 @@ function rowToRun(r: Row): PipelineRun {
     coder_results: r.coder_results,
     fix_directive: r.fix_directive,
     error: r.error,
+    resume_lease: r.resume_lease,
+    completed_phases: r.completed_phases,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };
@@ -200,10 +213,18 @@ const UPDATABLE = [
   'coder_results',
   'fix_directive',
   'error',
+  'resume_lease',
+  'completed_phases',
 ] as const;
 
-export function updateRun(id: string, patch: Partial<PipelineRun>, now: number): PipelineRun | null {
-  const d = open();
+/**
+ * Apply a whitelisted patch to a run row on the GIVEN connection (no read-back,
+ * no transaction). Split out from `updateRun` so a same-transaction checkpoint
+ * can run the UPDATE on the AUDIT connection — the pipeline row + its audit event
+ * must hit one connection under one BEGIN to commit atomically (two connections
+ * to the same file can't share a transaction).
+ */
+function applyPatch(d: DatabaseSync, id: string, patch: Partial<PipelineRun>, now: number): void {
   const cols: string[] = [];
   const vals: Array<string | number | null> = [];
   for (const key of UPDATABLE) {
@@ -217,14 +238,17 @@ export function updateRun(id: string, patch: Partial<PipelineRun>, now: number):
     }
   }
   if (cols.length === 0) {
-    // Touch updated_at only.
     d.prepare(`UPDATE pipeline_runs SET updated_at = ? WHERE id = ?`).run(now, id);
-    return getRun(id);
+    return;
   }
   cols.push('updated_at = ?');
   vals.push(now);
   vals.push(id);
   d.prepare(`UPDATE pipeline_runs SET ${cols.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function updateRun(id: string, patch: Partial<PipelineRun>, now: number): PipelineRun | null {
+  applyPatch(open(), id, patch, now);
   return getRun(id);
 }
 
@@ -266,4 +290,112 @@ export function runsAwaitingDecision(): PipelineRun[] {
     )
     .all() as unknown as Row[];
   return rows.map(rowToRun);
+}
+
+/**
+ * How long a resume lease is honored before a later tick may steal it. A normal
+ * resume holds the run for the duration of one tick's autonomous run (coders cap
+ * at 30 min/phase, one phase per tick); the lease must outlast that so a healthy
+ * in-progress resume is never stolen, yet be short enough that a crashed tick's
+ * stale lease is reclaimable within an hour. The launchd shell single-flight lock
+ * already serializes scheduled ticks; this lease is the durable backstop for the
+ * manual-`nyx tick` ↔ scheduled-tick overlap the shell lock does NOT cover.
+ */
+export const RESUME_LEASE_MS = 60 * 60_000;
+
+/**
+ * Resume-lease CAS (P3). Atomically claim a decided run for THIS tick before any
+ * phase advances, so a manual `nyx tick` and a scheduled launchd tick can't both
+ * resume one run (running its coders / pushing its delivery twice). The UPDATE
+ * succeeds (rowCount 1) only if the run is still awaiting at a gate WITH a
+ * decision AND its lease is free (never set, or expired past `now`). A losing
+ * racer sees rowCount 0 → it must skip the run this tick. Stamping the lease into
+ * the future is what fences the loser; the winner clears it when it consumes the
+ * decision (the orchestrator nulls `operator_decision`, which also bars re-claim).
+ *
+ * Returns the freshly-claimed run (lease stamped) on win, null on loss/absence.
+ */
+export function claimRunForResume(id: string, now: number): PipelineRun | null {
+  const d = open();
+  const leaseUntil = now + RESUME_LEASE_MS;
+  const res = d
+    .prepare(
+      `UPDATE pipeline_runs
+         SET resume_lease = ?, updated_at = ?
+       WHERE id = ?
+         AND status IN ('awaiting_preview','awaiting_review')
+         AND operator_decision IS NOT NULL
+         AND (resume_lease IS NULL OR resume_lease < ?)`,
+    )
+    .run(leaseUntil, now, id, now);
+  if (Number(res.changes) === 0) return null;
+  return getRun(id);
+}
+
+/** Release a resume lease (e.g. a claimed run that turned out to be a no-op). */
+export function releaseResumeLease(id: string, now: number): void {
+  const d = open();
+  d.prepare(`UPDATE pipeline_runs SET resume_lease = NULL, updated_at = ? WHERE id = ?`).run(now, id);
+}
+
+/**
+ * Same-transaction state-transition checkpoint (P3 / DBOS journal). Commit the
+ * `pipeline_runs` status mutation AND its audit event together so a crash between
+ * the two can't leave the run row and the append-only chain disagreeing (the row
+ * says `done`, the chain has no `pipeline.delivered`, or vice-versa).
+ *
+ * Both writes go through the AUDIT connection inside ONE `BEGIN IMMEDIATE`
+ * (`runChecked`): the pipeline row and the audit chain live in the SAME file, but
+ * pipeline/db.ts and audit.ts hold SEPARATE connections to it — two connections
+ * can't share a transaction, and node:sqlite rejects a nested `BEGIN`. So the
+ * checkpoint routes the run-row UPDATE onto the audit connection too (`applyPatch`
+ * takes the connection explicitly), and appends the chain row with
+ * `appendChainRow` (the no-own-transaction variant). The read-back uses the
+ * pipeline connection, which sees the committed row (WAL, same file). `emitAudit`
+ * is the caller's chain-append, invoked inside the transaction.
+ */
+export function checkpointTransition(
+  id: string,
+  patch: Partial<PipelineRun>,
+  now: number,
+  emitAudit: () => void,
+): PipelineRun | null {
+  open(); // ensure pipeline_runs exists on the shared file before the audit conn writes it
+  runChecked((conn) => {
+    applyPatch(conn, id, patch, now);
+    emitAudit();
+  });
+  return getRun(id);
+}
+
+function parsePhaseList(json: string | null): number[] {
+  if (!json) return [];
+  try {
+    const v = JSON.parse(json) as unknown;
+    return Array.isArray(v) ? v.filter((n): n is number => Number.isInteger(n)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The set of phase indices a run has fully merged — the replay-skip projection. */
+export function completedPhases(id: string): number[] {
+  const run = getRun(id);
+  return run ? parsePhaseList(run.completed_phases) : [];
+}
+
+/**
+ * Record `phase` as fully completed (merged clean) for a run, idempotently — a
+ * replay of an already-recorded phase is a no-op, and a replay after a crash
+ * re-runs ONLY phases absent from this set. Persisted as a sorted unique JSON
+ * int array on `completed_phases`.
+ */
+export function markPhaseCompleted(id: string, phase: number, now: number): number[] {
+  const run = getRun(id);
+  if (!run) return [];
+  const set = new Set(parsePhaseList(run.completed_phases));
+  set.add(phase);
+  const next = [...set].sort((a, b) => a - b);
+  updateRun(id, { completed_phases: JSON.stringify(next) }, now);
+  return next;
 }

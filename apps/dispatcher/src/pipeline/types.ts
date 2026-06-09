@@ -87,6 +87,17 @@ export interface PipelineRun {
   /** Operator's review-gate `fix` directive, threaded into the corrective wave. */
   fix_directive: string | null;
   error: string | null;
+  /**
+   * Epoch-ms expiry of the resume lease a tick holds on this run (P3). Set by
+   * `claimRunForResume`'s CAS, cleared when the decision is consumed. A non-null
+   * lease in the future fences a second overlapping tick out of the same run.
+   */
+  resume_lease: number | null;
+  /**
+   * JSON int array of phase indices already merged clean (P3 replay projection).
+   * A replay after a crash re-runs only phases NOT in this set.
+   */
+  completed_phases: string | null;
   created_at: number;
   updated_at: number;
 }

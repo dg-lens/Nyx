@@ -44,7 +44,7 @@ const SMOKE_MODEL = 'sonnet';
 const SMOKE_TOOLS = ['Read', 'Glob', 'Grep', 'Bash', 'TodoWrite'];
 const DIAGNOSTIC_TOOLS = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit', 'MultiEdit', 'TodoWrite'];
 
-export type ShipReason = 'catastrophic' | 'unresolved';
+export type ShipReason = 'catastrophic' | 'unresolved' | 'base_missing';
 
 export interface SmokeResult {
   passed: boolean;
@@ -186,6 +186,9 @@ export function reviewRecommendation(run: PipelineRun, reason: ShipReason, smoke
   const f = parseFindings(run);
   if (reason === 'catastrophic') {
     return `CATASTROPHIC — composer flagged unrecoverable state; rollback or abort`;
+  }
+  if (reason === 'base_missing') {
+    return `BASE MISSING — the working base was evicted between ticks (earlier phases lost); rollback to replan, or abort`;
   }
   const bits: string[] = [];
   if (f.held.length) bits.push(`${f.held.length} task(s) unintegrated (${f.held.join(', ')})`);
