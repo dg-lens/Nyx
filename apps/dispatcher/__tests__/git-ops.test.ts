@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
-import { _setWorktreesDir, inFlight, writeLivenessSentinel } from '../src/git-ops.js';
+import { _setWorktreesDir, inFlight, repoUrl, writeLivenessSentinel } from '../src/git-ops.js';
 import { config } from '../src/config.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -136,5 +136,17 @@ describe('inFlight — clone dir', () => {
     // No sentinel written
     assert.equal(inFlight(taskId), 'stale_cleared');
     assert.equal(inFlight(taskId), 'none');
+  });
+});
+
+describe('repoUrl (H2 token-in-.git/config guard)', () => {
+  test('never embeds a credential in the clone URL', () => {
+    const url = repoUrl('lens-cx/employee-portal');
+    assert.equal(url, 'https://github.com/lens-cx/employee-portal.git');
+    assert.ok(!url.includes('x-access-token'), 'no embedded username');
+    assert.ok(!url.includes('@'), 'no credential separator in URL');
+    if (config.githubToken) {
+      assert.ok(!url.includes(config.githubToken), 'token must never appear in the persisted URL');
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { execSync, execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
 import { config } from './config.js';
@@ -31,11 +31,57 @@ export function redactSecrets(s: string): string {
 // `run`/`tryRun` already turn into a deterministic failure for the audit phase.
 const GIT_TIMEOUT_MS = 120_000;
 
+// Lazily-written GIT_ASKPASS helper (H2). The GitHub token reaches git via the
+// NYX_GIT_TOKEN env var on each network call and is read by this script — it is
+// NEVER embedded in the clone URL git persists into `<clone>/.git/config` (the
+// old `https://x-access-token:<TOKEN>@github.com/…` form) nor placed on a command
+// line, so a spawned code/analysis agent with Bash+Read inside the clone cannot
+// recover the operator's all-repo-write PAT. The script body itself holds no
+// secret. `*sername*` answers the username prompt with the GitHub App user; every
+// other prompt (the password) gets the token from the env.
+let askpassPathMemo: string | null = null;
+function ensureAskpassHelper(): string {
+  if (askpassPathMemo && existsSync(askpassPathMemo)) return askpassPathMemo;
+  const dir = resolve(config.dataDir, 'data');
+  mkdirSync(dir, { recursive: true });
+  const p = resolve(dir, '.nyx-git-askpass.sh');
+  const body =
+    '#!/bin/sh\n' +
+    'case "$1" in\n' +
+    "  *sername*) printf '%s' 'x-access-token' ;;\n" +
+    '  *) printf \'%s\' "$NYX_GIT_TOKEN" ;;\n' +
+    'esac\n';
+  writeFileSync(p, body, { mode: 0o700 });
+  chmodSync(p, 0o700);
+  askpassPathMemo = p;
+  return p;
+}
+
 // GIT_TERMINAL_PROMPT=0 + GCM_INTERACTIVE=never: never block on an interactive
 // credential prompt (empty/expired PAT on a private HTTPS repo) — fail fast
-// instead of wedging the dispatcher waiting on stdin.
+// instead of wedging the dispatcher waiting on stdin. When a token is configured,
+// wire GIT_ASKPASS so private-repo clone/fetch/push authenticate out-of-band
+// without the token ever landing in .git/config (H2).
 function gitEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+  };
+  if (config.githubToken) {
+    env['GIT_ASKPASS'] = ensureAskpassHelper();
+    env['NYX_GIT_TOKEN'] = config.githubToken;
+    // Clear any inherited credential.helper (e.g. macOS osxkeychain) for OUR git
+    // invocations so auth is deterministic via GIT_ASKPASS — never a stale/wrong
+    // keychain entry winning ahead of askpass, and no helper caching the token to
+    // disk. Injected via GIT_CONFIG_* env (git ≥ 2.31) so it is neither persisted
+    // to .git/config nor placed on argv. The old token-in-URL form bypassed
+    // helpers implicitly; this preserves that determinism without the token.
+    env['GIT_CONFIG_COUNT'] = '1';
+    env['GIT_CONFIG_KEY_0'] = 'credential.helper';
+    env['GIT_CONFIG_VALUE_0'] = '';
+  }
+  return env;
 }
 
 // Re-throw an execSync/execFileSync error with every secret value scrubbed from
@@ -393,8 +439,11 @@ export function createOutputDir(taskId: string, subPath?: string): WorkingDir {
   return { kind: 'output', path: dir, cleanup: () => {} };
 }
 
-function repoUrl(repo: string): string {
-  if (config.githubToken) return `https://x-access-token:${config.githubToken}@github.com/${repo}.git`;
+export function repoUrl(repo: string): string {
+  // Tokenless URL ALWAYS (H2). The token is never embedded in the URL that git
+  // persists into <clone>/.git/config — auth for private repos is supplied
+  // out-of-band per network call via GIT_ASKPASS (see gitEnv). A spawned agent
+  // reading .git/config now sees only this public URL, not the operator's PAT.
   return `https://github.com/${repo}.git`;
 }
 
