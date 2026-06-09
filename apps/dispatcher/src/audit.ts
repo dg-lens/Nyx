@@ -20,6 +20,18 @@ export type AuditEvent =
   | 'task.usage.metered'
   // Loop-detector: spawn killed by the stdout-silence watchdog, not wall-clock
   | 'task.claude.stalled'
+  // MCP-plane resilience (G-D). Breaker state transitions are observational rows
+  // on the otherwise-mutable mcp_server_health table; probe/policy/auth events
+  // record the pre-spawn suppression decisions. See mcp-resilience.ts.
+  | 'task.mcp.breaker_opened'
+  | 'task.mcp.breaker_closed'
+  | 'task.mcp.servers_withheld'
+  | 'task.mcp.policy_decision'
+  | 'task.mcp.auth_stale'
+  // Reactive auth-failure: a spawn's stream-json showed an MCP call 401/403; the
+  // failing server's credential is marked expired so the next tick's healAuth
+  // routes it to the operator-action path. See mcp-auth-healer.recordAuthFailure.
+  | 'task.mcp.auth_failure'
   | 'task.gate.completed'
   | 'task.committed'
   | 'task.merged'

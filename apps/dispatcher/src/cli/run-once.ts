@@ -54,6 +54,9 @@ import {
 import { runPreflight } from '../preflight.js';
 import { STALLED_EXIT_CODE } from '../spawn-helpers.js';
 import { redactCredentialPatterns } from '../redaction.js';
+import { listMcpServers } from '../mcp-discovery.js';
+import { authFailedServers, recordSpawnOutcome } from '../mcp-resilience.js';
+import { healAuth, recordAuthFailure } from '../mcp-auth-healer.js';
 import { buildPrompt, invokeClaude, invokeWisdomCapture } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
@@ -398,6 +401,21 @@ async function attemptTask(
     return { status: 'failed-recoverable', failureLog };
   }
 
+  // ── Pre-spawn MCP auth-heal (G-D) ──
+  // For MCP-dependent task types, proactively check each credential's TTL BEFORE
+  // the spawn. A token past its refresh window surfaces as a generic tool error
+  // mid-spawn → agent drift → exit 124. Proactive flagging (the 80%-TTL point)
+  // emits task.mcp.auth_stale so the operator can re-auth before the next tick.
+  // Observation-only / non-fatal: we never block the spawn here — a stale token
+  // may still work, and the reactive 401 classifier below catches a dead one.
+  if (task.type === 'assistant' || task.type === 'analysis') {
+    try {
+      healAuth(listMcpServers(), { taskId: task.id });
+    } catch {
+      /* auth-heal is best-effort; never block a spawn on it */
+    }
+  }
+
   const claudeResult = await invokeClaude(
     task,
     workingDir.path,
@@ -408,6 +426,43 @@ async function attemptTask(
     exitCode: claudeResult.exitCode,
     durationMs: claudeResult.durationMs,
   });
+
+  // ── Post-spawn MCP breaker bookkeeping (G-D) ──
+  // For MCP-dependent task types, attribute each MCP tool call in the spawn's
+  // stream-json output to its server and update the cross-process breaker per
+  // server: a failed call (auth 401/403 vs transport 5xx/timeout) increments toward
+  // opening the breaker, a successful call closes a half-open one. This is what
+  // makes the breaker survive the cold-per-spawn model — the state lives in nyx.db,
+  // not the dead child — and what makes it actually accumulate (the single-result
+  // envelope dropped the tool tokens, so the prior text-regex path saw nothing).
+  // The breaker_opened/closed rows are the post-mortem join the MCP-heavy hang T4
+  // entries lacked. Best-effort: any throw here never affects the task outcome.
+  //
+  // CRUCIALLY: the returned auth-kind is USED, not discarded. An auth-classed
+  // failure marks the failing servers' credentials expired (mcp_credentials) so the
+  // NEXT tick's pre-spawn healAuth flags them and routes to the operator-action
+  // path — the generic Opus diagnostic can't drive a browser re-auth, so without
+  // this an auth failure just burns audit passes. We re-derive the per-server auth
+  // set from the same stream-json tool events recordSpawnOutcome used, so only the
+  // server that actually 401'd is marked, not every server the spawn touched.
+  if (task.type === 'assistant' || task.type === 'analysis') {
+    try {
+      const combined = `${claudeResult.stderr}\n${claudeResult.stdout}`;
+      const events = claudeResult.mcpToolEvents ?? [];
+      const kind = recordSpawnOutcome(combined, { exitCode: claudeResult.exitCode, events });
+      if (kind === 'auth') {
+        const authServers = authFailedServers(events, combined);
+        for (const server of authServers) recordAuthFailure(server);
+        audit('task.mcp.auth_failure', 'dispatcher', { taskId: task.id, servers: authServers });
+        void notify.dm(
+          `🔑 *${task.id}* — an MCP server returned an auth error (${authServers.join(', ') || 'unattributed'}). ` +
+            `Re-auth the connector; the breaker has suppressed it for this cooldown.`,
+        );
+      }
+    } catch {
+      /* breaker bookkeeping is best-effort; never affect task flow */
+    }
+  }
 
   // Per-spawn cost/token metering (G-B/P1). Locally-estimated dollars survive the
   // Max-plan OAuth seat (no billing signal). Recorded as its own audit event so it
