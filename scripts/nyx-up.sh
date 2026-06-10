@@ -40,6 +40,18 @@ if [[ -f "$HOST_PLIST" ]]; then
   fi
 fi
 
+WATCHDOG_PLIST="$NYX_DATA_DIR/com.nyx.watchdog.plist"
+if [[ -f "$WATCHDOG_PLIST" ]]; then
+  echo
+  echo "── watchdog (launchd) ──"
+  if launchctl list 2>/dev/null | grep -q nyx.watchdog; then
+    echo "  ✓ already loaded"
+  else
+    launchctl load -w "$WATCHDOG_PLIST"
+    echo "  ✓ loaded"
+  fi
+fi
+
 echo
 echo "── status ──"
 bash "$NYX_ROOT/scripts/nyx-status.sh"

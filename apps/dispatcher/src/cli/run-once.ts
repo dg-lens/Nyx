@@ -80,6 +80,7 @@ import {
   finalizeCodeLocal,
   finalizeContent,
 } from './finalize.js';
+import { writeHeartbeat } from '../heartbeat.js';
 import * as git from '../git-ops.js';
 import { ingestInbox } from '../secrets/inbox-ingest.js';
 import { handleSpawnProject, isSpawnProjectTask } from '../secrets/spawn-project.js';
@@ -1563,6 +1564,11 @@ async function main(): Promise<void> {
   }
 
   await emitHook('tick.after', { slot: slotOf(), pid: process.pid });
+  try {
+    writeHeartbeat(slotOf());
+  } catch (err) {
+    console.error('[nyx] heartbeat write failed (non-fatal):', (err as Error).message);
+  }
   lock.release();
 }
 
