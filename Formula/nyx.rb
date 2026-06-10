@@ -155,8 +155,14 @@ class Nyx < Formula
         brew services list
 
       Or use the nyx CLI:
-        nyx up    # loads the launchd plist directly
-        nyx down  # unloads
+        nyx up    # loads BOTH the dispatcher and the watchdog launchd agents
+        nyx down  # unloads both
+
+      Keg-independent watchdog:
+        `nyx up` also loads com.nyx.watchdog (15-min interval). It is pure
+        bash+curl — it survives a broken keg and alerts (Pushover, then Slack)
+        if the dispatcher stops ticking. `brew services start` loads only the
+        dispatcher; run `nyx up` once to activate the watchdog too.
 
       To override the data directory:
         export NYX_DATA_DIR=/path/to/data

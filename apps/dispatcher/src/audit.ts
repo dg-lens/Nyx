@@ -14,6 +14,11 @@ export type AuditEvent =
   | 'dispatch.chain_verified'
   | 'dispatch.update_check'
   | 'dispatch.update_available'
+  // Tick-gap self-detection: the shell writes data/last-tick-ok on exit 0; this
+  // tick read it at startup and found a gap larger than the threshold, meaning a
+  // prior outage (failed keg, dead launchd) just ended. Recovery signal, not a
+  // task failure. See heartbeat.ts tickGapMinutes + the run-once.ts main() head.
+  | 'tick.gap_detected'
   | 'task.started'
   | 'task.claude.exited'
   // Per-spawn cost/token metering off `claude -p --output-format json` (G-B/P1)

@@ -33,6 +33,39 @@ fi
 NEXT_TICK=$(date -v +15M "+%H:%M" | awk -F: '{ m = int($2/15) * 15; printf "%s:%02d\n", $1, m }')
 info "next quarter-hour mark: $NEXT_TICK (current slot: $(date "+%-H %-M" | awk '{ print $1*4 + int($2/15) }'))"
 
+WATCHDOG_LINE=$(launchctl list 2>/dev/null | grep nyx.watchdog || true)
+if [[ -n "$WATCHDOG_LINE" ]]; then
+  WD_PID=$(echo "$WATCHDOG_LINE" | awk '{print $1}')
+  WD_EXIT=$(echo "$WATCHDOG_LINE" | awk '{print $2}')
+  if [[ "$WD_PID" != "-" ]]; then
+    ok "watchdog loaded — currently running (pid $WD_PID)"
+  elif [[ "$WD_EXIT" == "0" ]]; then
+    ok "watchdog loaded — last exit 0"
+  else
+    warn "watchdog loaded — last exit $WD_EXIT"
+  fi
+elif [[ -f "$NYX_DATA_DIR/com.nyx.watchdog.plist" ]]; then
+  warn "watchdog not loaded — run: nyx up  (or launchctl load -w $NYX_DATA_DIR/com.nyx.watchdog.plist)"
+else
+  warn "watchdog not provisioned — run: nyx up  (self-heals the plist + script)"
+fi
+LAST_TICK_OK="$NYX_DATA_DIR/data/last-tick-ok"
+if [[ -f "$LAST_TICK_OK" ]]; then
+  LAST_OK_EPOCH=$(cat "$LAST_TICK_OK" 2>/dev/null)
+  if [[ "$LAST_OK_EPOCH" =~ ^[0-9]+$ ]]; then
+    AGE_MIN=$(( ( $(date +%s) - LAST_OK_EPOCH ) / 60 ))
+    if [[ "$AGE_MIN" -lt 0 ]]; then
+      info "last healthy tick: future-dated heartbeat (clock skew) — treated as fresh"
+    else
+      info "last healthy tick: ${AGE_MIN}m ago"
+    fi
+  else
+    warn "last-tick-ok heartbeat is malformed"
+  fi
+else
+  info "last healthy tick: none yet (no data/last-tick-ok)"
+fi
+
 printf "\n\033[1mlockfile\033[0m\n"
 if [[ -f "$LOCKFILE" ]]; then
   LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null || echo "?")
