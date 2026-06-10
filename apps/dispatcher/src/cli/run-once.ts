@@ -80,6 +80,7 @@ import {
   finalizeCodeLocal,
   finalizeContent,
 } from './finalize.js';
+import { tickGapMinutes } from '../heartbeat.js';
 import * as git from '../git-ops.js';
 import { ingestInbox } from '../secrets/inbox-ingest.js';
 import { handleSpawnProject, isSpawnProjectTask } from '../secrets/spawn-project.js';
@@ -1345,6 +1346,32 @@ async function main(): Promise<void> {
   }
   audit('dispatch.chain_verified', 'dispatcher', { rows: chain.totalRows, full: chain.wasFull });
 
+  // Tick-gap self-detection. The shell writes data/last-tick-ok (epoch seconds)
+  // on `tick exit 0`. If the gap since the last healthy tick exceeds the
+  // threshold, a prior outage (failed keg, dead launchd — the 2026-06-08
+  // incident) just ended; this is the FIRST tick after recovery. Emit a recovery
+  // signal + notify so the operator learns the daemon is alive again. Swallowed:
+  // a heartbeat read/parse hiccup must never abort a tick that can do real work.
+  try {
+    const lastTickPath = `${config.dataDir}/data/last-tick-ok`;
+    let lastOk: number | null = null;
+    if (existsSync(lastTickPath)) {
+      const parsed = Number.parseInt(readFileSync(lastTickPath, 'utf8').trim(), 10);
+      lastOk = Number.isFinite(parsed) ? parsed : null;
+    }
+    const gap = tickGapMinutes(lastOk, Date.now());
+    if (gap !== null && gap > 20) {
+      audit('tick.gap_detected', 'dispatcher', { gap_minutes: gap });
+      await notify.deliver(
+        'action-required',
+        `⚠️ Nyx outage recovered: first successful tick after a ${gap}m gap. ` +
+          `The dispatcher was silent for ~${Math.round(gap / 60)}h — check logs/launchctl for the cause.`,
+      );
+    }
+  } catch (err) {
+    console.error('[nyx] tick-gap check failed (non-fatal):', (err as Error).message);
+  }
+
   await initPlugins();
   await emitHook('tick.before', { slot: slotOf(), pid: process.pid });
 
@@ -1563,6 +1590,9 @@ async function main(): Promise<void> {
   }
 
   await emitHook('tick.after', { slot: slotOf(), pid: process.pid });
+  // The heartbeat is written by the shell (`nyx-dispatch.sh`) on `tick exit 0`,
+  // not here — exactly one writer. A TS-side write would record a "success" even
+  // for a tick whose process later exits non-zero, defeating the watchdog.
   lock.release();
 }
 

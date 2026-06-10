@@ -15,12 +15,22 @@ else
   echo "  ⊘ not loaded"
 fi
 
+WATCHDOG_PLIST="$NYX_DATA_DIR/com.nyx.watchdog.plist"
 echo
-echo "── 2. sync daemon ───────────────────────────────────────"
+echo "── 2. watchdog (launchd) ────────────────────────────────"
+if launchctl list 2>/dev/null | grep -q nyx.watchdog; then
+  launchctl unload -w "$WATCHDOG_PLIST"
+  echo "  ✓ unloaded"
+else
+  echo "  ⊘ not loaded"
+fi
+
+echo
+echo "── 3. sync daemon ───────────────────────────────────────"
 bash "$NYX_ROOT/scripts/nyx-sync.sh" stop
 
 echo
-echo "── 3. dashboard ─────────────────────────────────────────"
+echo "── 4. dashboard ─────────────────────────────────────────"
 bash "$NYX_ROOT/scripts/nyx-dashboard.sh" stop
 
 echo

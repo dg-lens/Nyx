@@ -57,6 +57,16 @@ sed -e "s#__NYX_REPO_ROOT__#${NYX_REPO_ROOT}#g" \
     "$HOST_TEMPLATE" > "$HOST_PLIST"
 echo "  host plist generated → $HOST_PLIST"
 
+mkdir -p "$NYX_DATA_DIR/scripts"
+cp "$NYX_REPO_ROOT/scripts/nyx-watchdog.sh" "$NYX_DATA_DIR/scripts/nyx-watchdog.sh"
+chmod +x "$NYX_DATA_DIR/scripts/nyx-watchdog.sh"
+WATCHDOG_TEMPLATE="$NYX_REPO_ROOT/config/launchd/com.nyx.watchdog.plist.template"
+WATCHDOG_PLIST="$NYX_DATA_DIR/com.nyx.watchdog.plist"
+sed -e "s#__NYX_DATA_DIR__#${NYX_DATA_DIR}#g" \
+    -e "s#__NYX_HOME__#${HOME}#g" \
+    "$WATCHDOG_TEMPLATE" > "$WATCHDOG_PLIST"
+echo "  watchdog plist generated → $WATCHDOG_PLIST (script at $NYX_DATA_DIR/scripts/nyx-watchdog.sh)"
+
 echo "  building (pnpm install + build)…"
 (cd "$NYX_REPO_ROOT" && pnpm install --prefer-offline && pnpm -r build)
 

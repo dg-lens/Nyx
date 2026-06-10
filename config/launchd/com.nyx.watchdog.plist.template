@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nyx.watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__NYX_DATA_DIR__/scripts/nyx-watchdog.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__NYX_DATA_DIR__</string>
+
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__NYX_DATA_DIR__/logs/watchdog.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__NYX_DATA_DIR__/logs/watchdog.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>__NYX_HOME__</string>
+        <key>NYX_DATA_DIR</key>
+        <string>__NYX_DATA_DIR__</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>5</integer>
+</dict>
+</plist>

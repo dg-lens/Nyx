@@ -76,6 +76,11 @@ fi
 
 echo "[$(date -Iseconds)] tick exit $EXIT" >> "$LOG_FILE"
 
+if [ "$EXIT" -eq 0 ]; then
+  mkdir -p "$NYX_DATA_DIR/data"
+  date +%s > "$NYX_DATA_DIR/data/last-tick-ok"
+fi
+
 find "$LOG_DIR" -name 'dispatch-*.log' -type f -mtime +"${LOG_RETENTION_DAYS:-7}" -delete 2>/dev/null
 
 exit $EXIT

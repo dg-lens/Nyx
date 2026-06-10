@@ -40,6 +40,30 @@ if [[ -f "$HOST_PLIST" ]]; then
   fi
 fi
 
+WATCHDOG_PLIST="$NYX_DATA_DIR/com.nyx.watchdog.plist"
+WATCHDOG_TEMPLATE="$NYX_ROOT/config/launchd/com.nyx.watchdog.plist.template"
+echo
+echo "── watchdog (launchd) ──"
+if [[ ! -f "$WATCHDOG_PLIST" && -f "$WATCHDOG_TEMPLATE" ]]; then
+  mkdir -p "$NYX_DATA_DIR/scripts"
+  cp "$NYX_ROOT/scripts/nyx-watchdog.sh" "$NYX_DATA_DIR/scripts/nyx-watchdog.sh"
+  chmod +x "$NYX_DATA_DIR/scripts/nyx-watchdog.sh"
+  sed -e "s#__NYX_DATA_DIR__#${NYX_DATA_DIR}#g" \
+      -e "s#__NYX_HOME__#${HOME}#g" \
+      "$WATCHDOG_TEMPLATE" > "$WATCHDOG_PLIST"
+  echo "  ✓ watchdog plist + script provisioned (self-heal)"
+fi
+if [[ -f "$WATCHDOG_PLIST" ]]; then
+  if launchctl list 2>/dev/null | grep -q nyx.watchdog; then
+    echo "  ✓ already loaded"
+  else
+    launchctl load -w "$WATCHDOG_PLIST"
+    echo "  ✓ loaded"
+  fi
+else
+  echo "  ⊘ no watchdog template — skipped"
+fi
+
 echo
 echo "── status ──"
 bash "$NYX_ROOT/scripts/nyx-status.sh"
