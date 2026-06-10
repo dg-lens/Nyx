@@ -37,13 +37,45 @@ if [ "$IS_SOURCE_CHECKOUT" = "0" ]; then
     set -x
     export HOMEBREW_NO_AUTO_UPDATE=1
     echo \"nyx update started: \$(date)\"
-    if brew list nyx >/dev/null 2>&1; then
-      brew reinstall --HEAD dg-lens/nyx/nyx
+    brew trust dg-lens/nyx >/dev/null 2>&1 || true
+    MARKER=\"$NYX_DATA_DIR/data/update-failed.marker\"
+    KEG_DIR=\$(readlink -f /opt/homebrew/opt/nyx 2>/dev/null || true)
+    if [ -z \"\$KEG_DIR\" ] || [ ! -d \"\$KEG_DIR\" ]; then
+      echo \"no existing nyx keg to protect — installing fresh\"
+      if ! brew install --HEAD dg-lens/nyx/nyx; then
+        echo \"fresh install failed\"
+        mkdir -p \"$NYX_DATA_DIR/data\"
+        tail -n 30 \"$LOG\" >\"\$MARKER\" 2>/dev/null || true
+        ls /opt/homebrew/Cellar/nyx/ || true
+        exit 1
+      fi
     else
-      brew install --HEAD dg-lens/nyx/nyx
+      BACKUP=\"\$(dirname \"\$KEG_DIR\")/.nyx-keg-backup.\$\$\"
+      if ! cp -R \"\$KEG_DIR\" \"\$BACKUP\"; then
+        echo \"FATAL: keg backup failed — refusing to uninstall, system stays kegged\"
+        mkdir -p \"$NYX_DATA_DIR/data\"
+        tail -n 30 \"$LOG\" >\"\$MARKER\" 2>/dev/null || true
+        ls /opt/homebrew/Cellar/nyx/ || true
+        exit 1
+      fi
+      brew uninstall nyx || true
+      if brew install --HEAD dg-lens/nyx/nyx && [ -x /opt/homebrew/opt/nyx/bin/nyx-dispatch.sh ]; then
+        rm -rf \"\$BACKUP\"
+        rm -f \"\$MARKER\"
+      else
+        echo \"install failed or keg incomplete — restoring backup\"
+        cp -R \"\$BACKUP\" \"/opt/homebrew/Cellar/nyx/\$(basename \"\$KEG_DIR\")\" || true
+        brew link nyx || brew link --overwrite nyx || true
+        rm -rf \"\$BACKUP\"
+        mkdir -p \"$NYX_DATA_DIR/data\"
+        tail -n 30 \"$LOG\" >\"\$MARKER\" 2>/dev/null || true
+        ls /opt/homebrew/Cellar/nyx/ || true
+        exit 1
+      fi
     fi
     $APP_STEP
     echo \"nyx update finished: \$(date)\"
+    ls /opt/homebrew/Cellar/nyx/ || true
   " >"$LOG" 2>&1 &
   disown
   echo
