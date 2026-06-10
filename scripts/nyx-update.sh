@@ -33,10 +33,15 @@ if [ "$IS_SOURCE_CHECKOUT" = "0" ]; then
   [ "$WANT_APP" = "1" ] && echo "  will also rebuild the desktop app when done."
 
   nohup bash -c "
+    set -euo pipefail
     set -x
+    export HOMEBREW_NO_AUTO_UPDATE=1
     echo \"nyx update started: \$(date)\"
-    brew uninstall nyx || true
-    brew install --HEAD dg-lens/nyx/nyx
+    if brew list nyx >/dev/null 2>&1; then
+      brew reinstall --HEAD dg-lens/nyx/nyx
+    else
+      brew install --HEAD dg-lens/nyx/nyx
+    fi
     $APP_STEP
     echo \"nyx update finished: \$(date)\"
   " >"$LOG" 2>&1 &
