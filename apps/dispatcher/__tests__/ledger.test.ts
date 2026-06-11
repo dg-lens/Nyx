@@ -96,6 +96,16 @@ describe('sentenceForRun — one human sentence per run via run-tree outcome', (
     assert.doesNotMatch(s, /no file or malformed/);
   });
 
+  test('halted → resumed → halted again renders the latest halt’s pattern', () => {
+    const trees = projectRunTrees([
+      row('2026-06-09T10:00:00.000Z', 'task.started', 'dispatcher', { taskId: 'T-3c', type: 'code' }),
+      row('2026-06-09T10:01:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'T-3c', pattern: 'expects-prevalidate' }),
+      row('2026-06-09T10:02:00.000Z', 'task.resumed', 'dispatcher', { taskId: 'T-3c', note: 'paths fixed' }),
+      row('2026-06-09T10:03:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'T-3c', pattern: 'audit-cap' }),
+    ]);
+    assert.match(sentenceForRun(trees[0]!), /T-3c \(code\) halted — audit-cap/);
+  });
+
   test('an in-progress run reads as in flight', () => {
     const trees = projectRunTrees([
       row('2026-06-09T10:00:00.000Z', 'task.started', 'dispatcher', { taskId: 'T-4', type: 'analysis' }),

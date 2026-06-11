@@ -153,6 +153,7 @@ export async function runAudit(ctx: AuditContext): Promise<AuditOutcome> {
     });
     return {
       kind: 'escalated_to_halt',
+      pattern: 'audit-cap',
       operatorReport: `Audit cap reached: this task has been audited ${MAX_AUDIT_PASSES} times without producing a green run. Manual intervention required. The most recent failure log:\n\n${ctx.failureLog.slice(0, 2000)}`,
     };
   }
