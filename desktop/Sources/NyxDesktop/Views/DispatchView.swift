@@ -1,11 +1,21 @@
 import SwiftUI
 
-// Template families and the task type each applies to. MIRROR of the single
-// source of truth at apps/assistant/src/index.ts (TEMPLATE_TYPES) — keep in
-// lockstep with that map; the dispatcher validates the emitted [template:] tag
-// against it. Order here is the picker's display order. code/analysis/pipeline
-// have no templates, so they appear under no type and the picker shows Auto only.
+// Template families: the task type each applies to, a one-line blurb shown on
+// hover, and the variable inputs the description must supply (used to build the
+// fill-in skeleton). MIRROR of the single source of truth at
+// apps/assistant/src/index.ts (TEMPLATE_CATALOG) — keep ids/types/blurbs/inputs
+// in lockstep with that catalog; the dispatcher validates the emitted
+// [template:] tag against it. Order here is the picker's display order.
+// code/analysis/pipeline have no templates, so they appear under no type and
+// the picker shows Auto only.
+private struct TemplateEntry {
+    let type: String
+    let blurb: String
+    let inputs: [String]
+}
+
 private enum TemplateCatalog {
+    // Display order per type. Keys index into `entries`.
     static let assistant: [String] = [
         "MORNING-BRIEF", "CALENDAR-SYNC", "REMINDER", "SLACK-DIGEST",
         "INBOX-TRIAGE", "ROTATION-CHECK",
@@ -20,6 +30,124 @@ private enum TemplateCatalog {
         "DECK-INVESTOR-UPDATE", "DOC-WEEKLY-REPORT", "SHEET-PIPELINE-EXPORT",
     ]
 
+    static let entries: [String: TemplateEntry] = [
+        "MORNING-BRIEF": TemplateEntry(
+            type: "assistant",
+            blurb: "Daily roll-up of calendar, Slack, inbox, and Nyx queue status.",
+            inputs: []),
+        "CALENDAR-SYNC": TemplateEntry(
+            type: "assistant",
+            blurb: "Flags calendar conflicts, prep-needed meetings, tight gaps, and open focus blocks.",
+            inputs: []),
+        "REMINDER": TemplateEntry(
+            type: "assistant",
+            blurb: "Restates a reminder with any related context and DMs it to you.",
+            inputs: ["what to remind", "when (optional)"]),
+        "SLACK-DIGEST": TemplateEntry(
+            type: "assistant",
+            blurb: "Summarizes overnight Slack DMs, mentions, and notable channel threads.",
+            inputs: []),
+        "INBOX-TRIAGE": TemplateEntry(
+            type: "assistant",
+            blurb: "Sorts unread Gmail into Urgent, Needs-Response, FYI, and Ignorable.",
+            inputs: []),
+        "ROTATION-CHECK": TemplateEntry(
+            type: "assistant",
+            blurb: "Surfaces secrets rotations due in the next 7 days or already overdue.",
+            inputs: []),
+
+        "DIGEST-SALES": TemplateEntry(
+            type: "assistant",
+            blurb: "Sales-scoped daily roll-up across Slack, Gmail, Notion, and calendar.",
+            inputs: []),
+        "DIGEST-MARKETING": TemplateEntry(
+            type: "assistant",
+            blurb: "Marketing-scoped daily roll-up across Slack, Gmail, Notion, and calendar.",
+            inputs: []),
+        "DIGEST-OPS": TemplateEntry(
+            type: "assistant",
+            blurb: "Ops-scoped daily roll-up across Slack, Gmail, Notion, and calendar.",
+            inputs: []),
+
+        "BRIEF-COMPETITOR": TemplateEntry(
+            type: "assistant",
+            blurb: "Cited competitor brief: positioning, pricing, go-to-market, and threat read.",
+            inputs: ["competitor name", "focus area (optional)"]),
+        "BRIEF-PROSPECT": TemplateEntry(
+            type: "assistant",
+            blurb: "Cited prospect brief: company snapshot, buying signals, key people, and hook.",
+            inputs: ["prospect / company name", "focus area (optional)"]),
+        "BRIEF-MARKET": TemplateEntry(
+            type: "assistant",
+            blurb: "Cited market brief: shape, movers, trends, and the so-what for strategy.",
+            inputs: ["market / space name", "focus area (optional)"]),
+
+        "TRIAGE-SLACK": TemplateEntry(
+            type: "assistant",
+            blurb: "Sorts recent Slack DMs and mentions into four action buckets.",
+            inputs: []),
+        "TRIAGE-NOTION": TemplateEntry(
+            type: "assistant",
+            blurb: "Sorts recent Notion pages, comments, and assignments into four action buckets.",
+            inputs: []),
+        "TRIAGE-ALL": TemplateEntry(
+            type: "assistant",
+            blurb: "Merges Gmail, Slack, and Notion into one cross-surface triage list.",
+            inputs: []),
+
+        "MEETING-PREP": TemplateEntry(
+            type: "assistant",
+            blurb: "Builds a prep pack for an upcoming meeting from calendar, mail, Slack, and Notion.",
+            inputs: ["meeting name or hint"]),
+        "MEETING-FOLLOWUP": TemplateEntry(
+            type: "assistant",
+            blurb: "Turns raw meeting notes into decisions, action items, and DRAFT follow-ups.",
+            inputs: ["meeting name", "raw notes"]),
+
+        "WATCH-DEPS": TemplateEntry(
+            type: "assistant",
+            blurb: "Surveys dependency manifests for stale, risky, or bump-worthy packages.",
+            inputs: []),
+        "WATCH-DEADCODE": TemplateEntry(
+            type: "assistant",
+            blurb: "Flags likely-unused exports, orphan files, and unused dependencies.",
+            inputs: []),
+        "WATCH-COST": TemplateEntry(
+            type: "assistant",
+            blurb: "Surfaces spend signals: new charges, upcoming renewals, and overage alerts.",
+            inputs: []),
+
+        "DRAFT-OUTREACH": TemplateEntry(
+            type: "content",
+            blurb: "Fills a human outreach template with recipient-specific slots — draft only.",
+            inputs: ["recipient name", "company", "hook / value prop", "call to action"]),
+        "DRAFT-FOLLOWUP": TemplateEntry(
+            type: "content",
+            blurb: "Fills a follow-up template with context-of-last-touch and next step — draft only.",
+            inputs: ["recipient name", "last-touch context", "next step"]),
+        "DRAFT-RELEASE-NOTES": TemplateEntry(
+            type: "content",
+            blurb: "Fills release-notes framing slots around a human-authored feature list — draft only.",
+            inputs: ["version", "headline feature", "ship date"]),
+        "DRAFT-SOCIAL": TemplateEntry(
+            type: "content",
+            blurb: "Fills a social-post template in your voice — draft only, no added hype.",
+            inputs: ["topic", "hook", "link (optional)"]),
+
+        "DECK-INVESTOR-UPDATE": TemplateEntry(
+            type: "content",
+            blurb: "Drafts an investor-update deck outline, filling only labelled token slots.",
+            inputs: ["period", "headline metric", "the ask"]),
+        "DOC-WEEKLY-REPORT": TemplateEntry(
+            type: "content",
+            blurb: "Drafts a structured weekly report from the sources you point it to.",
+            inputs: ["sources or input file", "week of (optional)"]),
+        "SHEET-PIPELINE-EXPORT": TemplateEntry(
+            type: "content",
+            blurb: "Exports a named pipeline source to a clean, structured CSV — read-only.",
+            inputs: ["pipeline source (Notion db or input file)"]),
+    ]
+
     /// Family ids applicable to a task type; empty => the type has no templates.
     static func ids(for type: String) -> [String] {
         switch type {
@@ -28,6 +156,9 @@ private enum TemplateCatalog {
         default: return []
         }
     }
+
+    static func blurb(_ id: String) -> String { entries[id]?.blurb ?? "" }
+    static func inputs(_ id: String) -> [String] { entries[id]?.inputs ?? [] }
 
     /// "BRIEF-COMPETITOR" -> "Brief — Competitor". First hyphen becomes the em
     /// dash separator; remaining segments are title-cased and space-joined.
@@ -40,6 +171,13 @@ private enum TemplateCatalog {
         let tail = parts.dropFirst().joined(separator: " ")
         return tail.isEmpty ? head : "\(head) — \(tail)"
     }
+
+    /// The fill-in skeleton inserted into an empty editor on template select:
+    /// one "Label: " line per input. Empty for zero-input templates.
+    static func skeleton(_ id: String) -> String {
+        let lines = inputs(id).map { "\($0): " }
+        return lines.joined(separator: "\n")
+    }
 }
 
 struct DispatchView: View {
@@ -48,6 +186,10 @@ struct DispatchView: View {
     @State private var type = "code"
     @State private var model = "auto"
     @State private var template = "auto"
+    // The last fill-in skeleton this view inserted into the editor. Used to tell
+    // an unedited skeleton (safe to swap/remove on template change) from text the
+    // user actually typed (never touched). Empty when no skeleton is in place.
+    @State private var lastSkeleton = ""
     @State private var priority = "normal"
     @State private var repo = ""
     @State private var schedule = "standing"
@@ -59,6 +201,35 @@ struct DispatchView: View {
 
     private var templateIds: [String] { TemplateCatalog.ids(for: type) }
     private var typeHasTemplates: Bool { !templateIds.isEmpty }
+
+    /// One-line hint under the picker row for the selected template: the catalog
+    /// blurb plus the inputs the description should supply. Only read when a
+    /// non-Auto template is selected.
+    private var templateHint: String {
+        let blurb = TemplateCatalog.blurb(template)
+        let inputs = TemplateCatalog.inputs(template)
+        guard !inputs.isEmpty else { return blurb }
+        return "\(blurb)  Needs: \(inputs.joined(separator: ", "))"
+    }
+
+    /// Apply a template selection and reconcile the editor's skeleton.
+    /// Templates are SERVER-side prompt builders: the editor text becomes the
+    /// description embedded into the template at spawn, so we NEVER insert the
+    /// full prompt — only a minimal "Label: " fill-in skeleton from the catalog
+    /// inputs, and only when the editor is empty or holds an unedited skeleton we
+    /// inserted earlier. Anything the user typed is left untouched.
+    private func selectTemplate(_ id: String) {
+        let editorIsEmptyOrUneditedSkeleton =
+            text.isEmpty || (!lastSkeleton.isEmpty && text == lastSkeleton)
+
+        template = id
+
+        guard editorIsEmptyOrUneditedSkeleton else { return }
+
+        let newSkeleton = id == "auto" ? "" : TemplateCatalog.skeleton(id)
+        text = newSkeleton
+        lastSkeleton = newSkeleton
+    }
 
     private var scheduleString: String {
         switch schedule {
@@ -90,26 +261,34 @@ struct DispatchView: View {
                         .onChange(of: type) { _ in
                             // Switching to a type that doesn't offer the current
                             // selection resets it to Auto, so a stale [template:]
-                            // never rides along with a mismatched type.
-                            if !templateIds.contains(template) { template = "auto" }
+                            // never rides along with a mismatched type. Route the
+                            // reset through selectTemplate so an unedited skeleton
+                            // from the old template is removed (typed text is kept).
+                            if !templateIds.contains(template) { selectTemplate("auto") }
                         }
                 }
+                // Menu-based dropdown (not a Picker): SwiftUI Picker menu items do
+                // NOT render .help tooltips on macOS, so each option is a Button
+                // carrying .help(blurb) instead. The Menu's default macOS chrome is
+                // a bordered pop-up button with a chevron, matching the sibling
+                // Pickers' height/font/feel. Binding + "auto" sentinel are unchanged.
+                // .help attaches to the enclosing labeled() container, not the Menu:
+                // when disabled, macOS does not fire hover/tooltips on the control
+                // itself, so the "no templates" hint must live on the wrapper.
                 labeled("Template") {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Picker("", selection: $template) {
-                            Text("Auto").tag("auto")
-                            ForEach(templateIds, id: \.self) { id in
-                                Text(TemplateCatalog.humanize(id)).tag(id)
-                            }
+                    Menu {
+                        Button("Auto") { selectTemplate("auto") }
+                        ForEach(templateIds, id: \.self) { id in
+                            Button(TemplateCatalog.humanize(id)) { selectTemplate(id) }
+                                .help(TemplateCatalog.blurb(id))
                         }
-                        .labelsHidden().fixedSize()
-                        .disabled(!typeHasTemplates)
-                        if !typeHasTemplates {
-                            Text("no templates for this type yet")
-                                .font(.caption2).foregroundStyle(.tertiary)
-                        }
+                    } label: {
+                        Text(template == "auto" ? "Auto" : TemplateCatalog.humanize(template))
                     }
+                    .fixedSize()
+                    .disabled(!typeHasTemplates)
                 }
+                .help(typeHasTemplates ? "" : "No templates for this type yet")
                 labeled("Model") {
                     Picker("", selection: $model) {
                         Text("Auto-Detect").tag("auto")
@@ -124,6 +303,13 @@ struct DispatchView: View {
                         .labelsHidden().fixedSize()
                 }
                 Spacer()
+            }
+
+            // Visible hint for the selected template: blurb + the inputs the
+            // description should supply. Only shown for a non-Auto selection.
+            if template != "auto" {
+                Text(templateHint)
+                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             HStack(alignment: .bottom, spacing: 14) {
@@ -164,6 +350,7 @@ struct DispatchView: View {
                                    repo: repo.isEmpty ? nil : repo, schedule: scheduleString,
                                    template: template)
                     text = ""
+                    lastSkeleton = ""
                 } label: {
                     if store.ticking {
                         HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Decomposing…") }
