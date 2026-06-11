@@ -416,3 +416,87 @@ describe('pickNextTask classFilter (type-aware concurrency)', () => {
     assert.equal(pickNextTask(q, { now: atSlot(1), classFilter: 'iso' })?.id, 'BRIEF-HI');
   });
 });
+
+// ─── [template:] tag parsing + validation ────────────────────────────────────
+
+describe('[template:] tag', () => {
+  test('a valid type-matching template parses into ParsedTask.template (round-trip)', () => {
+    write(
+      `## Active Tasks\n\n- [ ] BRIEF-1 — competitor brief\n      [type: assistant] [gate: none] [template: BRIEF-COMPETITOR]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'BRIEF-1');
+    assert.ok(t, 'task parsed');
+    assert.equal(t!.template, 'BRIEF-COMPETITOR');
+    assert.equal(t!.invalidTags.length, 0);
+    // A valid task is still pickable.
+    assert.equal(pickNextTask(q, { now: atSlot(1), classFilter: 'iso' })?.id, 'BRIEF-1');
+  });
+
+  test('a content-type template parses on a content task', () => {
+    write(
+      `## Active Tasks\n\n- [ ] DRAFT-1 — outreach copy\n      [type: content] [gate: none] [template: DRAFT-OUTREACH]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'DRAFT-1');
+    assert.equal(t?.template, 'DRAFT-OUTREACH');
+    assert.equal(t!.invalidTags.length, 0);
+  });
+
+  test('the template id is normalized to upper-case', () => {
+    write(
+      `## Active Tasks\n\n- [ ] BRIEF-2 — brief\n      [type: assistant] [gate: none] [template: brief-market]\n`,
+    );
+    const q = readQueue(queuePath);
+    assert.equal(q.active.find(x => x.id === 'BRIEF-2')?.template, 'BRIEF-MARKET');
+  });
+
+  test('an unknown template id is flagged invalid (loud) and never picked', () => {
+    write(
+      `## Active Tasks\n\n- [ ] BRIEF-3 — brief\n      [type: assistant] [gate: none] [template: NOT-A-TEMPLATE]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'BRIEF-3');
+    assert.ok(t, 'task parsed');
+    assert.equal(t!.template, undefined, 'invalid template is not stored on the task');
+    const flag = t!.invalidTags.find(it => it.tag === 'template');
+    assert.ok(flag, 'template flagged as invalidTag');
+    assert.ok(flag!.raw.includes('unknown'), 'reason names the failure mode');
+    assert.equal(pickNextTask(q, { now: atSlot(1) }), null);
+    assert.ok(tasksWithInvalidTags(q).some(x => x.id === 'BRIEF-3'));
+  });
+
+  test('a template whose type does not match the task type is flagged (type-mismatch)', () => {
+    // BRIEF-COMPETITOR is an assistant template; on a content task it mismatches.
+    write(
+      `## Active Tasks\n\n- [ ] MIX-1 — copy\n      [type: content] [gate: none] [template: BRIEF-COMPETITOR]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'MIX-1');
+    assert.equal(t!.template, undefined);
+    const flag = t!.invalidTags.find(it => it.tag === 'template');
+    assert.ok(flag, 'mismatched template flagged');
+    assert.ok(flag!.raw.includes('type-mismatch'), 'reason names the mismatch');
+    assert.equal(pickNextTask(q, { now: atSlot(1) }), null);
+  });
+
+  test('a template on a code task is always a type mismatch (no code templates)', () => {
+    write(
+      `## Active Tasks\n\n- [ ] CODE-T — fix\n      [type: code] [gate: none] [template: WATCH-DEPS]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'CODE-T');
+    assert.equal(t!.template, undefined);
+    assert.ok(t!.invalidTags.some(it => it.tag === 'template'));
+  });
+
+  test('no [template:] tag leaves ParsedTask.template undefined (auto behavior)', () => {
+    write(
+      `## Active Tasks\n\n- [ ] BRIEF-4 — brief\n      [type: assistant] [gate: none]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'BRIEF-4');
+    assert.equal(t?.template, undefined);
+    assert.equal(t!.invalidTags.length, 0);
+  });
+});

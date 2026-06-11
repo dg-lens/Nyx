@@ -68,6 +68,68 @@ export const REGISTRY: Record<string, (desc: string) => string> = {
   'WATCH-COST':            watchCostPrompt,
 };
 
+/**
+ * SINGLE SOURCE OF TRUTH for which task type each template family applies to.
+ * The Swift Dispatch picker mirrors this map (see desktop DispatchView.swift),
+ * the task-reader validates [template:] tags against it, and the decomposer
+ * plumbing relies on it. Keep it in lockstep with REGISTRY: every key here MUST
+ * exist in REGISTRY and vice-versa (the registry test enforces both directions).
+ *
+ *   - 'assistant' families: the MCP/inbox/brief/triage/meeting/watch/digest set.
+ *   - 'content' families: DRAFT-* / DECK-* / DOC-* / SHEET-* — written copy.
+ *
+ * code/analysis/pipeline have NO templates today, so they appear in neither
+ * value set; a [template:] on those types is always a type mismatch.
+ */
+export type TemplateTaskType = 'assistant' | 'content';
+
+export const TEMPLATE_TYPES: Record<string, TemplateTaskType> = {
+  'MORNING-BRIEF':  'assistant',
+  'CALENDAR-SYNC':  'assistant',
+  'REMINDER':       'assistant',
+  'SLACK-DIGEST':   'assistant',
+  'INBOX-TRIAGE':   'assistant',
+  'ROTATION-CHECK': 'assistant',
+
+  'DIGEST-SALES':     'assistant',
+  'DIGEST-MARKETING': 'assistant',
+  'DIGEST-OPS':       'assistant',
+
+  'BRIEF-COMPETITOR': 'assistant',
+  'BRIEF-PROSPECT':   'assistant',
+  'BRIEF-MARKET':     'assistant',
+
+  'TRIAGE-SLACK':  'assistant',
+  'TRIAGE-NOTION': 'assistant',
+  'TRIAGE-ALL':    'assistant',
+
+  'MEETING-PREP':     'assistant',
+  'MEETING-FOLLOWUP': 'assistant',
+
+  'WATCH-DEPS':     'assistant',
+  'WATCH-DEADCODE': 'assistant',
+  'WATCH-COST':     'assistant',
+
+  'DRAFT-OUTREACH':      'content',
+  'DRAFT-FOLLOWUP':      'content',
+  'DRAFT-RELEASE-NOTES': 'content',
+  'DRAFT-SOCIAL':        'content',
+
+  'DECK-INVESTOR-UPDATE':  'content',
+  'DOC-WEEKLY-REPORT':     'content',
+  'SHEET-PIPELINE-EXPORT': 'content',
+};
+
+/** True iff `id` is a known template family id (exact match, not prefix). */
+export function isTemplateId(id: string): boolean {
+  return Object.prototype.hasOwnProperty.call(TEMPLATE_TYPES, id);
+}
+
+/** The task type a template family applies to, or null for an unknown id. */
+export function templateTypeOf(id: string): TemplateTaskType | null {
+  return TEMPLATE_TYPES[id] ?? null;
+}
+
 export function findTemplate(taskId: string): ((desc: string) => string) | null {
   if (REGISTRY[taskId]) return REGISTRY[taskId];
   for (const key of Object.keys(REGISTRY)) {

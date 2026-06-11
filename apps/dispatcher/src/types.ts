@@ -38,6 +38,15 @@ export interface ParsedTask {
    * content and prepends the block to the agent's prompt before the task header.
    */
   reading?: string[];
+  /**
+   * Explicit template family id from `[template: <ID>]`. When set, it OVERRIDES
+   * findTemplate's id-prefix matching in buildPrompt — the named family's prompt
+   * builder is used verbatim. Validated at parse time against the assistant
+   * package's TEMPLATE_TYPES registry: an unknown id, or an id whose template
+   * type doesn't match this task's type, becomes an invalidTag (loud, not
+   * silent). Absent => exactly the prior auto-match behavior.
+   */
+  template?: string;
   priority: Priority;
   checked: boolean;
   rawLines: string[];

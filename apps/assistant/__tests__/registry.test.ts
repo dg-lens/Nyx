@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
-import { REGISTRY, findTemplate } from '../src/index.js';
+import { REGISTRY, findTemplate, TEMPLATE_TYPES, isTemplateId, templateTypeOf } from '../src/index.js';
 
 const EXPECT: Record<string, string[]> = {
   'MORNING-BRIEF': ['ASSISTANT_OUTPUT.md', 'Brief'],
@@ -88,5 +88,35 @@ describe('REGISTRY', () => {
 
   test('findTemplate returns null for an unknown id', () => {
     assert.equal(findTemplate('TOTALLY-UNKNOWN-TASK'), null);
+  });
+});
+
+describe('TEMPLATE_TYPES (single source of truth)', () => {
+  test('every REGISTRY key has a TEMPLATE_TYPES entry and vice-versa', () => {
+    const reg = new Set(Object.keys(REGISTRY));
+    const typed = new Set(Object.keys(TEMPLATE_TYPES));
+    for (const k of reg) assert.ok(typed.has(k), `${k} in REGISTRY has no TEMPLATE_TYPES entry`);
+    for (const k of typed) assert.ok(reg.has(k), `${k} in TEMPLATE_TYPES has no REGISTRY builder`);
+  });
+
+  test('every type is assistant or content', () => {
+    for (const [k, v] of Object.entries(TEMPLATE_TYPES)) {
+      assert.ok(v === 'assistant' || v === 'content', `${k} maps to an unexpected type '${v}'`);
+    }
+  });
+
+  test('DRAFT-/DECK-/DOC-/SHEET- families are content; the rest are assistant', () => {
+    for (const [k, v] of Object.entries(TEMPLATE_TYPES)) {
+      const isContent = /^(DRAFT|DECK|DOC|SHEET)-/.test(k);
+      assert.equal(v, isContent ? 'content' : 'assistant', `${k} type classification`);
+    }
+  });
+
+  test('isTemplateId / templateTypeOf agree with the map', () => {
+    assert.ok(isTemplateId('BRIEF-COMPETITOR'));
+    assert.ok(!isTemplateId('NOT-A-TEMPLATE'));
+    assert.equal(templateTypeOf('DRAFT-OUTREACH'), 'content');
+    assert.equal(templateTypeOf('WATCH-DEPS'), 'assistant');
+    assert.equal(templateTypeOf('NOPE'), null);
   });
 });

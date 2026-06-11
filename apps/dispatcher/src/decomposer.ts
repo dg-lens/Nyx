@@ -14,6 +14,11 @@ export interface DecomposeIntent {
   priority?: string; // high | normal | low
   repo?: string;
   schedule?: string; // "slot:<0-287>" (daily at time) | "every:<Xh|Xd>" (recurring) | undefined (standing)
+  // Explicit template family id chosen in the Dispatch picker (e.g.
+  // "BRIEF-COMPETITOR"). When present and not "auto", the emitted task(s) MUST
+  // carry [template: <ID>] verbatim. "auto"/absent => no mention; the
+  // decomposer/task-runner defaults apply (id-prefix match, or untemplated).
+  template?: string;
 }
 
 const TASK_FORMAT = `Queue task format — a checkbox line plus indented tag lines:
@@ -27,6 +32,7 @@ const TASK_FORMAT = `Queue task format — a checkbox line plus indented tag lin
       [depends: OTHER-ID]             (optional; this task waits for OTHER-ID)
       [env: NAME1, NAME2]             (optional; env vars the task needs)
       [expects: path1, path2]         (optional; files the task must produce)
+      [template: FAMILY-ID]           (optional; assistant/content prompt template)
 
 Rules:
 - TASK-ID: short uppercase slug derived from the work, unique per task.
@@ -70,6 +76,9 @@ export function buildDecomposerPrompt(intent: DecomposeIntent): string {
       );
     }
     if (intent.type) lines.push(`Default [type:] is ${intent.type} unless the work clearly calls for another.`);
+    if (intent.template && intent.template !== 'auto') {
+      lines.push(`Tag the emitted task(s) with [template: ${intent.template}] verbatim — the operator chose this prompt template explicitly.`);
+    }
     if (intent.repo) lines.push(`Put [repo: ${intent.repo}] on code/analysis/pipeline tasks.`);
     if (intent.priority && intent.priority !== 'normal') lines.push(`Put [priority: ${intent.priority}] on the tasks.`);
     if (intent.schedule?.startsWith('slot:')) {

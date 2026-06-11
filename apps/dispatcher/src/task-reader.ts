@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 
+import { isTemplateId, templateTypeOf } from '@nyx/assistant';
+
 import type { GateStage, Model, ParsedTask, Priority, TaskType } from './types.js';
 import { classOf, type TaskClass } from './concurrency.js';
 import { config } from './config.js';
@@ -199,6 +201,26 @@ function parseGate(raw: string | undefined, fallback: GateStage[] | 'none'): Par
   return { value: out, valid: allValid };
 }
 
+/**
+ * Parse `[template: <ID>]`. Two failure modes, both loud (invalidTag, never a
+ * silent drop):
+ *   - unknown id: not a key in the assistant package's TEMPLATE_TYPES registry.
+ *   - type mismatch: a known id whose template type (assistant|content) doesn't
+ *     match this task's resolved type. code/analysis/pipeline have no templates,
+ *     so a [template:] on those is always a mismatch.
+ * Absent tag => { value: undefined, valid: true } (auto behavior downstream).
+ */
+function parseTemplate(
+  raw: string | undefined,
+  taskType: TaskType,
+): { value: string | undefined; valid: boolean; reason?: 'unknown' | 'type-mismatch' } {
+  if (raw == null) return { value: undefined, valid: true };
+  const id = raw.trim().toUpperCase();
+  if (!isTemplateId(id)) return { value: id, valid: false, reason: 'unknown' };
+  if (templateTypeOf(id) !== taskType) return { value: id, valid: false, reason: 'type-mismatch' };
+  return { value: id, valid: true };
+}
+
 // ─── Queue I/O ───────────────────────────────────────────────────────────────
 
 export function readQueue(path: string): QueueFile {
@@ -291,6 +313,16 @@ export function readQueue(path: string): QueueFile {
     const pr = parsePriority(tags['priority']);
     if (!pr.valid) invalidTags.push({ tag: 'priority', raw: tags['priority'] ?? '' });
 
+    // [template:] explicit template family. Validated against the assistant
+    // package's TEMPLATE_TYPES — unknown id or wrong-type id is a loud invalidTag.
+    const tpl = parseTemplate(tags['template'], t.value);
+    if (!tpl.valid) {
+      invalidTags.push({
+        tag: 'template',
+        raw: `${tags['template'] ?? ''}${tpl.reason ? ` (${tpl.reason})` : ''}`,
+      });
+    }
+
     // Scheduling tags. A task can have [slot:] XOR [every:], never both.
     let slot: number | undefined;
     let everyStepSlots: number | undefined;
@@ -361,6 +393,9 @@ export function readQueue(path: string): QueueFile {
       ...(tags['reading']
         ? { reading: tags['reading'].split(',').map(s => s.trim()).filter(Boolean) }
         : {}),
+      // Explicit template family. Only stored when the tag was present AND valid;
+      // an invalid value is recorded in invalidTags above (and blocks the task).
+      ...(tpl.valid && tpl.value ? { template: tpl.value } : {}),
       ...(slot != null ? { slot } : {}),
       ...(everyStepSlots != null ? { everyStepSlots } : {}),
     };

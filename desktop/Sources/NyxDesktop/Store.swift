@@ -134,11 +134,14 @@ final class Store: ObservableObject {
         refresh()
     }
 
-    func dispatch(text: String, type: String, model: String, priority: String, repo: String?, schedule: String) {
+    func dispatch(text: String, type: String, model: String, priority: String, repo: String?, schedule: String, template: String = "auto") {
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         var params = ["text": text, "type": type, "model": model, "priority": priority]
         if let repo, !repo.isEmpty { params["repo"] = repo }
         if !schedule.isEmpty { params["schedule"] = schedule }
+        // Only forward an explicit template choice; "auto" means "let the
+        // decomposer/task-runner defaults apply" so it's omitted entirely.
+        if template != "auto" { params["template"] = template }
         // decompose_task: the dispatcher runs a sonnet claude -p pass that turns
         // this plain-language request into one or more fully-tagged queue tasks.
         let ok = Database.enqueueAction("decompose_task", params: params)
