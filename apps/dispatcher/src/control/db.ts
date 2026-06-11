@@ -17,7 +17,8 @@ export type ActionKind =
   | 'pipeline_decision'
   | 'force_tick'
   | 'decompose_task'
-  | 'compose_template';
+  | 'compose_template'
+  | 'respond_message';
 export type ActionStatus = 'pending' | 'applied' | 'failed';
 
 export interface PendingAction {

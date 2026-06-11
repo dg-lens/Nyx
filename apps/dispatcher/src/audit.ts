@@ -208,6 +208,11 @@ export type AuditEvent =
   | 'plugin.skipped'
   | 'plugin.hook.error'
   | 'plugin.io.error'
+  // Contact surface (Slack host plugin): a DM arrived from a sender absent from
+  // $NYX_DATA_DIR/federation/members.json. Audit-only — never a reply, never a
+  // queued task. Written by the tick drain's respond_message executor, NOT the
+  // host process (the hash chain stays single-writer in the tick dispatcher).
+  | 'slack.unknown_sender'
   | 'control.action.applied'
   | 'control.action.failed'
   | 'control.decompose.applied'
