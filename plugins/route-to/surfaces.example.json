@@ -1,0 +1,29 @@
+{
+  "_schema_version": "v1",
+  "_doc": "Cross-surface delivery registry for the route-to plugin. This file is INSTANCE config — copy it to $NYX_DATA_DIR/route-to/surfaces.json and edit there; do NOT commit a real one to Core. One sink is registered per surface key. Schema per surface: kind (ssh | ssh-local | icloud | telegram), address (ssh-host alias or telegram chat-id; omit for icloud/ssh-local), inbox (destination dir — remote-relative for ssh, local path for ssh-local/icloud), notify (true to also fire a Telegram heads-up after delivery), open_app (optional `open -a` app hint for ssh / ssh-local). Telegram creds come from TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env, never from this file.",
+  "surfaces": {
+    "mbp": {
+      "kind": "ssh-local",
+      "inbox": "~/Reading",
+      "notes": "Source host. ssh-local skips the network — copies in place and `open`s."
+    },
+    "mba": {
+      "kind": "ssh",
+      "address": "mba",
+      "inbox": "~/Reading",
+      "open_app": "TextEdit",
+      "notes": "Remote read surface via ~/.ssh/config Host alias. open_app overrides the default handler."
+    },
+    "iphone": {
+      "kind": "icloud",
+      "inbox": "~/Library/Mobile Documents/com~apple~CloudDocs/Nyx-Reading",
+      "notify": true,
+      "notes": "Copies into the iCloud Drive dir; sync propagates to signed-in devices."
+    },
+    "telegram": {
+      "kind": "telegram",
+      "address": "${TELEGRAM_CHAT_ID}",
+      "notes": "Direct doc upload to Telegram. address may pin a literal chat-id; ${VAR} falls back to env."
+    }
+  }
+}
