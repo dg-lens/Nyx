@@ -131,3 +131,32 @@ describe('buildPrompt template resolution', () => {
     assert.equal(got, REGISTRY['INBOX-TRIAGE']!('desc'));
   });
 });
+
+describe('buildPrompt — normalized spec injection (composer enforcement)', () => {
+  test('code + normalizedSpecBlock → block prepended ahead of the raw task body', () => {
+    const t = task('code', { id: 'NORM-1', description: 'RAW BODY HERE' });
+    const block = '## NORMALIZED SPEC (composer-compiled)\nTIGHTENED CONTENT';
+    const got = buildPrompt(t, { normalizedSpecBlock: block });
+    assert.ok(got.includes('## NORMALIZED SPEC (composer-compiled)'), 'block must be present');
+    assert.ok(got.includes('TIGHTENED CONTENT'));
+    // Prepended AHEAD of the raw task body.
+    assert.ok(
+      got.indexOf('## NORMALIZED SPEC') < got.indexOf('RAW BODY HERE'),
+      'normalized block must come before the raw task body',
+    );
+  });
+
+  test('no normalizedSpecBlock → prompt byte-identical to today (no block)', () => {
+    const t = task('code', { id: 'NORM-2', description: 'RAW BODY' });
+    const withoutOpt = buildPrompt(t);
+    const withEmptyOpts = buildPrompt(t, {});
+    assert.equal(withEmptyOpts, withoutOpt);
+    assert.ok(!withoutOpt.includes('NORMALIZED SPEC'), 'no block when none supplied');
+  });
+
+  test('non-code task ignores normalizedSpecBlock (code-only injection)', () => {
+    const t = task('analysis', { id: 'NORM-3', description: 'RAW' });
+    const got = buildPrompt(t, { normalizedSpecBlock: '## NORMALIZED SPEC (composer-compiled)\nX' });
+    assert.ok(!got.includes('NORMALIZED SPEC'), 'block only injected for code tasks');
+  });
+});

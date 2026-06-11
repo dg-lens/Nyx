@@ -2,6 +2,18 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.5.0 — 2026-06-10
+
+### Composer normalizer enforcement (pre-dispatch)
+- The composer normalizer is promoted from **shadow** to **enforcement**, behind `config.composer.normalizer.enforced` (`COMPOSER_NORMALIZER_ENFORCED`, default `false`, previously read-but-never-acted-on). **Pre-dispatch only:** enforcement tightens or rejects the spec **before** the coder spawns — it is **never** a post-execution findings gate. When `enforced=false`, behavior is **byte-identical to shadow mode** (the normalization is still computed/persisted/audit-logged, but the coder's prompt is unchanged and nothing halts).
+- **Clean verdict (`would_reject=false`):** the normalized spec is injected into the coder's prompt as a `## NORMALIZED SPEC (composer-compiled)` block — tightened body + acceptance criteria + anti-examples — prepended ahead of the raw task body (additive plumbing via `buildPrompt`'s new `normalizedSpecBlock` opt; code tasks only).
+- **`would_reject=true`:** the coder is **not** spawned. The task is halted pre-dispatch via `haltTask` (pattern `normalizer-reject`), the new `composer.normalize.rejected` audit event is emitted (`blocking_issues` + `reject_reason`), and the operator is notified via `deliver('action-required', …)`. Operator tightens the spec and `nyx resume <id>`.
+- **Normalizer null (its own spawn failed/skipped):** dispatch proceeds exactly as shadow — enforcement **never blocks on the normalizer's own failure**.
+- Normalizer spawn timeout raised from **5 → 10 minutes** (`composer/normalizer-spawner.ts`).
+- New audit event: `composer.normalize.rejected` — payload `{ taskId, blocking_issues, reject_reason }`.
+- The shadow recording (persist + audit + outcome) is preserved unchanged in both modes; it is the single source of truth (`recordNormalization`) both the shadow and enforcement paths consume.
+- Touched: `apps/dispatcher/src/composer/orchestrate.ts`, `apps/dispatcher/src/composer/normalizer-spawner.ts`, `apps/dispatcher/src/task-runner.ts`, `apps/dispatcher/src/cli/run-once.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/__tests__/orchestrate-shadow.test.ts`, `apps/dispatcher/__tests__/task-runner.test.ts`.
+
 ## v1.3.1 — 2026-06-10
 
 ### Fixed

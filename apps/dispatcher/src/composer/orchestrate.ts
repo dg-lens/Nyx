@@ -31,7 +31,7 @@ import {
   type NormalizerSpawnFn,
 } from './normalizer.js';
 import { removeFlightPlanArtifact, runPlanSpawn } from './plan-spawner.js';
-import type { FlightPlan } from './types.js';
+import type { FlightPlan, NormalizationResult } from './types.js';
 
 export interface ComposerLayerResult {
   /** The plan to inject into the execution phase. null if planning failed. */
@@ -178,6 +178,34 @@ export async function runShadowNormalizePhase(
   spawnFn?: NormalizerSpawnFn,
 ): Promise<void> {
   if (!config.composer.normalizer.enabled) return;
+  // The shadow recording (persist + audit + outcome) lives in `recordNormalization`
+  // so BOTH the shadow path (here) and the enforcement path consume IDENTICAL
+  // recording — enforcement never skips the shadow record. Discard the result so
+  // this function stays `void`: it can structurally influence nothing.
+  await recordNormalization(task, workingDir, ancestors, spawnFn);
+}
+
+/**
+ * Run the normalizer + perform ALL the shadow side effects (persist the
+ * normalization, emit `composer.normalize.completed`/`.skipped`, record the
+ * outcome row) and RETURN the assembled `NormalizationResult` — or `null` when
+ * the normalizer failed/skipped or an internal error occurred.
+ *
+ * This is the single source of the shadow recording. The void shadow path
+ * discards the return; the enforcement path reads it to decide inject/reject.
+ * Enforcement NEVER bypasses this recording — "remove the shadow recording" is
+ * an explicit non-goal. Never throws (it owns the same try/catch the shadow path
+ * had); a throw inside recording is logged and yields `null`.
+ *
+ * `enabled` is checked by the callers, not here — both call this only when the
+ * normalizer is enabled.
+ */
+async function recordNormalization(
+  task: ParsedTask,
+  workingDir: string,
+  ancestors: AncestorContext[],
+  spawnFn?: NormalizerSpawnFn,
+): Promise<NormalizationResult | null> {
   const stageStart = Date.now();
   try {
     const outcome = await normalizeTaskSpec(task, workingDir, ancestors, spawnFn);
@@ -209,22 +237,23 @@ export async function runShadowNormalizePhase(
         },
         duration_ms: norm.duration_ms,
       });
-    } else {
-      const failure_class = failureClassForOutcome(outcome.failure_class);
-      audit('composer.normalize.skipped', 'composer.orchestrate', {
-        taskId: task.id,
-        failure_class,
-        reason: outcome.detail ?? failure_class,
-      });
-      safeRecordOutcome({
-        task_id: task.id,
-        stage: 'composer.normalize',
-        outcome: 'failed',
-        failure_class,
-        detail: outcome.detail ?? null,
-        duration_ms: Date.now() - stageStart,
-      });
+      return norm;
     }
+    const failure_class = failureClassForOutcome(outcome.failure_class);
+    audit('composer.normalize.skipped', 'composer.orchestrate', {
+      taskId: task.id,
+      failure_class,
+      reason: outcome.detail ?? failure_class,
+    });
+    safeRecordOutcome({
+      task_id: task.id,
+      stage: 'composer.normalize',
+      outcome: 'failed',
+      failure_class,
+      detail: outcome.detail ?? null,
+      duration_ms: Date.now() - stageStart,
+    });
+    return null;
   } catch (err) {
     // normalizeTaskSpec already catches its own throws, so reaching here means
     // saveNormalization/audit threw. Record + propagate-into-audit only.
@@ -243,45 +272,117 @@ export async function runShadowNormalizePhase(
       detail: (err as Error).message,
       duration_ms: Date.now() - stageStart,
     });
+    return null;
   }
 }
 
 /**
- * Dispatch-path entry point for the shadow normalizer. This is the function the
- * live code-task dispatch path (`attemptTask` in `cli/run-once.ts`) calls,
+ * Format the "## NORMALIZED SPEC (composer-compiled)" block injected ahead of
+ * the raw task body when enforcement is ON and the spec normalized cleanly.
+ * Carries the tightened body + acceptance criteria + anti-examples — the three
+ * fields a coder needs to execute the compiled spec. Pure / deterministic so the
+ * enforcement test can assert on its exact contents.
+ */
+export function formatNormalizedSpecBlock(norm: NormalizationResult): string {
+  const s = norm.spec;
+  const lines: string[] = [];
+  lines.push('## NORMALIZED SPEC (composer-compiled)');
+  lines.push('');
+  lines.push(
+    'The composer normalizer compiled the task spec below into a tightened, ' +
+      'executable form BEFORE you were spawned. Execute THIS — it is the ' +
+      'authoritative instruction set. The raw task body that follows is context.',
+  );
+  lines.push('');
+  lines.push('### Tightened body');
+  lines.push(s.tightened_body || '(none provided)');
+  lines.push('');
+  lines.push('### Acceptance criteria');
+  if (s.acceptance_criteria.length > 0) {
+    for (const c of s.acceptance_criteria) lines.push(`- ${c}`);
+  } else {
+    lines.push('- (none provided)');
+  }
+  lines.push('');
+  lines.push('### Anti-examples (do NOT do these)');
+  if (s.anti_examples.length > 0) {
+    for (const a of s.anti_examples) lines.push(`- ${a}`);
+  } else {
+    lines.push('- (none provided)');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The pre-dispatch decision the normalizer hands back to `attemptTask`.
+ *
+ * RED LINE — PRE-DISPATCH ONLY: every action here is decided and applied BEFORE
+ * the coder spawns. There is NO post-execution / findings variant; the composer
+ * never gates on what the coder produced. Enforcement is read-only-on-the-spec.
+ *
+ *   - `proceed`  — spawn the coder with an UNMODIFIED prompt. The state for
+ *                  shadow mode (enforced=false), normalizer-disabled (unreachable
+ *                  here — the caller short-circuits), and normalizer null
+ *                  (failed/skipped: NEVER block on the normalizer's own failure).
+ *   - `inject`   — enforced=true + clean verdict: spawn the coder with
+ *                  `normalizedSpecBlock` prepended ahead of the raw task body.
+ *   - `reject`   — enforced=true + would_reject=true: do NOT spawn the coder;
+ *                  the caller halts the task pre-dispatch.
+ */
+export type ShadowNormalizeResult =
+  | { action: 'proceed' }
+  | { action: 'inject'; normalizedSpecBlock: string }
+  | { action: 'reject'; blockingIssues: string[]; rejectReason: string | null };
+
+/**
+ * Dispatch-path entry point for the pre-dispatch normalizer. This is the function
+ * the live code-task dispatch path (`attemptTask` in `cli/run-once.ts`) calls,
  * BEFORE the main execution spawn — the normalizer is a PRE-dispatch step.
  *
  * Behaviorally inert by default and fully additive:
  *   - When `config.composer.normalizer.enabled` is false (the SHIPPED default),
- *     this returns immediately having done NOTHING — no ancestor gathering, no
- *     spawn, no audit. The dispatch path is identical to a build without it.
- *   - When enabled, it gathers ancestor context and runs the shadow normalizer
- *     (one extra sonnet planning spawn per code task — the documented cost).
+ *     this returns `{ action: 'proceed' }` having done NOTHING — no ancestor
+ *     gathering, no spawn, no audit. The dispatch path is identical to a build
+ *     without it.
+ *   - When enabled, it gathers ancestor context, runs the normalizer (one extra
+ *     sonnet planning spawn per code task — the documented cost), performs the
+ *     SHADOW recording (persist + audit + outcome — preserved in BOTH modes),
+ *     and then decides the pre-dispatch action:
+ *       · `enforced=false` (SHADOW): always `{ action: 'proceed' }`. The shadow
+ *         record is written but the spec the coder sees is byte-identical to a
+ *         build without enforcement — this is the byte-identical-to-shadow
+ *         guarantee.
+ *       · `enforced=true` + normalizer null (failed/skipped): `proceed`. We
+ *         NEVER block on the normalizer's OWN failure.
+ *       · `enforced=true` + clean verdict (would_reject=false): `inject` with the
+ *         compiled spec block.
+ *       · `enforced=true` + would_reject=true: `reject` — the caller halts
+ *         pre-dispatch; the coder never spawns.
  *
- * It returns `void` and is double-guarded: `runShadowNormalizePhase` is itself
- * void + internally try/catch'd, and this wrapper wraps the whole thing again so
- * a throw from ancestor-gathering or anywhere else can NEVER reach the caller.
- * It MUST NOT influence control flow, the gate decision, or the task outcome.
+ * Double-guarded: `recordNormalization` is internally try/catch'd, and this
+ * wrapper wraps the whole thing again so a throw from ancestor-gathering or
+ * anywhere else can NEVER reach the caller — a throw degrades to `proceed`
+ * (fail-open: a wiring fault must never block dispatch).
  *
  * `deps` is a test seam (defaults = the real implementations) so the wiring
- * contract — off→not-invoked, on→a-throw-is-swallowed — can be driven
- * deterministically without spawning `claude` or importing the dispatch loop.
+ * contract can be driven deterministically without spawning `claude` or
+ * importing the dispatch loop.
  */
 export async function maybeRunShadowNormalize(
   task: ParsedTask,
   workingDir: string,
   deps: {
     gatherAncestors?: (task: ParsedTask, workingDir: string) => AncestorContext[];
-    runShadow?: (
+    record?: (
       task: ParsedTask,
       workingDir: string,
       ancestors: AncestorContext[],
-    ) => Promise<void>;
+    ) => Promise<NormalizationResult | null>;
   } = {},
-): Promise<void> {
-  if (!config.composer.normalizer.enabled) return;
+): Promise<ShadowNormalizeResult> {
+  if (!config.composer.normalizer.enabled) return { action: 'proceed' };
   const gatherAncestors = deps.gatherAncestors ?? gatherAncestorContext;
-  const runShadow = deps.runShadow ?? runShadowNormalizePhase;
+  const record = deps.record ?? recordNormalization;
   try {
     let ancestors: AncestorContext[] = [];
     try {
@@ -289,11 +390,30 @@ export async function maybeRunShadowNormalize(
     } catch {
       ancestors = [];
     }
-    await runShadow(task, workingDir, ancestors);
+    const norm = await record(task, workingDir, ancestors);
+
+    // ENFORCEMENT gate — PRE-DISPATCH ONLY. When enforcement is off, the shadow
+    // record above is the ONLY effect: the coder's prompt is unchanged (byte-
+    // identical-to-shadow). The reject/inject branches below are reachable ONLY
+    // when enforced=true.
+    if (!config.composer.normalizer.enforced) return { action: 'proceed' };
+    // NEVER block on the normalizer's own failure: a null result (spawn failed,
+    // artifact malformed, internal error) proceeds exactly as shadow does.
+    if (!norm) return { action: 'proceed' };
+    if (norm.would_reject) {
+      return {
+        action: 'reject',
+        blockingIssues: norm.spec.verdict.blocking_issues,
+        rejectReason: norm.reject_reason,
+      };
+    }
+    return { action: 'inject', normalizedSpecBlock: formatNormalizedSpecBlock(norm) };
   } catch (err) {
     audit('composer.normalize.skipped', 'composer.orchestrate', {
       taskId: task.id,
       reason: `shadow-normalize wiring threw: ${(err as Error).message}`,
     });
+    // Fail-open: a wiring fault degrades to the unmodified dispatch path.
+    return { action: 'proceed' };
   }
 }

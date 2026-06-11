@@ -21,7 +21,10 @@ import {
 import { runEvalLoop } from '../eval/online-eval-runner.js';
 import { runAudit, MAX_AUDIT_PASSES, routeAuditOutcome, type AttemptStage } from '../audit-runner.js';
 import type { FlightPlan } from '../composer/types.js';
-import { maybeRunShadowNormalize } from '../composer/orchestrate.js';
+import {
+  maybeRunShadowNormalize,
+  type ShadowNormalizeResult,
+} from '../composer/orchestrate.js';
 import {
   advancePipeline,
   createPipelineRun,
@@ -314,6 +317,26 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
         pattern: 'aesthetic-ambiguity',
       });
     }
+    if (result.status === 'normalizer-rejected') {
+      // PRE-DISPATCH REJECT (COMPOSER_NORMALIZER_ENFORCED=true): the normalizer
+      // judged the spec un-normalizable as written, so attemptTask did NOT spawn
+      // the coder. Emit the dedicated event + action-required notice, then halt
+      // the chain. The operator tightens the spec and `nyx resume`s. This is
+      // PRE-DISPATCH ONLY — never a post-execution / findings gate.
+      audit('composer.normalize.rejected', 'dispatcher', {
+        taskId: task.id,
+        blocking_issues: result.blockingIssues,
+        reject_reason: result.rejectReason,
+      });
+      void notify.deliver(
+        'action-required',
+        `🛑 *${task.id}* — composer normalizer REJECTED the spec pre-dispatch (the coder was not spawned).\n\n${result.report}`,
+      );
+      return haltTask(task, workingDir, startedAt, {
+        operatorReport: result.report,
+        pattern: 'normalizer-reject',
+      });
+    }
     if (result.status === 'flaky-quarantined') {
       // A non-deterministic tests stage is NOT something an audit pass can fix by
       // re-running — re-running is the very thing that would launder the flake
@@ -470,7 +493,42 @@ type AttemptResult =
   | { status: 'failed-recoverable'; failureLog: string; stage: AttemptStage }
   | { status: 'ambiguity-escalated'; report: string }
   | { status: 'flaky-quarantined'; report: string }
+  | {
+      status: 'normalizer-rejected';
+      report: string;
+      blockingIssues: string[];
+      rejectReason: string | null;
+    }
   | { status: 'rate-limited'; retryAfterMs?: number };
+
+/**
+ * Operator-facing report body for a pre-dispatch normalizer reject. PRE-DISPATCH
+ * ONLY — this is produced BEFORE any coder spawns; it describes a spec the
+ * composer could not normalize, never a post-execution finding.
+ */
+function buildNormalizerRejectReport(
+  task: ParsedTask,
+  decision: Extract<ShadowNormalizeResult, { action: 'reject' }>,
+): string {
+  const lines: string[] = [];
+  lines.push(
+    `The composer normalizer REJECTED this spec pre-dispatch — the coder was NOT spawned.`,
+  );
+  if (decision.rejectReason) {
+    lines.push('');
+    lines.push(`Reason: ${decision.rejectReason}`);
+  }
+  if (decision.blockingIssues.length > 0) {
+    lines.push('');
+    lines.push('Blocking issues:');
+    for (const issue of decision.blockingIssues) lines.push(`  - ${issue}`);
+  }
+  lines.push('');
+  lines.push(
+    `Tighten the task spec to resolve the issues above, then \`nyx resume ${task.id}\`.`,
+  );
+  return lines.join('\n');
+}
 
 /**
  * One attempt at the work: invoke Claude, run gate, finalize. Emits the usual
@@ -515,29 +573,56 @@ async function attemptTask(
     }
   }
 
-  // ── Pre-dispatch shadow normalizer (composer, OFF by default) ──
-  // Additive, observation-only, and fully gated. When
-  // config.composer.normalizer.enabled is false (the shipped default) this is a
-  // no-op and the dispatch path below is behaviorally identical to a build
-  // without it. When enabled, it runs one extra sonnet planning spawn that
-  // computes + persists + audit-logs a shadow normalization of the spec — it
-  // does NOT alter the prompt the executor sees, the gate decision, or the task
-  // outcome. maybeRunShadowNormalize is void + double-guarded internally; the
+  // ── Pre-dispatch composer normalizer (OFF by default) ──
+  // Additive and fully gated. When config.composer.normalizer.enabled is false
+  // (the shipped default) this is a no-op and the dispatch path below is
+  // behaviorally identical to a build without it.
+  //
+  // When ENABLED but NOT enforced (COMPOSER_NORMALIZER_ENFORCED=false) it runs
+  // one extra sonnet planning spawn that computes + persists + audit-logs a
+  // SHADOW normalization of the spec — it does NOT alter the prompt the executor
+  // sees, the gate decision, or the task outcome.
+  //
+  // When ENFORCED (COMPOSER_NORMALIZER_ENFORCED=true) the decision is applied
+  // PRE-DISPATCH ONLY — tighten or reject BEFORE the coder spawns; it is NEVER a
+  // post-execution findings gate:
+  //   - clean verdict  → inject the compiled "## NORMALIZED SPEC" block into the
+  //                       coder's prompt (additive plumbing via buildPrompt).
+  //   - would_reject    → do NOT spawn the coder; halt the task pre-dispatch.
+  //   - normalizer null → proceed unchanged (never block on its OWN failure).
+  //
+  // maybeRunShadowNormalize is double-guarded internally and fails open; the
   // extra try/catch here makes it STRUCTURALLY impossible for a throw to touch
   // dispatch even if that contract ever regresses.
+  let normalizedSpecBlock: string | undefined;
   if (task.type === 'code' && config.composer.normalizer.enabled) {
+    let decision: ShadowNormalizeResult = { action: 'proceed' };
     try {
-      await maybeRunShadowNormalize(task, workingDir.path);
+      decision = await maybeRunShadowNormalize(task, workingDir.path);
     } catch {
-      /* shadow normalizer is observation-only; never affects dispatch */
+      /* normalizer wiring fault is fail-open; never affects dispatch */
+    }
+    if (decision.action === 'reject') {
+      // PRE-DISPATCH REJECT: the spec is un-normalizable as written. The coder is
+      // NOT spawned. Surface a structured result; dispatchOne emits
+      // composer.normalize.rejected + notifies + halts via haltTask.
+      const report = buildNormalizerRejectReport(task, decision);
+      return {
+        status: 'normalizer-rejected',
+        report,
+        blockingIssues: decision.blockingIssues,
+        rejectReason: decision.rejectReason,
+      };
+    }
+    if (decision.action === 'inject') {
+      normalizedSpecBlock = decision.normalizedSpecBlock;
     }
   }
 
-  const claudeResult = await invokeClaude(
-    task,
-    workingDir.path,
-    opts.flightPlan ? { flightPlan: opts.flightPlan } : {},
-  );
+  const claudeResult = await invokeClaude(task, workingDir.path, {
+    ...(opts.flightPlan ? { flightPlan: opts.flightPlan } : {}),
+    ...(normalizedSpecBlock ? { normalizedSpecBlock } : {}),
+  });
   audit('task.claude.exited', 'dispatcher', {
     taskId: task.id,
     exitCode: claudeResult.exitCode,
