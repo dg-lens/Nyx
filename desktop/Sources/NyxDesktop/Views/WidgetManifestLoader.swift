@@ -11,6 +11,41 @@ import Foundation
 //      drop JSON files here, no app rebuild.
 //
 // Invalid/corrupt manifests are skipped with a console note, never crash.
+//
+// Actions schema (optional `actions` array on a manifest):
+//
+//   "actions": [ { "label": "Open ledger", "icon": "folder",
+//                  "kind": "reveal", "target": "ledger" } ]
+//
+// `kind` is a CLOSED enum — nav | reveal | op — and `target` names a capability
+// from the code-defined WidgetActionRegistry (Views/WidgetActions.swift):
+//
+//   nav:    monitor | apps | tasks | dashboard:<id>     (switch tab/dashboard)
+//   reveal: outputs | ledger | app:<name> | deliverable:<runId>
+//           (reveal in Finder; the resolved REAL path must sit under an allowed
+//            root or the button renders disabled — never opened)
+//   op:     tick | refresh | resume:<taskId> | pipelineDecision:<runId>:<decision>
+//           (named Nyx operations reusing the existing Store/Database paths)
+//
+// There is NO raw-command/shell/exec field — manifests are operator-droppable
+// (and mesh-shareable) JSON, so they may only REFERENCE named capabilities; a
+// free-form command field would be an arbitrary-code-execution vector. An
+// unknown kind or malformed entry is skipped on decode; an op id outside the
+// registry renders a disabled button. See the widget-action-buttons-allowlist
+// decision node.
+//
+// Operator allowlist config — $NYX_DATA_DIR/widget-actions.json (optional):
+//
+//   { "version": 1,
+//     "enabledOps": ["tick","refresh","resume","pipelineDecision","nav","reveal"],
+//     "revealRoots": ["~/Nyx/Data/outputs","~/Nyx/Data/ledger","~/Nyx/Apps"],
+//     "overrides": { "tick": { "label": "Tick", "icon": "bolt.fill" } } }
+//
+// It can only NARROW or relabel what the registry defines: unknown ids are
+// ignored, a disabled op renders its button disabled (with help text) rather
+// than hidden, and no config value can add executable behavior. Missing file =
+// defaults (all ops enabled, default roots); corrupt file = defaults + a
+// stderr note. See WidgetActionsConfig.
 enum WidgetManifestLoader {
     // Stock manifests as embedded JSON strings — the always-present fallback. One
     // text/note widget plus three store-key stat widgets that prove the live hook.
@@ -59,11 +94,16 @@ enum WidgetManifestLoader {
           "defaultSize": { "w": 2, "h": 2 }, "viz": "status",
           "source": { "kind": "store", "key": "ops.queue" } }
         """,
+        // Demonstrates the actions schema: one reveal + one named op, both
+        // resolved against the WidgetActionRegistry allowlist.
         """
         { "id": "opsLedger", "pluginId": "nyx-ops", "title": "Today's Activity",
           "description": "The most recent day from the activity ledger.",
           "defaultSize": { "w": 4, "h": 2 }, "viz": "status",
-          "source": { "kind": "store", "key": "ops.ledger" } }
+          "source": { "kind": "store", "key": "ops.ledger" },
+          "actions": [
+            { "label": "Open ledger", "icon": "folder", "kind": "reveal", "target": "ledger" },
+            { "label": "Tick now", "icon": "bolt.fill", "kind": "op", "target": "tick" } ] }
         """,
     ]
 

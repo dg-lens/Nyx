@@ -62,6 +62,38 @@ enum WidgetSource: Codable, Hashable {
     }
 }
 
+// One interactive button a manifest may declare. `kind` is a CLOSED enum — the
+// manifest only ever REFERENCES a named capability; all executable behavior lives
+// in the code-defined WidgetActionRegistry (Views/WidgetActions.swift). There is
+// intentionally NO raw-command/shell/exec field anywhere in this schema: widget
+// manifests are operator-droppable JSON (and mesh-shareable), so a free-form
+// command field would be an arbitrary-code-execution vector — the same HARD RULE
+// StatusResolver states for sources.
+//
+// Forgiving-decode contract: an UNKNOWN kind or a malformed entry is SKIPPED at
+// the manifest level (see WidgetManifest.init) — it never crashes the manifest
+// and never falls back to anything executable.
+struct WidgetAction: Codable, Hashable {
+    enum Kind: String, Codable, Hashable {
+        case nav      // switch to a tab/dashboard: monitor | apps | tasks | dashboard:<id>
+        case reveal   // reveal a VALIDATED path in Finder: outputs | ledger | app:<name> | deliverable:<runId>
+        case op       // run a NAMED registry op: tick | refresh | resume:<taskId> | pipelineDecision:<runId>:<decision>
+    }
+
+    let label: String
+    let icon: String?            // optional SF Symbol shown before the label
+    let kind: Kind
+    let target: String
+}
+
+// Decode shim for the actions array: a malformed entry (missing field, unknown
+// kind) decodes to nil instead of throwing, so one bad action can't take down
+// the whole manifest — mirroring WidgetSource's unknown-kind posture.
+struct LossyWidgetAction: Decodable {
+    let action: WidgetAction?
+    init(from decoder: Decoder) { action = try? WidgetAction(from: decoder) }
+}
+
 // The declarative definition of a widget. NOT Swift code — these are loaded from
 // JSON (embedded stock set + $NYX_DATA_DIR/widgets/*.json). The app renders by
 // `viz` and resolves data by `source`. This shape is the contract the role-scoped
@@ -74,6 +106,28 @@ struct WidgetManifest: Codable, Identifiable, Hashable {
     let defaultSize: WidgetSize
     let viz: String              // "text" | "stat" | "status"
     let source: WidgetSource
+    // Optional interactive buttons (empty when absent). Each entry references a
+    // named capability by kind+target; resolution + execution live in
+    // WidgetActionRegistry. Malformed/unknown entries are skipped on decode.
+    let actions: [WidgetAction]
+
+    enum CodingKeys: String, CodingKey {
+        case id, pluginId, title, description, defaultSize, viz, source, actions
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        pluginId = try c.decode(String.self, forKey: .pluginId)
+        title = try c.decode(String.self, forKey: .title)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        defaultSize = try c.decode(WidgetSize.self, forKey: .defaultSize)
+        viz = try c.decode(String.self, forKey: .viz)
+        source = try c.decode(WidgetSource.self, forKey: .source)
+        // Lossy: skip entries that fail to decode rather than failing the manifest.
+        let lossy = try? c.decodeIfPresent([LossyWidgetAction].self, forKey: .actions)
+        actions = (lossy ?? nil)?.compactMap(\.action) ?? []
+    }
 }
 
 // A widget placed on a dashboard: which manifest, where on the grid, and (for
