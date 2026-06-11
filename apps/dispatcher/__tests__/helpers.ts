@@ -20,3 +20,15 @@ export function withAppsDir<T>(fn: (appsDir: string) => T): T {
     rmSync(appsDir, { recursive: true, force: true });
   }
 }
+
+/** Async variant of withAppsDir — awaits fn before clearing the override. */
+export async function withAppsDirAsync<T>(fn: (appsDir: string) => Promise<T>): Promise<T> {
+  const appsDir = mkdtempSync(join(tmpdir(), 'nyx-apps-'));
+  _setAppsDir(appsDir);
+  try {
+    return await fn(appsDir);
+  } finally {
+    _setAppsDir(null);
+    rmSync(appsDir, { recursive: true, force: true });
+  }
+}

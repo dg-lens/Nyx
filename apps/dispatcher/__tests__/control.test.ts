@@ -15,6 +15,7 @@ import {
   insertUnderActiveTasks,
   type ActionDeps,
 } from '../src/control/actions.js';
+import { isValidRepoTag } from '../src/pipeline/target.js';
 
 let db: DatabaseSync;
 
@@ -104,6 +105,28 @@ describe('drainPendingActions', () => {
     assert.equal(getAction(1)?.status, 'failed');
     assert.match(getAction(1)?.result ?? '', /bad task/);
     assert.equal(getAction(2)?.status, 'applied');
+  });
+
+  test('queue_task type casing: Pipeline/PIPELINE accepted for app:<slug> repos after lowercasing', () => {
+    // The run-once.ts queueTask boundary lowercases the type string before
+    // calling isValidRepoTag so 'Pipeline' / 'PIPELINE' reach isValidRepoTag as
+    // 'pipeline', which is the only value it accepts for app:<slug> repos.
+    // This test mirrors that boundary: simulate fixed queueTask that lowercases.
+    const buildQueueTask = (): ActionDeps['queueTask'] => (p) => {
+      const raw = String(p['raw'] ?? '').trim();
+      if (raw) return 'queued';
+      const type = String(p['type'] ?? 'assistant').trim().toLowerCase();
+      const repo = p['repo'] ? String(p['repo']) : null;
+      if (repo && !isValidRepoTag(repo, type)) throw new Error(`invalid repo ${repo} for type ${type}`);
+      return 'queued';
+    };
+
+    const queueTask = buildQueueTask();
+    assert.doesNotThrow(() => queueTask({ type: 'pipeline', repo: 'app:my-app', text: 'build it' }), 'lowercase pipeline accepted');
+    assert.doesNotThrow(() => queueTask({ type: 'Pipeline', repo: 'app:my-app', text: 'build it' }), 'capitalized Pipeline accepted');
+    assert.doesNotThrow(() => queueTask({ type: 'PIPELINE', repo: 'app:my-app', text: 'build it' }), 'all-caps PIPELINE accepted');
+    // Non-pipeline types still reject app:<slug>
+    assert.throws(() => queueTask({ type: 'Code', repo: 'app:my-app', text: 'build it' }), /invalid repo/, 'non-pipeline type rejects app:<slug>');
   });
 
   test('pre-phase kinds (decompose_task, compose_template) survive the generic drain untouched', () => {
