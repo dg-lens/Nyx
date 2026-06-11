@@ -5,6 +5,7 @@
     { "path": "./apps/dispatcher" },
     { "path": "./apps/assistant" },
     { "path": "./apps/analyzer" },
-    { "path": "./apps/arachne-server" }
+    { "path": "./apps/arachne-server" },
+    { "path": "./apps/arachne-mcp" }
   ]
 }

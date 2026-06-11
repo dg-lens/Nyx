@@ -15,6 +15,7 @@ USAGE
 
 SUBCOMMANDS
   app         Build + install the desktop app to /Applications and launch it
+  arachne-mcp Run the Arachne memory MCP server (stdio) over the local vault
   audit       Verify audit chain or inspect events  (e.g. 'nyx audit --chain')
   bootstrap   First-run setup: dirs, .env, nyx.md, launchd plist, build
   composer    Review composer shadow output  (e.g. 'nyx composer normalizations')

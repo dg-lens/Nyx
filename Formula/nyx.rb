@@ -64,6 +64,17 @@ class Nyx < Formula
     SH
     chmod 0755, bin/"nyx-dispatch.sh"
 
+    # Wrapper: Arachne memory MCP server — invoked by Claude's stdio MCP client
+    # (registered via the caveats `claude mcp add` command).
+    (bin/"nyx-arachne-mcp.sh").write <<~SH
+      #!/bin/bash
+      export NYX_REPO_ROOT="#{opt_libexec}"
+      export NYX_DATA_DIR="${NYX_DATA_DIR:-$HOME/Nyx/Data}"
+      export NYX_PLUGINS_DIR="${NYX_PLUGINS_DIR:-$HOME/Nyx/Plugins}"
+      exec "#{opt_libexec}/scripts/nyx-arachne-mcp.sh" "$@"
+    SH
+    chmod 0755, bin/"nyx-arachne-mcp.sh"
+
     # Generate launchd plist with real paths — brew services copies this to
     # ~/Library/LaunchAgents/ on `brew services start`.
     (prefix/"com.nyx.dispatcher.plist").write <<~XML
@@ -163,6 +174,9 @@ class Nyx < Formula
         bash+curl — it survives a broken keg and alerts (Pushover, then Slack)
         if the dispatcher stops ticking. `brew services start` loads only the
         dispatcher; run `nyx up` once to activate the watchdog too.
+
+      Register the Arachne memory MCP server with Claude (stdio over the vault):
+        claude mcp add --scope user arachne -- bash /opt/homebrew/opt/nyx/bin/nyx-arachne-mcp.sh
 
       To override the data directory:
         export NYX_DATA_DIR=/path/to/data

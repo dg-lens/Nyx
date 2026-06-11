@@ -2,6 +2,14 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.4.0 — 2026-06-10
+
+### Arachne memory MCP server
+- New workspace `apps/arachne-mcp/` — a **thin stdio MCP front over the existing vault engine** (`apps/dispatcher/src/memory/arachne.ts`); no retrieval logic is reimplemented. Exposes eight tools: `memory_pack` (hot-path scoped pack via `deriveLoc`+`assemble`+`renderPack`, inheriting the `isInjectable` provenance gate so `review:pending` agent nodes are never injected), `memory_survey` (ranked stubs, no bodies), `memory_load` (≤10 full bodies, `sanitizeBody`+`orderBodySections`), `memory_search` (frontmatter matches; pending agent nodes returnable but flagged with provenance/review/`injectable`), `memory_neighbors` (typed edge traversal), `memory_write` (`classifyWrite` dedup/provenance chokepoint first — duplicate/conflict is a structured refusal naming the existing id, only a clean `ADD` persists), `memory_validate` (corruption detector that surfaces every parse failure `buildIndex` silently swallows, plus index-vs-file count), and `memory_reload`.
+- In-process index cache (`IndexCache`); `memory_write`/`memory_reload` invalidate it. Vault path resolves via `memoryDir(NYX_DATA_DIR)` replicating the dispatcher's env fallback without importing its stateful config.
+- New launcher `scripts/nyx-arachne-mcp.sh` + `arachne-mcp` wired into `nyx` help. The Formula installs a `bin/nyx-arachne-mcp.sh` wrapper and the caveats document the `claude mcp add --scope user arachne -- bash /opt/homebrew/opt/nyx/bin/nyx-arachne-mcp.sh` registration.
+- Touched: `apps/arachne-mcp/**`, `tsconfig.json`, `scripts/nyx`, `scripts/nyx-arachne-mcp.sh`, `Formula/nyx.rb`, `pnpm-lock.yaml`.
+
 ## v1.3.1 — 2026-06-10
 
 ### Memory engine
