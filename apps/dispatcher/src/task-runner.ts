@@ -68,6 +68,15 @@ export interface BuildPromptOpts {
    * plan the SAME task drafted, not a foreign task's.
    */
   flightPlan?: FlightPlan;
+  /**
+   * Composer normalizer ENFORCEMENT (COMPOSER_NORMALIZER_ENFORCED=true only):
+   * the pre-formatted "## NORMALIZED SPEC (composer-compiled)" block the
+   * normalizer produced for a clean (non-rejected) spec. When present it is
+   * prepended ahead of the raw task body so the agent executes the tightened
+   * instruction set. Absent in shadow mode (enforced=false) and on any
+   * normalizer failure/skip — both leave the prompt byte-identical to today.
+   */
+  normalizedSpecBlock?: string;
 }
 
 export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): string {
@@ -103,6 +112,15 @@ export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): strin
 
   sections.push(`# Nyx task: ${task.id}`);
   sections.push('');
+  // Composer normalizer enforcement: the tightened spec is prepended AHEAD of
+  // the raw task body so the agent reads it first. Only present when
+  // COMPOSER_NORMALIZER_ENFORCED=true and the normalization succeeded with a
+  // clean (non-rejected) verdict — pre-dispatch only, never a post-execution
+  // signal. Absent in shadow mode, leaving the prompt byte-identical to today.
+  if (opts.normalizedSpecBlock && task.type === 'code') {
+    sections.push(opts.normalizedSpecBlock);
+    sections.push('');
+  }
   sections.push(task.description);
   sections.push('');
   sections.push(`Task type: ${task.type}`);

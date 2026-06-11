@@ -20,7 +20,7 @@ import { spawnWithTimeout } from '../spawn-helpers.js';
 import type { ParsedTask } from '../types.js';
 import type { NormalizedSpec, NormalizationVerdict } from './types.js';
 
-const NORMALIZE_TIMEOUT_MS = 5 * 60_000;
+const NORMALIZE_TIMEOUT_MS = 10 * 60_000;
 const NORMALIZE_DIR = '.nyx';
 const NORMALIZE_FILE = `${NORMALIZE_DIR}/normalized-spec.json`;
 const NORMALIZE_MODEL = 'sonnet';

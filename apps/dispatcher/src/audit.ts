@@ -151,6 +151,11 @@ export type AuditEvent =
   // tightened spec + dependency DAG + would_reject signal; never blocks.
   | 'composer.normalize.completed'
   | 'composer.normalize.skipped'
+  // Pre-dispatch enforcement (COMPOSER_NORMALIZER_ENFORCED=true only): the
+  // normalizer judged the spec un-normalizable as written, so the coder was
+  // NOT spawned and the task was halted pre-dispatch. PRE-DISPATCH ONLY — never
+  // emitted from a post-execution / findings path.
+  | 'composer.normalize.rejected'
   // Trace→eval→lesson loop FOUNDATION (G-A). Evaluation is a SEPARATE control
   // plane ON TOP of the trace: the audit chain records WHAT happened, these
   // events record that a run was JUDGED (and the drift verdict over time). The

@@ -5,11 +5,20 @@ import { describe, test, beforeEach, afterEach } from 'node:test';
 import { _setAuditDb } from '../src/audit.js';
 import { config } from '../src/config.js';
 import { _setComposerDb, getNormalizationsForTask } from '../src/composer/db.js';
-import { maybeRunShadowNormalize, runShadowNormalizePhase } from '../src/composer/orchestrate.js';
+import {
+  formatNormalizedSpecBlock,
+  maybeRunShadowNormalize,
+  runShadowNormalizePhase,
+  type ShadowNormalizeResult,
+} from '../src/composer/orchestrate.js';
 import { _setOutcomesDb, getOutcomesForTask } from '../src/outcomes.js';
 import type { AncestorContext } from '../src/composer/chain-context.js';
 import type { NormalizerSpawnOutcome } from '../src/composer/normalizer-spawner.js';
-import type { NormalizationVerdict, NormalizedSpec } from '../src/composer/types.js';
+import type {
+  NormalizationResult,
+  NormalizationVerdict,
+  NormalizedSpec,
+} from '../src/composer/types.js';
 import type { ParsedTask } from '../src/types.js';
 
 let db: DatabaseSync;
@@ -33,6 +42,22 @@ function fakeSpawn(s: NormalizedSpec): () => Promise<NormalizerSpawnOutcome> {
   return async () => ({ ok: true, result: { spec: s, rawResponse: JSON.stringify(s) } });
 }
 
+function normResult(over: Partial<NormalizationResult> = {}): NormalizationResult {
+  return {
+    normalization_id: 'norm-1',
+    task_id: 'TASK-X',
+    spec: spec(),
+    dag: null,
+    enforced: true,
+    would_reject: false,
+    reject_reason: null,
+    duration_ms: 1,
+    model: 'sonnet',
+    raw_response: '{}',
+    ...over,
+  };
+}
+
 /** Toggle the (deeply-readonly) config flag for a single test, restoring after. */
 function withNormalizerEnabled<T>(enabled: boolean, fn: () => T): T {
   const mutable = config.composer.normalizer as { enabled: boolean };
@@ -42,6 +67,27 @@ function withNormalizerEnabled<T>(enabled: boolean, fn: () => T): T {
     return fn();
   } finally {
     mutable.enabled = prev;
+  }
+}
+
+/**
+ * Toggle BOTH enabled + enforced for a single test, restoring after. ASYNC +
+ * awaits `fn` before restoring: `enforced` is read AFTER an internal `await` in
+ * `maybeRunShadowNormalize`, so a synchronous-restore helper would reset the flag
+ * before the function reads it. (`enabled` is read synchronously, so the sync
+ * `withNormalizerEnabled` helper above is fine for it.)
+ */
+async function withNormalizerEnforced<T>(enforced: boolean, fn: () => Promise<T>): Promise<T> {
+  const mutable = config.composer.normalizer as { enabled: boolean; enforced: boolean };
+  const prevEnabled = mutable.enabled;
+  const prevEnforced = mutable.enforced;
+  mutable.enabled = true;
+  mutable.enforced = enforced;
+  try {
+    return await fn();
+  } finally {
+    mutable.enabled = prevEnabled;
+    mutable.enforced = prevEnforced;
   }
 }
 
@@ -185,22 +231,24 @@ describe('orchestrate phase-3 (shadow normalizer)', () => {
  * import, so we test the inert, side-effect-free seam it calls instead.
  */
 describe('maybeRunShadowNormalize (dispatch-path wiring)', () => {
-  test('flag OFF (shipped default) → normalizer NEVER invoked, no ancestor gather', async () => {
+  test('flag OFF (shipped default) → normalizer NEVER invoked, proceed action', async () => {
     let gathered = false;
     let ran = false;
-    await withNormalizerEnabled(false, () =>
+    const decision = await withNormalizerEnabled(false, () =>
       maybeRunShadowNormalize(makeTask('TASK-OFF'), '/tmp', {
         gatherAncestors: () => {
           gathered = true;
           return [];
         },
-        runShadow: async () => {
+        record: async () => {
           ran = true;
+          return normResult();
         },
       }),
     );
     assert.equal(gathered, false, 'must not gather ancestors when disabled');
-    assert.equal(ran, false, 'must not invoke the shadow normalizer when disabled');
+    assert.equal(ran, false, 'must not invoke the normalizer when disabled');
+    assert.deepEqual(decision, { action: 'proceed' });
     assert.equal(getNormalizationsForTask('TASK-OFF').length, 0);
   });
 
@@ -210,21 +258,23 @@ describe('maybeRunShadowNormalize (dispatch-path wiring)', () => {
     await withNormalizerEnabled(true, () =>
       maybeRunShadowNormalize(makeTask('TASK-ON'), '/tmp', {
         gatherAncestors: () => ancestors,
-        runShadow: async (_t, _wd, anc) => {
+        record: async (_t, _wd, anc) => {
           seen = anc;
+          return normResult();
         },
       }),
     );
-    assert.deepEqual(seen, ancestors, 'gathered ancestors must reach the shadow phase');
+    assert.deepEqual(seen, ancestors, 'gathered ancestors must reach the normalizer');
   });
 
-  test('flag ON + a thrown normalizer → swallowed; dispatch caller proceeds', async () => {
+  test('flag ON + a thrown normalizer → swallowed; caller proceeds (fail-open)', async () => {
     let threw = false;
+    let decision: ShadowNormalizeResult = { action: 'reject', blockingIssues: [], rejectReason: null };
     try {
-      await withNormalizerEnabled(true, () =>
+      decision = await withNormalizerEnabled(true, () =>
         maybeRunShadowNormalize(makeTask('TASK-WIRE-THROW'), '/tmp', {
           gatherAncestors: () => [],
-          runShadow: async () => {
+          record: async () => {
             throw new Error('normalizer exploded');
           },
         }),
@@ -233,6 +283,7 @@ describe('maybeRunShadowNormalize (dispatch-path wiring)', () => {
       threw = true;
     }
     assert.equal(threw, false, 'wiring must never propagate a throw to the dispatch path');
+    assert.deepEqual(decision, { action: 'proceed' }, 'a wiring throw fails open to proceed');
   });
 
   test('flag ON + a thrown ancestor-gather → swallowed; normalizer still runs with []', async () => {
@@ -244,8 +295,9 @@ describe('maybeRunShadowNormalize (dispatch-path wiring)', () => {
           gatherAncestors: () => {
             throw new Error('git blew up');
           },
-          runShadow: async (_t, _wd, anc) => {
+          record: async (_t, _wd, anc) => {
             ranWith = anc;
+            return normResult();
           },
         }),
       );
@@ -254,5 +306,103 @@ describe('maybeRunShadowNormalize (dispatch-path wiring)', () => {
     }
     assert.equal(threw, false, 'a gather throw must never reach the dispatch path');
     assert.deepEqual(ranWith, [], 'normalizer still runs, with empty ancestors');
+  });
+});
+
+describe('maybeRunShadowNormalize — ENFORCEMENT (PRE-DISPATCH ONLY)', () => {
+  test('enforced=false (shadow) + clean verdict → proceed, NO prompt change', async () => {
+    const decision = await withNormalizerEnforced(false, () =>
+      maybeRunShadowNormalize(makeTask('TASK-SHADOW'), '/tmp', {
+        gatherAncestors: () => [],
+        record: async () => normResult({ would_reject: false }),
+      }),
+    );
+    // Byte-identical-to-shadow: no inject, no reject — the coder's prompt is
+    // unchanged even though the normalization WAS recorded.
+    assert.deepEqual(decision, { action: 'proceed' });
+  });
+
+  test('enforced=false (shadow) + would_reject → STILL proceeds (no halt)', async () => {
+    const decision = await withNormalizerEnforced(false, () =>
+      maybeRunShadowNormalize(makeTask('TASK-SHADOW-WR'), '/tmp', {
+        gatherAncestors: () => [],
+        record: async () =>
+          normResult({ would_reject: true, reject_reason: 'unsolvable', enforced: false }),
+      }),
+    );
+    assert.deepEqual(decision, { action: 'proceed' }, 'shadow mode never rejects');
+  });
+
+  test('enforced=true + clean verdict → inject the NORMALIZED SPEC block', async () => {
+    const decision = await withNormalizerEnforced(true, () =>
+      maybeRunShadowNormalize(makeTask('TASK-INJECT'), '/tmp', {
+        gatherAncestors: () => [],
+        record: async () =>
+          normResult({
+            would_reject: false,
+            spec: {
+              ...spec(),
+              tightened_body: 'do exactly X',
+              acceptance_criteria: ['X compiles'],
+              anti_examples: ['do not do Y'],
+            },
+          }),
+      }),
+    );
+    assert.equal(decision.action, 'inject');
+    if (decision.action !== 'inject') throw new Error('unreachable');
+    assert.match(decision.normalizedSpecBlock, /## NORMALIZED SPEC \(composer-compiled\)/);
+    assert.match(decision.normalizedSpecBlock, /do exactly X/);
+    assert.match(decision.normalizedSpecBlock, /X compiles/);
+    assert.match(decision.normalizedSpecBlock, /do not do Y/);
+  });
+
+  test('enforced=true + would_reject → reject (coder must NOT spawn)', async () => {
+    const decision = await withNormalizerEnforced(true, () =>
+      maybeRunShadowNormalize(makeTask('TASK-REJECT'), '/tmp', {
+        gatherAncestors: () => [],
+        record: async () =>
+          normResult({
+            would_reject: true,
+            reject_reason: 'spec is incomplete',
+            spec: { ...spec(), verdict: { ...spec().verdict, complete: 'no', blocking_issues: ['missing schema'] } },
+          }),
+      }),
+    );
+    assert.equal(decision.action, 'reject');
+    if (decision.action !== 'reject') throw new Error('unreachable');
+    assert.deepEqual(decision.blockingIssues, ['missing schema']);
+    assert.equal(decision.rejectReason, 'spec is incomplete');
+  });
+
+  test('enforced=true + normalizer null (failed/skipped) → proceed unmodified', async () => {
+    const decision = await withNormalizerEnforced(true, () =>
+      maybeRunShadowNormalize(makeTask('TASK-NULL-ENF'), '/tmp', {
+        gatherAncestors: () => [],
+        record: async () => null,
+      }),
+    );
+    // NEVER block on the normalizer's own failure.
+    assert.deepEqual(decision, { action: 'proceed' });
+  });
+});
+
+describe('formatNormalizedSpecBlock', () => {
+  test('renders all three sections with header + tightened body', () => {
+    const block = formatNormalizedSpecBlock(
+      normResult({
+        spec: {
+          ...spec(),
+          tightened_body: 'TBODY',
+          acceptance_criteria: ['AC1', 'AC2'],
+          anti_examples: ['ANTI1'],
+        },
+      }),
+    );
+    assert.match(block, /^## NORMALIZED SPEC \(composer-compiled\)/);
+    assert.match(block, /### Tightened body\nTBODY/);
+    assert.match(block, /- AC1/);
+    assert.match(block, /- AC2/);
+    assert.match(block, /- ANTI1/);
   });
 });
