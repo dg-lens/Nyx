@@ -38,14 +38,21 @@ import Foundation
 //
 //   { "version": 1,
 //     "enabledOps": ["tick","refresh","resume","pipelineDecision","nav","reveal"],
-//     "revealRoots": ["~/Nyx/Data/outputs","~/Nyx/Data/ledger","~/Nyx/Apps"],
+//     "allowDestructiveOps": true,
+//     "revealRoots": ["~/Nyx/Data/outputs","~/Nyx/Data/ledger",
+//                     "~/Nyx/Apps","$NYX_DATA_DIR/projects"],
 //     "overrides": { "tick": { "label": "Tick", "icon": "bolt.fill" } } }
 //
 // It can only NARROW or relabel what the registry defines: unknown ids are
 // ignored, a disabled op renders its button disabled (with help text) rather
 // than hidden, and no config value can add executable behavior. Missing file =
-// defaults (all ops enabled, default roots); corrupt file = defaults + a
-// stderr note. See WidgetActionsConfig.
+// defaults: the non-destructive ops (nav, reveal, tick, refresh, pipelineDecision
+// go/proceed/accept) enabled with the four default reveal roots above, and the
+// destructive ops (abort, rollback, resume) OFF. `allowDestructiveOps: true` is
+// the only way to surface them — the example sets it because it also lists
+// `resume`. An explicit `"revealRoots": []` means NO roots (all reveals refused);
+// only an absent key falls back to the four defaults. A corrupt OR unknown-version
+// file = defaults + a stderr note. See WidgetActionsConfig.
 enum WidgetManifestLoader {
     // Stock manifests as embedded JSON strings — the always-present fallback. One
     // text/note widget plus three store-key stat widgets that prove the live hook.
