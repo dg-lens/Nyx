@@ -19,7 +19,7 @@ import {
   verifyChainPeriodic,
 } from '../audit.js';
 import { runEvalLoop } from '../eval/online-eval-runner.js';
-import { runAudit, MAX_AUDIT_PASSES } from '../audit-runner.js';
+import { runAudit, MAX_AUDIT_PASSES, routeAuditOutcome, type AttemptStage } from '../audit-runner.js';
 import type { FlightPlan } from '../composer/types.js';
 import { maybeRunShadowNormalize } from '../composer/orchestrate.js';
 import {
@@ -345,40 +345,87 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
       // Loop back — re-run Claude + gate + finalize against the fixed working dir.
       continue;
     }
-    if (auditOutcome.kind === 'delivered') {
-      // The audit pass found (or made) the deliverable already complete — e.g.
-      // the original gh-create failure was transient and the diagnostic agent
-      // opened the PR itself. Re-running Claude + finalize would attempt a
-      // second ship and hit the same failure, the loop this branch exists to
-      // stop. Emit the completion events the success finalize path normally
-      // emits (so downstream consumers — Slack, ledger, desktop — see the same
-      // shape), clean up the working dir, and return a completed outcome.
+    // All remaining outcomes (`delivered`, `escalated_to_halt`, `audit_failed`)
+    // route through the pure decision function so the complete/re-run/halt logic
+    // is exhaustively testable without a live spawn or gate. The stage of the
+    // audited failure is load-bearing: a `delivered` verdict only auto-completes
+    // when the failure was at finalize (gate already green) AND the verdict cited
+    // artifact evidence. Earlier-stage or evidence-free `delivered` is demoted.
+    const route = routeAuditOutcome(result.stage, auditOutcome);
+    if (route.decision === 'rerun') {
+      // Reached only when auditOutcome.kind === 'delivered' and the stage was not
+      // finalize (the autofix re-run path above already `continue`d). The gate
+      // never validated this tree, so we re-run Claude + gate exactly as the
+      // autofix path would — if it truly is delivered the re-run is cheap and the
+      // gate revalidates. Record the demotion for the anti-gaming rollup.
+      audit('task.audit.delivered.demoted', 'dispatcher', {
+        taskId: task.id,
+        pattern: auditOutcome.kind === 'delivered' ? auditOutcome.pattern : undefined,
+        stage: result.stage,
+        delivered_demoted: route.demoted ?? 'wrong_stage',
+      });
+      continue;
+    }
+    if (route.decision === 'complete') {
+      // delivered + finalize + artifact evidence. The audit pass found (or made)
+      // the deliverable already complete — e.g. the original gh-create failure
+      // was transient and the diagnostic agent opened the PR itself. Re-running
+      // Claude + finalize would attempt a second ship and hit the same failure,
+      // the loop this branch exists to stop. Emit the completion events the
+      // success finalize path normally emits (so downstream consumers — Slack,
+      // ledger, desktop — see the same shape), clean up, and return completed.
+      const delivered = auditOutcome as Extract<typeof auditOutcome, { kind: 'delivered' }>;
       audit('task.audit.delivered.succeeded', 'dispatcher', {
         taskId: task.id,
-        pattern: auditOutcome.pattern,
-        ...(auditOutcome.prUrl ? { pr_url: auditOutcome.prUrl } : {}),
+        pattern: delivered.pattern,
+        ...(delivered.prUrl ? { pr_url: delivered.prUrl } : {}),
+        ...(delivered.commitSha ? { commit_sha: delivered.commitSha } : {}),
       });
-      if (auditOutcome.prUrl) {
+      if (delivered.prUrl) {
         audit('task.pr.created', 'dispatcher', {
           taskId: task.id,
-          prUrl: auditOutcome.prUrl,
+          prUrl: delivered.prUrl,
           source: 'audit-delivered',
         });
-        await notify.prCreated(task.id, auditOutcome.prUrl);
+        await notify.prCreated(task.id, delivered.prUrl);
       }
       workingDir.cleanup();
       return {
         taskId: task.id,
         status: 'completed',
         durationMs: Date.now() - startedAt,
-        ...(auditOutcome.prUrl ? { prUrl: auditOutcome.prUrl } : {}),
+        ...(delivered.prUrl ? { prUrl: delivered.prUrl } : {}),
       };
+    }
+    // route.decision === 'halt'.
+    if (route.demoted === 'no_evidence') {
+      // delivered + finalize but NO PR URL and NO commit SHA — the ship is
+      // unverifiable. Do NOT auto-complete on the agent's bare word; hand it to
+      // the operator with the note, recording delivered_demoted in the payload.
+      const delivered = auditOutcome as Extract<typeof auditOutcome, { kind: 'delivered' }>;
+      audit('task.audit.delivered.demoted', 'dispatcher', {
+        taskId: task.id,
+        pattern: delivered.pattern,
+        stage: result.stage,
+        delivered_demoted: 'no_evidence',
+      });
+      return haltTask(task, workingDir, startedAt, {
+        operatorReport:
+          `Audit pass returned VERDICT: delivered with no artifact evidence ` +
+          `(no PR URL, no commit SHA). The deliverable cannot be verified, so the ` +
+          `task was NOT auto-completed. Inspect the working dir and the agent note, ` +
+          `then nyx-resume if the work is genuinely shipped.\n\nAgent note: ${delivered.note}`,
+        pattern: 'delivered-no-evidence',
+        extraPayload: { delivered_demoted: 'no_evidence' },
+      });
     }
     // 'escalated_to_halt' or 'audit_failed' — both halt the chain.
     const report =
       auditOutcome.kind === 'escalated_to_halt'
         ? auditOutcome.operatorReport
-        : `Audit phase errored: ${auditOutcome.reason}`;
+        : auditOutcome.kind === 'audit_failed'
+          ? `Audit phase errored: ${auditOutcome.reason}`
+          : 'Audit halted.';
     return haltTask(task, workingDir, startedAt, {
       operatorReport: report,
       pattern: auditOutcome.kind === 'escalated_to_halt' ? auditOutcome.pattern : undefined,
@@ -420,7 +467,7 @@ function cleanupStaleWorkingDir(taskId: string): void {
 type AttemptResult =
   | { status: 'completed'; outcome: RunOutcome }
   | { status: 'failed-final'; outcome: RunOutcome }
-  | { status: 'failed-recoverable'; failureLog: string }
+  | { status: 'failed-recoverable'; failureLog: string; stage: AttemptStage }
   | { status: 'ambiguity-escalated'; report: string }
   | { status: 'flaky-quarantined'; report: string }
   | { status: 'rate-limited'; retryAfterMs?: number };
@@ -450,7 +497,7 @@ async function attemptTask(
     const failureLog = preflight.failureLog ?? 'preflight failed (no detail)';
     audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'preflight', failure_log: failureLog });
     await notify.taskFailed(task.id, 'preflight', failureLog);
-    return { status: 'failed-recoverable', failureLog };
+    return { status: 'failed-recoverable', failureLog, stage: 'preflight' };
   }
 
   // ── Pre-spawn MCP auth-heal (G-D) ──
@@ -585,7 +632,7 @@ async function attemptTask(
     );
     audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'claude', failure_log: failureLog });
     await notify.claudeCrashed(task.id, claudeResult.exitCode, redactClaudeOutput(claudeResult.stderr));
-    return { status: 'failed-recoverable', failureLog };
+    return { status: 'failed-recoverable', failureLog, stage: 'claude' };
   }
 
   // Ambiguity escalation: agent exited 0 but wrote .nyx/ambiguity.json to
@@ -701,7 +748,7 @@ async function attemptTask(
     audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'gate', failure_log: gate.failureLog });
     const lastStage = gate.stages[gate.stages.length - 1]?.name ?? 'gate';
     await notify.taskFailed(task.id, lastStage, gate.failureLog);
-    return { status: 'failed-recoverable', failureLog: gate.failureLog };
+    return { status: 'failed-recoverable', failureLog: gate.failureLog, stage: 'gate' };
   }
 
   // ── Pinned-version diff-scoped lint gate (P7 — CORTANA-GATE-LINT) ──
@@ -741,7 +788,7 @@ async function attemptTask(
       });
       audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'lint', failure_log: failureLog });
       await notify.taskFailed(task.id, 'lint', failureLog);
-      return { status: 'failed-recoverable', failureLog };
+      return { status: 'failed-recoverable', failureLog, stage: 'lint' };
     }
   }
 
@@ -765,7 +812,7 @@ async function attemptTask(
       });
       audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'expects', failure_log: failureLog });
       await notify.taskFailed(task.id, 'expects', failureLog);
-      return { status: 'failed-recoverable', failureLog };
+      return { status: 'failed-recoverable', failureLog, stage: 'expects' };
     }
   }
 
@@ -895,7 +942,7 @@ async function attemptTask(
       failure_log: fl,
     });
     await notify.taskFailed(task.id, 'finalize', fl);
-    return { status: 'failed-recoverable', failureLog: fl };
+    return { status: 'failed-recoverable', failureLog: fl, stage: 'finalize' };
   }
 
   return { status: 'completed', outcome };
@@ -909,13 +956,14 @@ function haltTask(
   task: ParsedTask,
   workingDir: git.WorkingDir,
   startedAt: number,
-  info: { operatorReport: string; pattern?: string },
+  info: { operatorReport: string; pattern?: string; extraPayload?: Record<string, unknown> },
 ): RunOutcome {
   audit('task.halted_for_review', 'dispatcher', {
     taskId: task.id,
     pattern: info.pattern,
     operator_report: info.operatorReport,
     working_dir: workingDir.path,
+    ...(info.extraPayload ?? {}),
   });
   // Fire-and-forget: don't block the dispatcher on Slack latency.
   void notify.taskHalted(task.id, info.pattern, info.operatorReport);
