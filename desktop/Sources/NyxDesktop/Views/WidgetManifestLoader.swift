@@ -39,6 +39,32 @@ enum WidgetManifestLoader {
           "defaultSize": { "w": 2, "h": 2 }, "viz": "stat",
           "source": { "kind": "store", "key": "lastTick" } }
         """,
+        // nyx-ops status panels — health dot + lines + freshness footer. Each
+        // reads live Store state or a Data-dir file; see StatusResolver.
+        """
+        { "id": "opsDispatcher", "pluginId": "nyx-ops", "title": "Dispatcher Health",
+          "description": "Tick heartbeat + self-update marker.",
+          "defaultSize": { "w": 2, "h": 2 }, "viz": "status",
+          "source": { "kind": "store", "key": "ops.dispatcher" } }
+        """,
+        """
+        { "id": "opsGates", "pluginId": "nyx-ops", "title": "Gates",
+          "description": "Pipeline runs awaiting an operator gate decision.",
+          "defaultSize": { "w": 2, "h": 2 }, "viz": "status",
+          "source": { "kind": "store", "key": "ops.gates" } }
+        """,
+        """
+        { "id": "opsQueue", "pluginId": "nyx-ops", "title": "Queue",
+          "description": "Standing + scheduled tasks and the next task ids.",
+          "defaultSize": { "w": 2, "h": 2 }, "viz": "status",
+          "source": { "kind": "store", "key": "ops.queue" } }
+        """,
+        """
+        { "id": "opsLedger", "pluginId": "nyx-ops", "title": "Today's Activity",
+          "description": "The most recent day from the activity ledger.",
+          "defaultSize": { "w": 4, "h": 2 }, "viz": "status",
+          "source": { "kind": "store", "key": "ops.ledger" } }
+        """,
     ]
 
     // The Data-dir scan location: $NYX_DATA_DIR/widgets/*.json.

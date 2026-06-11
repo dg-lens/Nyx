@@ -34,9 +34,10 @@ struct WidgetView: View {
         Group {
             if let manifest {
                 switch manifest.viz {
-                case "stat": statBody(manifest)
-                case "text": textBody(manifest)
-                default:     unavailable(manifest.title)
+                case "stat":   statBody(manifest)
+                case "text":   textBody(manifest)
+                case "status": statusBody(manifest)
+                default:       unavailable(manifest.title)
                 }
             } else {
                 unavailable("widget unavailable: \(instance.manifestId)")
@@ -102,5 +103,108 @@ struct WidgetView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    // MARK: viz: status — a dumb card: health dot + label header, up to seven
+    // caption lines, freshness footer. All values come from the resolved
+    // StatusPayload (file source or a nyx-ops composite store key). Adapted from
+    // the IrisLiveOps QuadrantCard pattern.
+    @ViewBuilder
+    private func statusBody(_ m: WidgetManifest) -> some View {
+        let payload = StatusResolver.resolve(m.source, state)
+        VStack(alignment: .leading, spacing: 8) {
+            statusHeader(m, payload)
+            Divider()
+            statusLines(payload)
+            Spacer(minLength: 0)
+            statusFooter(payload)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func statusHeader(_ m: WidgetManifest, _ p: StatusPayload) -> some View {
+        HStack(spacing: 6) {
+            Text(m.title.uppercased()).font(.caption2.bold()).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Circle()
+                .fill(HealthColor.color(p.health))
+                .frame(width: 9, height: 9)
+            Text(HealthColor.label(p.health))
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func statusLines(_ p: StatusPayload) -> some View {
+        if p.lines.isEmpty {
+            // Never an unexplained blank: mirror the footer's intent inline.
+            Text(p.state == .preparing ? "preparing…" : "no data")
+                .font(.caption).foregroundStyle(.tertiary)
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(p.lines.prefix(7).enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func statusFooter(_ p: StatusPayload) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: footerSymbol(p.state))
+                .font(.system(size: 10))
+            Text(footerText(p.state))
+                .font(.caption2)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.tertiary)
+    }
+
+    private func footerSymbol(_ s: FreshnessState) -> String {
+        switch s {
+        case .fresh:     return "circle.fill"
+        case .stale:     return "clock"
+        case .preparing: return "ellipsis"
+        case .error:     return "exclamationmark.triangle"
+        }
+    }
+
+    private func footerText(_ s: FreshnessState) -> String {
+        switch s {
+        case .fresh(let d):   return "updated \(Relative.string(from: d))"
+        case .stale(let d):   return "last good \(Relative.string(from: d))"
+        case .preparing:      return "preparing"
+        case .error(let msg): return String(msg.prefix(60))
+        }
+    }
+}
+
+// Maps a status widget's HealthLevel onto a system colour + label. Deliberately a
+// tiny mapping (not a theme) so it reuses Nyx's existing palette: green/yellow/red
+// system colours for ok/warn/critical, neutral gray for unknown.
+enum HealthColor {
+    static func color(_ level: HealthLevel) -> Color {
+        switch level {
+        case .ok:        return .green
+        case .warn:      return .yellow
+        case .critical:  return .red
+        case .unknown:   return .gray
+        }
+    }
+
+    static func label(_ level: HealthLevel) -> String {
+        switch level {
+        case .ok:        return "OK"
+        case .warn:      return "Warn"
+        case .critical:  return "Critical"
+        case .unknown:   return "Unknown"
+        }
     }
 }
