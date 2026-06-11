@@ -51,6 +51,15 @@ describe('buildDeliveryBrief', () => {
     assert.doesNotMatch(brief, /Deploy is your manual step/);
     assert.doesNotMatch(brief, /PR \(review/);
   });
+
+  test('app run points at the app path (worktree_base), not a PR', () => {
+    const run = seed('pr_app', { repo: 'app:noted', integration_branch: 'nyx-pipeline/x/integration', worktree_base: '/home/op/Nyx/Apps/noted' });
+    const brief = buildDeliveryBrief(run, { pr_url: null, deploy_targets: [] });
+    assert.match(brief, /New local project:\*\* `\/home\/op\/Nyx\/Apps\/noted`/);
+    assert.match(brief, /Your new project lives at `\/home\/op\/Nyx\/Apps\/noted`/);
+    assert.doesNotMatch(brief, /Deploy is your manual step/);
+    assert.doesNotMatch(brief, /PR \(review/);
+  });
 });
 
 describe('runDelivery', () => {
@@ -84,6 +93,14 @@ describe('runDelivery', () => {
     assert.equal(pushed, false, 'greenfield → push not attempted');
     assert.equal(result.pr_url, null);
   });
+
+  test('app run (repo: app:<slug>) skips the push — app dir has no remote', async () => {
+    const run = seed('pr_appdeliver', { repo: 'app:noted', worktree_base: '/tmp/whatever' });
+    let pushed = false;
+    const result = await runDelivery(run, { push: () => { pushed = true; return 'x'; }, skipCleanup: true });
+    assert.equal(pushed, false, 'app → push not attempted');
+    assert.equal(result.pr_url, null);
+  });
 });
 
 describe('cleanupRunArtifacts', () => {
@@ -107,5 +124,13 @@ describe('cleanupRunArtifacts', () => {
     const run = seed('pr_greenkeep', { repo: 'local', worktree_base: base });
     cleanupRunArtifacts(run);
     assert.equal(existsSync(base), true, 'greenfield project dir must survive cleanup');
+  });
+
+  test('app run KEEPS its base — fires on failPipelineRun too, so a mid-run failure must not delete the app', () => {
+    const base = mkdtempSync(join(tmpdir(), 'nyx-appbase-'));
+    writeFileSync(resolve(base, 'package.json'), '{}');
+    const run = seed('pr_appkeep', { repo: 'app:noted', worktree_base: base });
+    cleanupRunArtifacts(run);
+    assert.equal(existsSync(base), true, 'app dir must survive cleanup');
   });
 });

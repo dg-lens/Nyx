@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -359,5 +359,46 @@ describe('setupIntegrationBase (C1 self-mode data-loss guard)', () => {
       () => setupIntegrationBase(run, { id: 'BADREPO', description: 'x', repo: 'employee-portal' }),
       ExecuteError,
     );
+  });
+});
+
+describe('setupIntegrationBase (app:<slug> destination)', () => {
+  function withAppsDir<T>(fn: (appsDir: string) => T): T {
+    const orig = config.appsDir;
+    const appsDir = mkdtempSync(join(tmpdir(), 'nyx-apps-'));
+    config.appsDir = appsDir;
+    try {
+      return fn(appsDir);
+    } finally {
+      config.appsDir = orig;
+      rmSync(appsDir, { recursive: true, force: true });
+    }
+  }
+
+  test('scaffolds appsDir/<slug> (slug verbatim, not a sanitized task_id) with a no-op cleanup', () => {
+    withAppsDir((appsDir) => {
+      const run = createRun({ id: 'pr_APPNEW_a', taskId: 'My/Task', prompt: 'build it', repo: 'app:my-app', now: 1 });
+      const { basePath, integrationBranch, cleanup } = setupIntegrationBase(run, { id: 'My/Task', description: 'build it', repo: 'app:my-app' });
+      assert.equal(basePath, resolve(appsDir, 'my-app'));
+      assert.equal(integrationBranch, `nyx-pipeline/${'pr_APPNEW_a'.toLowerCase()}/integration`);
+      const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: basePath, encoding: 'utf8' }).trim();
+      assert.equal(branch, integrationBranch, 'fresh git repo checked out on the integration branch');
+      cleanup();
+      assert.equal(existsSync(basePath), true, 'cleanup is a no-op — the app dir IS the deliverable');
+    });
+  });
+
+  test('refuses an existing destination instead of reaching createGreenfieldDir', () => {
+    withAppsDir((appsDir) => {
+      const dest = resolve(appsDir, 'taken');
+      mkdirSync(dest, { recursive: true });
+      writeFileSync(resolve(dest, 'precious.txt'), 'do not touch\n');
+      const run = createRun({ id: 'pr_APPCOLLIDE_a', taskId: 'T', prompt: 'x', repo: 'app:taken', now: 1 });
+      assert.throws(
+        () => setupIntegrationBase(run, { id: 'T', description: 'x', repo: 'app:taken' }),
+        (e: unknown) => e instanceof ExecuteError && /app destination .* already exists/.test((e as Error).message),
+      );
+      assert.equal(readFileSync(resolve(dest, 'precious.txt'), 'utf8'), 'do not touch\n', 'existing app dir untouched');
+    });
   });
 });

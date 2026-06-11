@@ -411,6 +411,27 @@ describe('[repo:] validation (C2 command-injection guard)', () => {
     assert.equal(t?.repo, 'local');
     assert.equal(t!.invalidTags.length, 0);
   });
+
+  test('an app:<slug> repo is accepted', () => {
+    write(
+      `## Active Tasks\n\n- [ ] APP-1 — build a note-taking app\n      [type: pipeline] [repo: app:noted]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'APP-1');
+    assert.equal(t?.repo, 'app:noted');
+    assert.equal(t!.invalidTags.length, 0);
+  });
+
+  test('a malformed app tag (empty / uppercase / path slug) is flagged and never picked', () => {
+    for (const bad of ['app:', 'app:UPPER', 'app:a/b']) {
+      write(
+        `## Active Tasks\n\n- [ ] APP-BAD — build something\n      [type: pipeline] [repo: ${bad}]\n`,
+      );
+      const q = readQueue(queuePath);
+      assert.equal(pickNextTask(q), null, bad);
+      assert.ok(tasksWithInvalidTags(q).some(x => x.id === 'APP-BAD'), bad);
+    }
+  });
 });
 
 // ─── pickNextTask classFilter (Track 3) ──────────────────────────────────────

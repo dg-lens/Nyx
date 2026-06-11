@@ -53,6 +53,12 @@ export const config = {
   logsDir: resolve(DATA_DIR, 'logs'),
   outputsDir: resolve(DATA_DIR, 'outputs'),
   projectsDir: resolve(DATA_DIR, 'projects'),
+  // Durable destination for `[repo: app:<slug>]` pipeline runs. Deliberately
+  // OUTSIDE dataDir: a delivered app is an operator-facing standalone project,
+  // not Nyx state. Override with NYX_APPS_DIR.
+  appsDir: process.env['NYX_APPS_DIR']
+    ? expandUser(process.env['NYX_APPS_DIR'])
+    : resolve(homedir(), 'Nyx', 'Apps'),
   worktreesDir: resolve(DATA_DIR, 'worktrees'),
   contextDir: resolve(DATA_DIR, 'context'),
 

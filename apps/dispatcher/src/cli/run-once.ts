@@ -1573,7 +1573,8 @@ async function main(): Promise<void> {
             if (!isValidRepoTag(repo)) {
               throw new Error(
                 `queue_task: invalid [repo:] value ${JSON.stringify(repo)} — ` +
-                  `must be "owner/name" or a greenfield keyword (local|new|greenfield|scratch)`,
+                  `must be "owner/name", a greenfield keyword (local|new|greenfield|scratch), ` +
+                  `or "app:<slug>" (slug: [a-z0-9-]+)`,
               );
             }
             tags.push(`[repo: ${repo}]`);
