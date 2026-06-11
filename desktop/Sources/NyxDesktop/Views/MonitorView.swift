@@ -1,11 +1,20 @@
 import SwiftUI
 
 struct MonitorView: View {
+    var body: some View {
+        MonitorPanels()
+    }
+}
+
+// The Queue + Task History panel pair. Extracted from MonitorView so the
+// Monitor tab can place them alongside the Gates section without duplicating
+// panel markup. MonitorView keeps rendering exactly these.
+struct MonitorPanels: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            panel("Queue") {
+            MonitorPanel("Queue") {
                 if store.state.queue.isEmpty {
                     Text("queue empty").font(.caption).foregroundStyle(.tertiary)
                 } else {
@@ -19,7 +28,7 @@ struct MonitorView: View {
                     }
                 }
             }
-            panel("Task History") {
+            MonitorPanel("Task History") {
                 if store.state.audit.isEmpty {
                     Text("no recent events").font(.caption).foregroundStyle(.tertiary)
                 } else {
@@ -29,9 +38,20 @@ struct MonitorView: View {
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func panel<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+// A titled, scrollable panel matching the Monitor card styling. Shared by the
+// Monitor tab so the Gates section and the Queue/History panels read alike.
+struct MonitorPanel<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.content = content
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased()).font(.caption.bold()).foregroundStyle(.secondary)
             ScrollView { VStack(alignment: .leading, spacing: 6) { content() } }
