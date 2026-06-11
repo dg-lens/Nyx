@@ -26,10 +26,24 @@ printf '%s\\n' "$*" >> "$CURL_LOG"
 exit 0
 `;
 
+const CREDENTIAL_KEYS = [
+  'PUSHOVER_APP_TOKEN',
+  'PUSHOVER_USER_KEY',
+  'SLACK_BOT_TOKEN',
+  'SLACK_USER_ID',
+  'SLACK_WEBHOOK_URL',
+];
+
 function runWatchdog(env: Record<string, string> = {}): void {
+  // Channel-credential presence MUST be controlled by the test's `env` arg alone.
+  // The dispatcher exports PUSHOVER_*/SLACK_* (it sources .env with `set -a`), so an
+  // unscrubbed `...process.env` leaks the operator's real creds into the no-credentials
+  // cases and breaks the gate on every code task. Strip them from the base env.
+  const base: Record<string, string | undefined> = { ...process.env };
+  for (const k of CREDENTIAL_KEYS) delete base[k];
   execFileSync('bash', [SCRIPT], {
     env: {
-      ...process.env,
+      ...base,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       NYX_DATA_DIR: dataDir,
       CURL_LOG: curlLog,
