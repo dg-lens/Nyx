@@ -20,7 +20,7 @@
 
 import { audit } from '../audit.js';
 import { config } from '../config.js';
-import { recordOutcome } from '../outcomes.js';
+import { safeRecordOutcome } from '../outcomes.js';
 import type { ParsedTask } from '../types.js';
 import { gatherAncestorContext, type AncestorContext } from './chain-context.js';
 import { runComposer } from './composer-runner.js';
@@ -196,7 +196,7 @@ export async function runShadowNormalizePhase(
         predicted_conflict_count: norm.dag?.predicted_conflicts.length ?? 0,
         dag_cycle: norm.dag?.cycle != null,
       });
-      recordOutcome({
+      safeRecordOutcome({
         task_id: task.id,
         stage: 'composer.normalize',
         outcome: 'ok',
@@ -216,7 +216,7 @@ export async function runShadowNormalizePhase(
         failure_class,
         reason: outcome.detail ?? failure_class,
       });
-      recordOutcome({
+      safeRecordOutcome({
         task_id: task.id,
         stage: 'composer.normalize',
         outcome: 'failed',
@@ -233,18 +233,16 @@ export async function runShadowNormalizePhase(
       failure_class: 'internal_error',
       reason: `normalize threw: ${(err as Error).message}`,
     });
-    try {
-      recordOutcome({
-        task_id: task.id,
-        stage: 'composer.normalize',
-        outcome: 'failed',
-        failure_class: 'internal_error',
-        detail: (err as Error).message,
-        duration_ms: Date.now() - stageStart,
-      });
-    } catch {
-      /* swallow — shadow stage must never propagate */
-    }
+    // safeRecordOutcome never throws — the shadow stage cannot propagate a
+    // monitoring-write failure into dispatch.
+    safeRecordOutcome({
+      task_id: task.id,
+      stage: 'composer.normalize',
+      outcome: 'failed',
+      failure_class: 'internal_error',
+      detail: (err as Error).message,
+      duration_ms: Date.now() - stageStart,
+    });
   }
 }
 

@@ -4,6 +4,7 @@ import { describe, test, beforeEach, afterEach } from 'node:test';
 
 import {
   FAILURE_CLASSES,
+  MAX_DETAIL_CHARS,
   OUTCOMES,
   OUTCOME_STAGES,
   SKIP_REASONS,
@@ -13,6 +14,7 @@ import {
   getRecentOutcomesByStage,
   recordOutcome,
   rollupByStage,
+  safeRecordOutcome,
   validateOutcomeInput,
 } from '../src/outcomes.js';
 
@@ -41,13 +43,55 @@ describe('outcomes — taxonomy invariants', () => {
         'composer.run',
         'delivery',
         'dispatch',
+        'doc_sweep',
+        'expects',
+        'finalize',
         'gate',
         'intake',
+        'lint',
+        'mcp',
+        'notify',
+        'pipeline',
+        'plugin',
         'preflight',
+        'spawn',
         'verify',
         'wisdom',
       ],
     );
+  });
+
+  test('OUTCOME_STAGES keeps the original 11 stages AND adds the 9 emitter-sweep stages', () => {
+    const original = [
+      'intake',
+      'preflight',
+      'composer.plan',
+      'composer.run',
+      'composer.normalize',
+      'dispatch',
+      'gate',
+      'verify',
+      'delivery',
+      'audit',
+      'wisdom',
+    ];
+    for (const s of original) {
+      assert.ok((OUTCOME_STAGES as readonly string[]).includes(s), `lost original stage: ${s}`);
+    }
+    for (const s of [
+      'spawn',
+      'lint',
+      'expects',
+      'doc_sweep',
+      'finalize',
+      'notify',
+      'mcp',
+      'pipeline',
+      'plugin',
+    ]) {
+      assert.ok((OUTCOME_STAGES as readonly string[]).includes(s), `missing new stage: ${s}`);
+    }
+    assert.equal(OUTCOME_STAGES.length, 20);
   });
 
   test('OUTCOMES is exactly {ok, skipped, failed}', () => {
@@ -71,6 +115,11 @@ describe('outcomes — taxonomy invariants', () => {
 
   test('FAILURE_CLASSES carries `unknown` as the explicit "no other class fits" bucket', () => {
     assert.ok((FAILURE_CLASSES as readonly string[]).includes('unknown'));
+  });
+
+  test('FAILURE_CLASSES distinguishes spawn_timeout from spawn_failed', () => {
+    assert.ok((FAILURE_CLASSES as readonly string[]).includes('spawn_timeout'));
+    assert.ok((FAILURE_CLASSES as readonly string[]).includes('spawn_failed'));
   });
 
   test('SKIP_REASONS distinguishes structural skips from failures', () => {
@@ -423,5 +472,142 @@ describe('outcomes — empty state', () => {
     assert.deepEqual(getRecentFailures({ limit: 10 }), []);
     assert.deepEqual(getRecentOutcomesByStage('gate', 10), []);
     assert.deepEqual(rollupByStage(), []);
+  });
+});
+
+// ── detail truncation ──────────────────────────────────────────────────
+
+describe('outcomes — detail truncation', () => {
+  test('detail longer than MAX_DETAIL_CHARS is clipped at write time', () => {
+    const long = 'x'.repeat(MAX_DETAIL_CHARS + 250);
+    recordOutcome({
+      task_id: 'TASK-LONG',
+      stage: 'composer.normalize',
+      outcome: 'failed',
+      failure_class: 'artifact_malformed_json',
+      detail: long,
+    });
+    const rows = getOutcomesForTask('TASK-LONG');
+    assert.equal(rows[0]?.detail?.length, MAX_DETAIL_CHARS);
+    assert.equal(rows[0]?.detail, 'x'.repeat(MAX_DETAIL_CHARS));
+  });
+
+  test('detail at or under MAX_DETAIL_CHARS is stored verbatim', () => {
+    const exact = 'y'.repeat(MAX_DETAIL_CHARS);
+    recordOutcome({
+      task_id: 'TASK-EXACT',
+      stage: 'gate',
+      outcome: 'failed',
+      failure_class: 'tests_failed',
+      detail: exact,
+    });
+    assert.equal(getOutcomesForTask('TASK-EXACT')[0]?.detail, exact);
+  });
+
+  test('truncation also applies via safeRecordOutcome (both entry points share it)', () => {
+    safeRecordOutcome({
+      task_id: 'TASK-LONG-SAFE',
+      stage: 'gate',
+      outcome: 'failed',
+      failure_class: 'tests_failed',
+      detail: 'z'.repeat(MAX_DETAIL_CHARS + 100),
+    });
+    assert.equal(getOutcomesForTask('TASK-LONG-SAFE')[0]?.detail?.length, MAX_DETAIL_CHARS);
+  });
+});
+
+// ── safeRecordOutcome — never throws ────────────────────────────────────
+
+describe('outcomes — safeRecordOutcome (production entry point)', () => {
+  test('a valid input persists exactly like recordOutcome', () => {
+    safeRecordOutcome({ task_id: 'SAFE-OK', stage: 'gate', outcome: 'ok', duration_ms: 5 });
+    const rows = getOutcomesForTask('SAFE-OK');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.outcome, 'ok');
+  });
+
+  test('a taxonomy violation is SWALLOWED (no throw) and nothing is written', () => {
+    const prevError = console.error;
+    let logged = false;
+    console.error = () => {
+      logged = true;
+    };
+    try {
+      assert.doesNotThrow(() =>
+        safeRecordOutcome({
+          task_id: 'SAFE-BAD',
+          stage: 'gate',
+          outcome: 'failed', // missing failure_class → recordOutcome throws
+        }),
+      );
+    } finally {
+      console.error = prevError;
+    }
+    assert.equal(logged, true, 'the swallowed error must be console.error-logged');
+    assert.equal(getOutcomesForTask('SAFE-BAD').length, 0);
+  });
+
+  test('a DB-layer error is swallowed too (monitoring never blocks dispatch)', () => {
+    // Point the module at a closed DB so the INSERT throws — the wrapper must
+    // still not propagate it.
+    const broken = new DatabaseSync(':memory:');
+    broken.close();
+    _setOutcomesDb(broken);
+    const prevError = console.error;
+    console.error = () => {};
+    try {
+      assert.doesNotThrow(() =>
+        safeRecordOutcome({ task_id: 'SAFE-DB', stage: 'gate', outcome: 'ok' }),
+      );
+    } finally {
+      console.error = prevError;
+      // Restore the per-test in-memory db for afterEach's close().
+      _setOutcomesDb(db);
+    }
+  });
+});
+
+// ── schema idempotency ──────────────────────────────────────────────────
+
+describe('outcomes — schema idempotency', () => {
+  test('opening the table twice on the same db handle is a no-op (no error, no dupes)', () => {
+    // Fresh, independent handle so this test owns its lifecycle end-to-end.
+    const fresh = new DatabaseSync(':memory:');
+    _setOutcomesDb(fresh);
+    try {
+      // First open via a write triggers CREATE TABLE IF NOT EXISTS + indexes.
+      recordOutcome({ task_id: 'IDEMP', stage: 'gate', outcome: 'ok' });
+      // Re-run the schema create directly: must not throw on the existing table.
+      assert.doesNotThrow(() => {
+        fresh.exec(`
+          CREATE TABLE IF NOT EXISTS task_outcomes (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            at              TEXT    NOT NULL,
+            task_id         TEXT    NOT NULL,
+            stage           TEXT    NOT NULL,
+            outcome         TEXT    NOT NULL,
+            failure_class   TEXT,
+            skip_reason     TEXT,
+            detail          TEXT,
+            payload_json    TEXT,
+            duration_ms     INTEGER,
+            created_at      INTEGER NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_task_outcomes_task
+            ON task_outcomes(task_id, created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_task_outcomes_stage
+            ON task_outcomes(stage, outcome, created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_task_outcomes_failure_class
+            ON task_outcomes(failure_class, created_at DESC);
+        `);
+      });
+      // A second write still works and the first row was not duplicated.
+      recordOutcome({ task_id: 'IDEMP', stage: 'verify', outcome: 'ok' });
+      const rows = getOutcomesForTask('IDEMP');
+      assert.equal(rows.length, 2, 'exactly the two rows written — schema re-create added none');
+    } finally {
+      _setOutcomesDb(db);
+      fresh.close();
+    }
   });
 });

@@ -32,6 +32,20 @@ import { openDb } from './db.js';
 export const OUTCOMES_SCHEMA_VERSION = 1;
 
 /**
+ * `detail` is free prose for human eyeballs; it is NOT a payload dump. Bound it
+ * at write time so a postmortem's raw-artifact tail (fix: artifact failure
+ * classes carry the last 500 chars of the artifact) can never blow the column
+ * up. Applied inside `recordOutcome` so BOTH entry points (strict + safe) get it.
+ */
+export const MAX_DETAIL_CHARS = 500;
+
+/** Truncate `detail` to {@link MAX_DETAIL_CHARS}, preserving null/undefined. */
+function truncateDetail(detail: string | null | undefined): string | null {
+  if (detail == null) return null;
+  return detail.length > MAX_DETAIL_CHARS ? detail.slice(0, MAX_DETAIL_CHARS) : detail;
+}
+
+/**
  * Major lifecycle phases. Every code/content/analysis task moves through some
  * subset of these in order; pipelines decompose into per-stage entries too.
  * Adding a stage is additive — existing rollups keep working on the old subset.
@@ -48,6 +62,18 @@ export const OUTCOME_STAGES = [
   'delivery',
   'audit',
   'wisdom',
+  // Additive — the upcoming emitter sweep records outcomes at these stages too.
+  // Appending is safe: existing rollups keep working on the original subset, and
+  // the closed-set validation accepts the new members without any other change.
+  'spawn',
+  'lint',
+  'expects',
+  'doc_sweep',
+  'finalize',
+  'notify',
+  'mcp',
+  'pipeline',
+  'plugin',
 ] as const;
 export type OutcomeStage = (typeof OUTCOME_STAGES)[number];
 
@@ -280,6 +306,12 @@ export function validateOutcomeInput(input: RecordOutcomeInput): string | null {
 /**
  * Persist one task outcome. Throws on a taxonomy violation rather than silently
  * writing garbage — a malformed input is a programming error, not data.
+ *
+ * NOTE: this is the STRICT entry point, kept for tests + internal callers that
+ * want a violation to surface loudly. Production dispatch code MUST use
+ * {@link safeRecordOutcome} instead — a monitoring write must never propagate a
+ * throw into the dispatch path. `detail` is truncated here so both entry points
+ * inherit the bound.
  */
 export function recordOutcome(input: RecordOutcomeInput): void {
   const violation = validateOutcomeInput(input);
@@ -294,11 +326,32 @@ export function recordOutcome(input: RecordOutcomeInput): void {
     input.outcome,
     input.failure_class ?? null,
     input.skip_reason ?? null,
-    input.detail ?? null,
+    truncateDetail(input.detail),
     input.payload != null ? JSON.stringify(input.payload) : null,
     input.duration_ms ?? null,
     now,
   );
+}
+
+/**
+ * Production-safe entry point. The outcomes table is a MONITORING projection, not
+ * the source of truth (the hash-chained audit log is). A failure to record an
+ * outcome — taxonomy violation, DB error, anything — must NEVER propagate into
+ * the dispatch path and block or fail the task being monitored. This wrapper
+ * therefore swallows every error: it `console.error`s and returns. All
+ * production call sites use this; only tests and the strict-validation tests call
+ * {@link recordOutcome} directly.
+ *
+ * Monitoring writes never propagate into dispatch — that is the entire contract.
+ */
+export function safeRecordOutcome(input: RecordOutcomeInput): void {
+  try {
+    recordOutcome(input);
+  } catch (err) {
+    console.error(
+      `safeRecordOutcome: swallowed monitoring-write error for task ${input?.task_id ?? '<unknown>'} stage ${input?.stage ?? '<unknown>'}: ${(err as Error).message}`,
+    );
+  }
 }
 
 interface RawRow {

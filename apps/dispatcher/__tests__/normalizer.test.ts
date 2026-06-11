@@ -137,6 +137,7 @@ describe('normalizeTaskSpec', () => {
 
   test('propagates the specific spawn failure_class — caller can distinguish causes', async () => {
     for (const fc of [
+      'spawn_timeout',
       'artifact_missing',
       'artifact_unreadable',
       'artifact_malformed_json',
