@@ -2,6 +2,15 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.6.0 — 2026-06-11
+
+### `app:<slug>` pipeline target mode
+- `[repo: app:<slug>]` on a `[type: pipeline]` task scaffolds a greenfield run landing at `$NYX_APPS_DIR` (default `~/Nyx/Apps`)/`<slug>` instead of `Data/projects/<task_id>` — the home for standalone agent-driven apps on the Nyx substrate (desktop Apps tab renders them).
+- Grammar: slug is strictly `[a-z0-9-]+`; `app:`, `app:UPPER`, `app:a/b` are invalid (fail fast at planning). Existing external/self/greenfield/invalid behavior is byte-identical.
+- Refusal-before-mutation, three layers: planning existence check (replan/rollback re-entry on the run's own base exempt) → integration-base re-check closing the preview-gate TOCTOU → `createGreenfieldDir` now refuses to rm-rf non-empty dirs under `appsDir` as well as `projectsDir`.
+- Delivery skips push/PR; the brief points at the app path; cleanup keeps the base.
+- Touched: `pipeline/target.ts`, `pipeline/planning.ts`, `pipeline/execute.ts`, `pipeline/delivery.ts`, `git-ops.ts`, `config.ts` (`appsDir`), `cli/run-once.ts` (boundary error text), tests across six files.
+
 ## v1.5.0 — 2026-06-10
 
 ### Composer normalizer enforcement (pre-dispatch)
