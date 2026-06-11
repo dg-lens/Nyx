@@ -6,8 +6,9 @@ import { _setAuditDb } from '../src/audit.js';
 import { config } from '../src/config.js';
 import { _setComposerDb, getNormalizationsForTask } from '../src/composer/db.js';
 import { maybeRunShadowNormalize, runShadowNormalizePhase } from '../src/composer/orchestrate.js';
+import { _setOutcomesDb, getOutcomesForTask } from '../src/outcomes.js';
 import type { AncestorContext } from '../src/composer/chain-context.js';
-import type { NormalizerSpawnResult } from '../src/composer/normalizer-spawner.js';
+import type { NormalizerSpawnOutcome } from '../src/composer/normalizer-spawner.js';
 import type { NormalizationVerdict, NormalizedSpec } from '../src/composer/types.js';
 import type { ParsedTask } from '../src/types.js';
 
@@ -28,8 +29,8 @@ function spec(verdict: Partial<NormalizationVerdict> = {}): NormalizedSpec {
   };
 }
 
-function fakeSpawn(s: NormalizedSpec): () => Promise<NormalizerSpawnResult> {
-  return async () => ({ spec: s, rawResponse: JSON.stringify(s) });
+function fakeSpawn(s: NormalizedSpec): () => Promise<NormalizerSpawnOutcome> {
+  return async () => ({ ok: true, result: { spec: s, rawResponse: JSON.stringify(s) } });
 }
 
 /** Toggle the (deeply-readonly) config flag for a single test, restoring after. */
@@ -59,11 +60,13 @@ beforeEach(() => {
   `);
   _setAuditDb(db);
   _setComposerDb(db);
+  _setOutcomesDb(db);
 });
 
 afterEach(() => {
   _setAuditDb(null);
   _setComposerDb(null);
+  _setOutcomesDb(null);
   db.close();
 });
 
@@ -109,15 +112,43 @@ describe('orchestrate phase-3 (shadow normalizer)', () => {
     assert.equal(got[0]?.would_reject, true);
   });
 
-  test('spawn returning null → audit skipped, no throw, nothing persisted', async () => {
+  test('spawn-failure outcome → audit skipped, no throw, structured outcome recorded', async () => {
     const ret = await withNormalizerEnabled(true, () =>
-      runShadowNormalizePhase(makeTask('TASK-NULL'), '/tmp', [], async () => null),
+      runShadowNormalizePhase(makeTask('TASK-NULL'), '/tmp', [], async () => ({
+        ok: false,
+        failure_class: 'spawn_failed',
+      })),
     );
     assert.equal(ret, undefined);
     assert.equal(getNormalizationsForTask('TASK-NULL').length, 0);
+    const outs = getOutcomesForTask('TASK-NULL');
+    assert.equal(outs.length, 1);
+    assert.equal(outs[0]?.stage, 'composer.normalize');
+    assert.equal(outs[0]?.outcome, 'failed');
+    assert.equal(outs[0]?.failure_class, 'spawn_failed');
   });
 
-  test('spawn throwing → swallowed (audit skipped), no propagation', async () => {
+  test('each of the four artifact-causes records its own failure_class', async () => {
+    for (const fc of [
+      'artifact_missing',
+      'artifact_unreadable',
+      'artifact_malformed_json',
+      'artifact_invalid_shape',
+    ] as const) {
+      const taskId = `TASK-${fc}`;
+      await withNormalizerEnabled(true, () =>
+        runShadowNormalizePhase(makeTask(taskId), '/tmp', [], async () => ({
+          ok: false,
+          failure_class: fc,
+        })),
+      );
+      const outs = getOutcomesForTask(taskId);
+      assert.equal(outs.length, 1, `${fc}: outcome row missing`);
+      assert.equal(outs[0]?.failure_class, fc);
+    }
+  });
+
+  test('spawn throwing → swallowed (audit skipped), recorded as internal_error', async () => {
     let threw = false;
     try {
       await withNormalizerEnabled(true, () =>
@@ -130,6 +161,21 @@ describe('orchestrate phase-3 (shadow normalizer)', () => {
     }
     assert.equal(threw, false, 'phase-3 must never propagate a throw');
     assert.equal(getNormalizationsForTask('TASK-THROW').length, 0);
+    const outs = getOutcomesForTask('TASK-THROW');
+    assert.equal(outs.length, 1);
+    assert.equal(outs[0]?.outcome, 'failed');
+    assert.equal(outs[0]?.failure_class, 'internal_error');
+  });
+
+  test('ok path records an outcome row with stage=composer.normalize, outcome=ok', async () => {
+    await withNormalizerEnabled(true, () =>
+      runShadowNormalizePhase(makeTask('TASK-OK'), '/tmp', [], fakeSpawn(spec())),
+    );
+    const outs = getOutcomesForTask('TASK-OK');
+    assert.equal(outs.length, 1);
+    assert.equal(outs[0]?.stage, 'composer.normalize');
+    assert.equal(outs[0]?.outcome, 'ok');
+    assert.equal(outs[0]?.failure_class, null);
   });
 });
 

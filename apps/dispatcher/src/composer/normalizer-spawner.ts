@@ -30,6 +30,24 @@ export interface NormalizerSpawnResult {
   rawResponse: string;
 }
 
+/**
+ * Closed set of reasons the spawn failed to produce a usable spec. Each maps
+ * 1:1 to a `failure_class` in the outcomes taxonomy. Keeping these structurally
+ * distinct (vs. all collapsed into one "spawn produced no usable spec" string)
+ * is the point — it's what lets the operator-review CLI tell artifact_missing
+ * apart from artifact_malformed_json.
+ */
+export type NormalizerSpawnFailureClass =
+  | 'spawn_failed'
+  | 'artifact_missing'
+  | 'artifact_unreadable'
+  | 'artifact_malformed_json'
+  | 'artifact_invalid_shape';
+
+export type NormalizerSpawnOutcome =
+  | { ok: true; result: NormalizerSpawnResult }
+  | { ok: false; failure_class: NormalizerSpawnFailureClass; detail?: string };
+
 function buildNormalizePrompt(task: ParsedTask): string {
   const sections: string[] = [];
   sections.push(`# Nyx pre-dispatch normalizer: ${task.id}`);
@@ -97,14 +115,19 @@ function buildNormalizePrompt(task: ParsedTask): string {
 const NORMALIZE_TOOLS = ['Read', 'Glob', 'Grep'];
 
 /**
- * Run the normalizer spawn. Returns the parsed spec + raw artifact text, or
- * null on any failure (spawn error, missing artifact, malformed JSON, bad
- * shape). Never throws — the caller treats null as a skip.
+ * Run the normalizer spawn. Returns a discriminated outcome — `{ ok: true }`
+ * with the parsed spec, or `{ ok: false }` with the specific
+ * `failure_class` that broke. Never throws — the caller treats `ok: false` as
+ * a structured skip, not an exception.
+ *
+ * The discriminated `failure_class` is load-bearing: it is what unblocks the
+ * rollup of "what failed in this stage and why" (was previously collapsed into
+ * one prose string).
  */
 export async function runNormalizerSpawn(
   task: ParsedTask,
   workingDir: string,
-): Promise<NormalizerSpawnResult | null> {
+): Promise<NormalizerSpawnOutcome> {
   const prompt = buildNormalizePrompt(task);
   const args = [
     '-p',
@@ -126,9 +149,8 @@ export async function runNormalizerSpawn(
     ...(config.anthropicApiKey ? { ANTHROPIC_API_KEY: config.anthropicApiKey } : {}),
   };
 
-  let stdout = '';
   try {
-    const spawnResult = await spawnWithTimeout(
+    await spawnWithTimeout(
       'claude',
       args,
       {
@@ -139,9 +161,8 @@ export async function runNormalizerSpawn(
       },
       NORMALIZE_TIMEOUT_MS,
     );
-    stdout = spawnResult.stdout;
-  } catch {
-    return null;
+  } catch (err) {
+    return { ok: false, failure_class: 'spawn_failed', detail: (err as Error).message };
   }
 
   // Mirror plan-spawner's salvage: a non-zero/timeout exit does NOT mean the
@@ -149,28 +170,35 @@ export async function runNormalizerSpawn(
   // write the file and exit; a slow exit still leaves a valid spec on disk.
   const specPath = resolve(workingDir, NORMALIZE_FILE);
   if (!existsSync(specPath)) {
-    return null;
+    return { ok: false, failure_class: 'artifact_missing' };
   }
 
   let rawContent: string;
   try {
     rawContent = readFileSync(specPath, 'utf8');
-  } catch {
+  } catch (err) {
     removeNormalizedSpecArtifact(workingDir);
-    return null;
+    return { ok: false, failure_class: 'artifact_unreadable', detail: (err as Error).message };
   }
 
-  let spec: NormalizedSpec | null = null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(rawContent) as unknown;
-    spec = validateNormalizedSpecShape(parsed, task.id);
-  } catch {
-    spec = null;
+    parsed = JSON.parse(rawContent) as unknown;
+  } catch (err) {
+    removeNormalizedSpecArtifact(workingDir);
+    return {
+      ok: false,
+      failure_class: 'artifact_malformed_json',
+      detail: (err as Error).message,
+    };
   }
 
+  const spec = validateNormalizedSpecShape(parsed, task.id);
   removeNormalizedSpecArtifact(workingDir);
-  if (!spec) return null;
-  return { spec, rawResponse: rawContent };
+  if (!spec) {
+    return { ok: false, failure_class: 'artifact_invalid_shape' };
+  }
+  return { ok: true, result: { spec, rawResponse: rawContent } };
 }
 
 /**

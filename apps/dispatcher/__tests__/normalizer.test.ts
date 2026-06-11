@@ -6,7 +6,10 @@ import { _setAuditDb } from '../src/audit.js';
 import { _setComposerDb, saveFlightPlan } from '../src/composer/db.js';
 import { FLIGHT_PLAN_SCHEMA_VERSION, type FlightPlan } from '../src/composer/types.js';
 import { deriveWouldReject, normalizeTaskSpec } from '../src/composer/normalizer.js';
-import type { NormalizerSpawnResult } from '../src/composer/normalizer-spawner.js';
+import type {
+  NormalizerSpawnOutcome,
+  NormalizerSpawnResult,
+} from '../src/composer/normalizer-spawner.js';
 import type { ChainDag, NormalizationVerdict, NormalizedSpec } from '../src/composer/types.js';
 import type { ParsedTask } from '../src/types.js';
 
@@ -39,8 +42,9 @@ function makeSpec(verdict: Partial<NormalizationVerdict>): NormalizedSpec {
   };
 }
 
-function spawnReturning(spec: NormalizedSpec): NormalizerSpawnResult {
-  return { spec, rawResponse: JSON.stringify(spec) };
+function spawnReturning(spec: NormalizedSpec): NormalizerSpawnOutcome {
+  const result: NormalizerSpawnResult = { spec, rawResponse: JSON.stringify(spec) };
+  return { ok: true, result };
 }
 
 beforeEach(() => {
@@ -120,46 +124,77 @@ describe('deriveWouldReject', () => {
 // ── normalizeTaskSpec ──────────────────────────────────────────────────
 
 describe('normalizeTaskSpec', () => {
-  test('returns null (never throws) when the spawner returns null', async () => {
-    const result = await normalizeTaskSpec(makeTask('TASK-A'), '/tmp', [], async () => null);
-    assert.equal(result, null);
+  test('returns {ok:false} (never throws) when the spawner reports a failure', async () => {
+    const outcome = await normalizeTaskSpec(
+      makeTask('TASK-A'),
+      '/tmp',
+      [],
+      async () => ({ ok: false, failure_class: 'spawn_failed' }),
+    );
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.ok === false ? outcome.failure_class : null, 'spawn_failed');
   });
 
-  test('returns null (never throws) when the spawner throws', async () => {
-    const result = await normalizeTaskSpec(makeTask('TASK-A'), '/tmp', [], async () => {
+  test('propagates the specific spawn failure_class — caller can distinguish causes', async () => {
+    for (const fc of [
+      'artifact_missing',
+      'artifact_unreadable',
+      'artifact_malformed_json',
+      'artifact_invalid_shape',
+    ] as const) {
+      const outcome = await normalizeTaskSpec(
+        makeTask('TASK-A'),
+        '/tmp',
+        [],
+        async () => ({ ok: false, failure_class: fc }),
+      );
+      assert.equal(outcome.ok, false);
+      assert.equal(
+        outcome.ok === false ? outcome.failure_class : null,
+        fc,
+        `failure_class ${fc} must round-trip through the stage outcome`,
+      );
+    }
+  });
+
+  test('returns {ok:false, failure_class:internal_error} (never throws) when the spawner throws', async () => {
+    const outcome = await normalizeTaskSpec(makeTask('TASK-A'), '/tmp', [], async () => {
       throw new Error('boom');
     });
-    assert.equal(result, null);
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.ok === false ? outcome.failure_class : null, 'internal_error');
   });
 
   test('assembles a result with derived would_reject for a clean spec', async () => {
     const spec = makeSpec({});
-    const result = await normalizeTaskSpec(
+    const outcome = await normalizeTaskSpec(
       makeTask('TASK-A'),
       '/tmp',
       [],
       async () => spawnReturning(spec),
     );
-    assert.ok(result);
-    assert.equal(result!.task_id, 'TASK-A');
-    assert.equal(result!.would_reject, false);
-    assert.equal(result!.reject_reason, null);
-    assert.equal(result!.dag, null); // no [depends:]
-    assert.equal(result!.model, 'sonnet');
-    assert.ok(result!.normalization_id.startsWith('normalize-TASK-A-'));
+    assert.ok(outcome.ok);
+    if (!outcome.ok) return;
+    assert.equal(outcome.result.task_id, 'TASK-A');
+    assert.equal(outcome.result.would_reject, false);
+    assert.equal(outcome.result.reject_reason, null);
+    assert.equal(outcome.result.dag, null); // no [depends:]
+    assert.equal(outcome.result.model, 'sonnet');
+    assert.ok(outcome.result.normalization_id.startsWith('normalize-TASK-A-'));
   });
 
   test('sets would_reject true for an un-normalizable spec', async () => {
     const spec = makeSpec({ solvable: 'no', blocking_issues: ['cannot locate target module'] });
-    const result = await normalizeTaskSpec(
+    const outcome = await normalizeTaskSpec(
       makeTask('TASK-A'),
       '/tmp',
       [],
       async () => spawnReturning(spec),
     );
-    assert.ok(result);
-    assert.equal(result!.would_reject, true);
-    assert.ok(result!.reject_reason);
+    assert.ok(outcome.ok);
+    if (!outcome.ok) return;
+    assert.equal(outcome.result.would_reject, true);
+    assert.ok(outcome.result.reject_reason);
   });
 
   test('enforced flag is READ but NOT acted on — no throw/halt even when enforced is true', async () => {
@@ -169,17 +204,18 @@ describe('normalizeTaskSpec', () => {
     // result and the function returns normally. A would_reject=true spec under any
     // enforcement setting still returns a result (no halt/throw).
     const spec = makeSpec({ solvable: 'no' });
-    const result = await normalizeTaskSpec(
+    const outcome = await normalizeTaskSpec(
       makeTask('TASK-A'),
       '/tmp',
       [],
       async () => spawnReturning(spec),
     );
-    assert.ok(result, 'must return a result, never halt/throw');
-    assert.equal(typeof result!.enforced, 'boolean');
+    assert.ok(outcome.ok, 'must return a result, never halt/throw');
+    if (!outcome.ok) return;
+    assert.equal(typeof outcome.result.enforced, 'boolean');
     // would_reject is true, yet the function returned a value — proving the shadow
     // contract: it never blocks on the reject signal.
-    assert.equal(result!.would_reject, true);
+    assert.equal(outcome.result.would_reject, true);
   });
 
   test('builds a dag (with conflicts) when the task has [depends:]', async () => {
@@ -214,15 +250,16 @@ describe('normalizeTaskSpec', () => {
     };
     saveFlightPlan(selfPlan);
 
-    const result = await normalizeTaskSpec(
+    const outcome = await normalizeTaskSpec(
       makeTask('TASK-MAIN', ['TASK-DEP']),
       '/tmp',
       ancestors,
       async () => spawnReturning(spec),
     );
-    assert.ok(result);
-    assert.ok(result!.dag);
-    assert.equal(result!.dag!.predicted_conflicts.length, 1);
-    assert.deepEqual(result!.dag!.predicted_conflicts[0]!.files, ['src/shared.ts']);
+    assert.ok(outcome.ok);
+    if (!outcome.ok) return;
+    assert.ok(outcome.result.dag);
+    assert.equal(outcome.result.dag!.predicted_conflicts.length, 1);
+    assert.deepEqual(outcome.result.dag!.predicted_conflicts[0]!.files, ['src/shared.ts']);
   });
 });
