@@ -61,13 +61,6 @@ private struct NyxAnimationModifier<V: Equatable>: ViewModifier {
 // for .transition(...) so a sliding/scaling insertion becomes an opacity-only
 // crossfade when the operator has reduce-motion enabled.
 enum MotionTransition {
-    // Scale-plus-fade anchored near a corner — the fallback marquee for an overlay
-    // that grows out of a nearby button. `reduceMotion` collapses it to .opacity.
-    static func grow(from anchor: UnitPoint, reduceMotion: Bool) -> AnyTransition {
-        if reduceMotion { return .opacity }
-        return .scale(scale: 0.92, anchor: anchor).combined(with: .opacity)
-    }
-
     // Asymmetric push: content enters from `edge`, leaving content exits toward the
     // opposite edge. Used for the chooser → form step. Collapses to a fade under
     // reduce-motion.

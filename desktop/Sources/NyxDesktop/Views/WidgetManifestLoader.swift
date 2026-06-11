@@ -2,10 +2,10 @@ import Foundation
 
 // Loads widget manifests from two sources, merged by id (Data-dir wins on a
 // collision so a custom drop-in can shadow a stock widget):
-//   1. Stock manifests — bundled with the app. We try the resource path
-//      (desktop/Resources/widgets/*.json) first; if SwiftPM resource bundling
-//      isn't present (build.sh copies only the logo), we fall back to the
-//      embedded-strings set below so stock widgets always exist.
+//   1. Stock manifests — the embedded-strings set below. Embedded rather than
+//      bundled resource files: build.sh produces a bare .app with no SwiftPM
+//      resource bundle, so embedding keeps ONE canonical stock set with no
+//      duplicate JSON to drift.
 //   2. $NYX_DATA_DIR/widgets/*.json — scanned at launch + on refresh. THIS is the
 //      plugin/custom hook: future plugins or generated role-scoped dashboards just
 //      drop JSON files here, no app rebuild.
@@ -89,11 +89,8 @@ enum WidgetManifestLoader {
             if let m = decode(Data(json.utf8), note: "embedded") { out[m.id] = m }
         }
 
-        let resourceDir = Bundle.main.url(forResource: nil, withExtension: nil)?
-            .appendingPathComponent("widgets")
-        for dir in [resourceDir, dataWidgetsDir].compactMap({ $0 }) {
-            guard let entries = try? FileManager.default.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: nil) else { continue }
+        if let entries = try? FileManager.default.contentsOfDirectory(
+            at: dataWidgetsDir, includingPropertiesForKeys: nil) {
             for entry in entries where entry.pathExtension.lowercased() == "json" {
                 guard let data = try? Data(contentsOf: entry),
                       let m = decode(data, note: entry.lastPathComponent) else { continue }
