@@ -154,6 +154,61 @@ describe('extractResultText — sentinel preservation', () => {
   });
 });
 
+describe('non-zero-exit stdout reconciliation contract', () => {
+  // task-runner now reconciles metered stdout on ANY exit code (not just exit 0):
+  // the non-zero path is `extractResultText(rawStdout) ?? rawStdout`. These pin the
+  // two outcomes that path relies on — a parseable NDJSON envelope yields the clean
+  // result text (no NDJSON noise in failure reports / audit-pass prompts), and an
+  // unparseable stdout yields null so the caller keeps the raw bytes verbatim.
+  test('non-zero-exit stream-json NDJSON stdout -> extracted result text', () => {
+    // A failing assistant/analysis spawn still emits the final type:"result" line.
+    const failureStream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 's2' }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'mcp__Slack__send', input: {} }] },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', is_error: true, content: 'HTTP 401 unauthorized' }] },
+      }),
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error',
+        is_error: true,
+        num_turns: 2,
+        result: 'ASSISTANT COMPLETE — could not reach Slack (auth error)',
+        total_cost_usd: 0.002,
+      }),
+    ].join('\n');
+    const extracted = extractResultText(failureStream);
+    assert.equal(extracted, 'ASSISTANT COMPLETE — could not reach Slack (auth error)');
+    // The non-zero path resolves to the extracted text, not the raw NDJSON.
+    assert.equal(extracted ?? failureStream, extracted);
+    assert.notEqual(extracted ?? failureStream, failureStream);
+  });
+
+  test('garbage non-NDJSON stdout on non-zero exit -> byte-identical raw', () => {
+    // A crash before any type:"result" line: stdout is unstructured noise. The
+    // envelope parse fails, extractResultText returns null, and the caller keeps the
+    // raw stdout byte-for-byte (`extractResultText(raw) ?? raw === raw`).
+    const garbage = 'Traceback: spawn died\n{partial json that never closed\nrandom noise';
+    assert.equal(extractResultText(garbage), null);
+    assert.equal(extractResultText(garbage) ?? garbage, garbage);
+  });
+
+  test('partial NDJSON with no result line on non-zero exit -> byte-identical raw', () => {
+    // Stream-json that emitted tool turns but was killed before the result envelope:
+    // no type:"result" line means no extraction, so the raw NDJSON is preserved.
+    const noResult = [
+      JSON.stringify({ type: 'system', subtype: 'init' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a', name: 'mcp__Notion__search', input: {} }] } }),
+    ].join('\n');
+    assert.equal(extractResultText(noResult), null);
+    assert.equal(extractResultText(noResult) ?? noResult, noResult);
+  });
+});
+
 describe('parseUsage', () => {
   test('extracts cost + tokens from modelUsage (preferred) + top-level cost', () => {
     const u = parseUsage(ENVELOPE);
