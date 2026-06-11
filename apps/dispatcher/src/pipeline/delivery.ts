@@ -20,7 +20,7 @@ import { dirname, basename } from 'node:path';
 import { audit } from '../audit.js';
 import { config } from '../config.js';
 import { changedFiles, detectDeployRequired } from '../deploy-detector.js';
-import { isGreenfield, targetMode } from './target.js';
+import { isGreenfieldVariant, targetMode } from './target.js';
 import type { PipelineRun } from './types.js';
 
 export interface DeliveryResult {
@@ -117,13 +117,15 @@ export function buildDeliveryBrief(run: PipelineRun, result: { pr_url: string | 
       return { merged: [], held: [] };
     }
   })();
-  const greenfield = isGreenfield(run.repo);
+  // Greenfield AND app runs deliver a durable local dir — the brief must point
+  // at run.worktree_base (Data/projects/<task> or appsDir/<slug>), not a PR.
+  const localProject = isGreenfieldVariant(run.repo);
   const L: string[] = [];
   L.push(`# Delivered — ${run.id}`);
   L.push('');
   L.push(`**Prompt:** ${run.prompt}`);
   L.push('');
-  if (greenfield) {
+  if (localProject) {
     L.push(`**New local project:** \`${run.worktree_base}\` (branch \`${run.integration_branch}\`)`);
   } else {
     L.push(result.pr_url ? `**PR (review + merge):** ${result.pr_url}` : `**Integration branch:** ${run.integration_branch} (in ${run.worktree_base})`);
@@ -135,7 +137,7 @@ export function buildDeliveryBrief(run: PipelineRun, result: { pr_url: string | 
     for (const t of result.deploy_targets) L.push(`- ${t}`);
     L.push('');
   }
-  if (greenfield) {
+  if (localProject) {
     L.push(`Green. **Your new project lives at \`${run.worktree_base}\`** — it's a standalone git repo (no remote). Open it, run it, and push it wherever you like when ready.`);
   } else {
     L.push('Green + PR-ready. **Deploy is your manual step** (autonomous deploy is v2).');
@@ -149,9 +151,11 @@ export function buildDeliveryBrief(run: PipelineRun, result: { pr_url: string | 
  */
 export function cleanupRunArtifacts(run: PipelineRun): void {
   const base = run.worktree_base;
-  // Greenfield's base IS the deliverable (Data/projects/<task>) — detach its
-  // coder worktrees but NEVER delete the project itself.
-  const keepBase = isGreenfield(run.repo);
+  // A greenfield-variant base IS the deliverable (Data/projects/<task> or
+  // appsDir/<slug>) — detach its coder worktrees but NEVER delete the project
+  // itself. This fires on failPipelineRun too, so a non-variant-covered app
+  // mode would delete the partially built app on ANY mid-run failure.
+  const keepBase = isGreenfieldVariant(run.repo);
   if (base && existsSync(base)) {
     // Detach worktrees first so git doesn't complain, then remove the base.
     const wts = gitTry('git worktree list --porcelain', base);

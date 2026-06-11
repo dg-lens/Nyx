@@ -1,22 +1,25 @@
 import { strict as assert } from 'node:assert';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test, beforeEach } from 'node:test';
 
 import { _setAuditDb } from '../src/audit.js';
+import { config } from '../src/config.js';
 import {
   ALIGN_ARTIFACT,
   DAG_ARTIFACT,
   PlanningError,
   planArtifact,
   runPlanning,
+  setupPlanningDir,
   topoSort,
   type PlanningSpawn,
   type PlanningSpawnArgs,
 } from '../src/pipeline/planning.js';
 import type { PipelineRun } from '../src/pipeline/types.js';
+import { withAppsDir } from './helpers.js';
 
 beforeEach(() => {
   _setAuditDb(new DatabaseSync(':memory:'));
@@ -167,5 +170,57 @@ describe('runPlanning (injected spawn + working dir)', () => {
       }),
       PlanningError,
     );
+  });
+});
+
+describe('setupPlanningDir (app:<slug> collision refusal)', () => {
+  test('refuses an existing destination BEFORE any filesystem mutation', () => {
+    withAppsDir((appsDir) => {
+      const dest = resolve(appsDir, 'taken');
+      mkdirSync(dest, { recursive: true });
+      writeFileSync(resolve(dest, 'precious.txt'), 'do not touch\n');
+      const run = minimalRun('pr_appcollide');
+      run.repo = 'app:taken';
+      const planDir = `${config.cloneRootPrefix}${run.id}-plan`;
+      assert.throws(
+        () => setupPlanningDir(run, { id: 'PIPE-1', description: 'build', repo: 'app:taken' }),
+        /app destination .* already exists/,
+      );
+      assert.equal(readFileSync(resolve(dest, 'precious.txt'), 'utf8'), 'do not touch\n', 'destination untouched');
+      assert.equal(existsSync(planDir), false, 'no throwaway plan dir created — refusal precedes all mutation');
+    });
+  });
+
+  test('exempts the run\'s OWN base so replan/rollback re-entry survives', () => {
+    withAppsDir((appsDir) => {
+      const dest = resolve(appsDir, 'mine');
+      mkdirSync(dest, { recursive: true });
+      writeFileSync(resolve(dest, 'app.ts'), 'built in a prior phase\n');
+      const run = minimalRun('pr_appown');
+      run.repo = 'app:mine';
+      run.worktree_base = dest;
+      const wd = setupPlanningDir(run, { id: 'PIPE-1', description: 'build', repo: 'app:mine' });
+      try {
+        assert.equal(wd.path, `${config.cloneRootPrefix}${run.id}-plan`, 'plans in the throwaway /tmp dir');
+        assert.equal(readFileSync(resolve(dest, 'app.ts'), 'utf8'), 'built in a prior phase\n', 'own base untouched');
+      } finally {
+        wd.cleanup();
+      }
+    });
+  });
+
+  test('fresh slug plans in a throwaway /tmp dir; the destination is never created at planning', () => {
+    withAppsDir((appsDir) => {
+      const dest = resolve(appsDir, 'fresh');
+      const run = minimalRun('pr_appfresh');
+      run.repo = 'app:fresh';
+      const wd = setupPlanningDir(run, { id: 'PIPE-1', description: 'build', repo: 'app:fresh' });
+      try {
+        assert.equal(wd.path, `${config.cloneRootPrefix}${run.id}-plan`);
+        assert.equal(existsSync(dest), false, 'real destination is scaffolded at integration-base time, not planning');
+      } finally {
+        wd.cleanup();
+      }
+    });
   });
 });
