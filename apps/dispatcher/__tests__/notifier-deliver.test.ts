@@ -27,6 +27,20 @@ interface PushoverCall {
 
 let slackCalls: SlackCall[];
 let pushoverCalls: PushoverCall[];
+let auditDb: DatabaseSync;
+
+function undeliveredRows(): Array<{ payload: string }> {
+  // The audit table is created lazily on the first audit() write; a deliver()
+  // that reached a sink never writes, so the table may not exist yet — that is a
+  // legitimate "zero undelivered events", not an error.
+  const exists = auditDb
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'system_audit'`)
+    .get();
+  if (!exists) return [];
+  return auditDb
+    .prepare(`SELECT payload FROM system_audit WHERE event = 'notification.undelivered' ORDER BY id ASC`)
+    .all() as Array<{ payload: string }>;
+}
 
 function setChannels(slack: boolean, pushover: boolean): void {
   const c = config as unknown as {
@@ -59,7 +73,8 @@ beforeEach(() => {
   // deliver() touches the digest store + audit chain on a suppressed send; pin
   // both to throwaway in-memory DBs so these tests never hit the real nyx.db.
   _setDigestDb(new DatabaseSync(':memory:'));
-  _setAuditDb(new DatabaseSync(':memory:'));
+  auditDb = new DatabaseSync(':memory:');
+  _setAuditDb(auditDb);
   _setSinksForTest({
     slack: async (text) => {
       slackCalls.push({ text });
@@ -161,5 +176,52 @@ describe('typed notifier fns route to the right category', () => {
   test('taskDispatched → status', async () => {
     await taskDispatched('T-4', 'code', 'sonnet', 'typecheck');
     assert.equal(pushoverCalls[0]!.category, 'status');
+  });
+});
+
+describe('deliver — undelivered audit event', () => {
+  test('all sinks absent → one notification.undelivered with redacted excerpt', async () => {
+    setChannels(false, false);
+    const secret = 'sk-ant-undelivered-secret-value-123456';
+    process.env['ANTHROPIC_API_KEY'] = secret;
+    try {
+      await deliver('action-required', `boom ${secret} tail`);
+    } finally {
+      delete process.env['ANTHROPIC_API_KEY'];
+    }
+    const rows = undeliveredRows();
+    assert.equal(rows.length, 1);
+    const payload = JSON.parse(rows[0]!.payload) as { category: string; text_excerpt: string };
+    assert.equal(payload.category, 'action-required');
+    assert.equal(payload.text_excerpt.includes(secret), false);
+    assert.equal(payload.text_excerpt.includes('[REDACTED]'), true);
+  });
+
+  test('excerpt truncated to 200 chars', async () => {
+    setChannels(false, false);
+    await deliver('status', 'x'.repeat(500));
+    const rows = undeliveredRows();
+    assert.equal(rows.length, 1);
+    const payload = JSON.parse(rows[0]!.payload) as { text_excerpt: string };
+    assert.equal(payload.text_excerpt.length, 200);
+  });
+
+  test('a working sink → no undelivered event', async () => {
+    setChannels(true, false);
+    await deliver('failure', 'reached');
+    assert.equal(slackCalls.length, 1);
+    assert.equal(undeliveredRows().length, 0);
+  });
+
+  test('emitted once per deliver(), not per absent sink', async () => {
+    setChannels(false, false);
+    await deliver('delivery', 'single');
+    assert.equal(undeliveredRows().length, 1);
+  });
+
+  test('audit-write throw is swallowed — deliver() resolves', async () => {
+    setChannels(false, false);
+    auditDb.close();
+    await assert.doesNotReject(deliver('status', 'after-close'));
   });
 });

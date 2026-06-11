@@ -108,6 +108,10 @@ export type AuditEvent =
   // working-window start. Mutable batch lives in the notification_digest table.
   | 'notification.digest.batched'
   | 'notification.digest.flushed'
+  // A deliver() reached no sink (all channels absent/failed). Observational —
+  // records the message category + a redacted, 200-char-truncated excerpt so the
+  // audit chain reflects that the operator was not reached on this attempt.
+  | 'notification.undelivered'
   // Ambiguity escalation: agent wrote .nyx/ambiguity.json and exited 0
   | 'task.ambiguity.escalated'
   // Wisdom capture: second claude -p spawn after main task exits 0, before gate
