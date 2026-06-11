@@ -35,9 +35,11 @@ describe('targetMode', () => {
 });
 
 describe('isValidRepoTag (C2 command-injection guard)', () => {
-  test('owner/name + greenfield keywords are valid', () => {
+  test('owner/name + greenfield keywords are valid for every task type', () => {
     for (const ok of ['org/repo', 'lens-cx/employee-portal', 'a.b-c/d_e.f', 'local', 'GREENFIELD']) {
-      assert.equal(isValidRepoTag(ok), true, ok);
+      for (const type of ['code', 'analysis', 'assistant', 'content', 'pipeline']) {
+        assert.equal(isValidRepoTag(ok, type), true, `${ok} [type: ${type}]`);
+      }
     }
   });
 
@@ -53,7 +55,10 @@ describe('isValidRepoTag (C2 command-injection guard)', () => {
       'https://github.com/org/repo',
       'employee-portal',
     ];
-    for (const e of evil) assert.equal(isValidRepoTag(e), false, e);
+    for (const e of evil) {
+      assert.equal(isValidRepoTag(e, 'code'), false, e);
+      assert.equal(isValidRepoTag(e, 'pipeline'), false, e);
+    }
   });
 });
 
@@ -61,8 +66,15 @@ describe('app:<slug> sentinel', () => {
   test('app:<slug> with a strict [a-z0-9-]+ slug → app', () => {
     for (const ok of ['app:noted', 'app:my-app', 'app:a', 'app:a2-b3', '  app:padded  ']) {
       assert.equal(targetMode(ok), 'app', ok);
-      assert.equal(isValidRepoTag(ok.trim()), true, ok);
+      assert.equal(isValidRepoTag(ok.trim(), 'pipeline'), true, ok);
     }
+  });
+
+  test('app:<slug> is pipeline-only — every other task type rejects it (it would 404 in git clone)', () => {
+    for (const type of ['code', 'analysis', 'assistant', 'content']) {
+      assert.equal(isValidRepoTag('app:noted', type), false, type);
+    }
+    assert.equal(isValidRepoTag('app:noted', 'pipeline'), true);
   });
 
   test('empty / uppercase / path-bearing / metachar slugs → invalid', () => {
@@ -83,7 +95,7 @@ describe('app:<slug> sentinel', () => {
     ];
     for (const e of bad) {
       assert.equal(targetMode(e), 'invalid', e);
-      assert.equal(isValidRepoTag(e), false, e);
+      assert.equal(isValidRepoTag(e, 'pipeline'), false, e);
     }
   });
 

@@ -42,6 +42,17 @@ function bool(name: string, fallback: boolean): boolean {
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
+const APPS_DIR = process.env['NYX_APPS_DIR']
+  ? expandUser(process.env['NYX_APPS_DIR'])
+  : resolve(homedir(), 'Nyx', 'Apps');
+
+// Test seam (mirrors git-ops._setWorktreesDir): lets unit tests exercising the
+// durable app:<slug> destination point appsDir at a throwaway tmpdir instead of
+// mutating the (readonly, `as const`) config object — and never touch the real
+// ~/Nyx/Apps. `config.appsDir` is a getter so every consumer sees the override.
+let appsDirOverride: string | null = null;
+export function _setAppsDir(dir: string | null): void { appsDirOverride = dir; }
+
 export const config = {
   root: REPO_ROOT,
   repoRoot: REPO_ROOT,
@@ -55,10 +66,8 @@ export const config = {
   projectsDir: resolve(DATA_DIR, 'projects'),
   // Durable destination for `[repo: app:<slug>]` pipeline runs. Deliberately
   // OUTSIDE dataDir: a delivered app is an operator-facing standalone project,
-  // not Nyx state. Override with NYX_APPS_DIR.
-  appsDir: process.env['NYX_APPS_DIR']
-    ? expandUser(process.env['NYX_APPS_DIR'])
-    : resolve(homedir(), 'Nyx', 'Apps'),
+  // not Nyx state. Override with NYX_APPS_DIR (operators) or _setAppsDir (tests).
+  get appsDir(): string { return appsDirOverride ?? APPS_DIR; },
   worktreesDir: resolve(DATA_DIR, 'worktrees'),
   contextDir: resolve(DATA_DIR, 'context'),
 

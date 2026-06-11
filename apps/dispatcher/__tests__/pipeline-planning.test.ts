@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -19,6 +19,7 @@ import {
   type PlanningSpawnArgs,
 } from '../src/pipeline/planning.js';
 import type { PipelineRun } from '../src/pipeline/types.js';
+import { withAppsDir } from './helpers.js';
 
 beforeEach(() => {
   _setAuditDb(new DatabaseSync(':memory:'));
@@ -173,18 +174,6 @@ describe('runPlanning (injected spawn + working dir)', () => {
 });
 
 describe('setupPlanningDir (app:<slug> collision refusal)', () => {
-  function withAppsDir<T>(fn: (appsDir: string) => T): T {
-    const orig = config.appsDir;
-    const appsDir = mkdtempSync(join(tmpdir(), 'nyx-apps-'));
-    config.appsDir = appsDir;
-    try {
-      return fn(appsDir);
-    } finally {
-      config.appsDir = orig;
-      rmSync(appsDir, { recursive: true, force: true });
-    }
-  }
-
   test('refuses an existing destination BEFORE any filesystem mutation', () => {
     withAppsDir((appsDir) => {
       const dest = resolve(appsDir, 'taken');

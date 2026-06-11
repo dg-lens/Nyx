@@ -21,6 +21,7 @@ import {
 } from '../src/pipeline/execute.js';
 import { freezePlan, type FlightPlanContract, type PlanningResult } from '../src/pipeline/flight-plan.js';
 import type { PipelineRun } from '../src/pipeline/types.js';
+import { withAppsDir } from './helpers.js';
 
 beforeEach(() => {
   const db = new DatabaseSync(':memory:');
@@ -363,18 +364,6 @@ describe('setupIntegrationBase (C1 self-mode data-loss guard)', () => {
 });
 
 describe('setupIntegrationBase (app:<slug> destination)', () => {
-  function withAppsDir<T>(fn: (appsDir: string) => T): T {
-    const orig = config.appsDir;
-    const appsDir = mkdtempSync(join(tmpdir(), 'nyx-apps-'));
-    config.appsDir = appsDir;
-    try {
-      return fn(appsDir);
-    } finally {
-      config.appsDir = orig;
-      rmSync(appsDir, { recursive: true, force: true });
-    }
-  }
-
   test('scaffolds appsDir/<slug> (slug verbatim, not a sanitized task_id) with a no-op cleanup', () => {
     withAppsDir((appsDir) => {
       const run = createRun({ id: 'pr_APPNEW_a', taskId: 'My/Task', prompt: 'build it', repo: 'app:my-app', now: 1 });

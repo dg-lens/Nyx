@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { _setWorktreesDir, createGreenfieldDir, inFlight, repoUrl, writeLivenessSentinel } from '../src/git-ops.js';
 import { config } from '../src/config.js';
+import { withAppsDir } from './helpers.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -154,18 +155,6 @@ describe('repoUrl (H2 token-in-.git/config guard)', () => {
 // ─── createGreenfieldDir durable guard ───────────────────────────────────────
 
 describe('createGreenfieldDir (durable-dir rm-rf guard)', () => {
-  function withAppsDir<T>(fn: (appsDir: string) => T): T {
-    const orig = config.appsDir;
-    const appsDir = mkdtempSync(resolve(tmpdir(), 'nyx-apps-'));
-    config.appsDir = appsDir;
-    try {
-      return fn(appsDir);
-    } finally {
-      config.appsDir = orig;
-      rmSync(appsDir, { recursive: true, force: true });
-    }
-  }
-
   test('refuses to wipe a non-empty dir under config.appsDir — a delivered app has no remote', () => {
     withAppsDir((appsDir) => {
       const dest = resolve(appsDir, 'noted');

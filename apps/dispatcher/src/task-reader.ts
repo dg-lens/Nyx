@@ -347,10 +347,12 @@ export function readQueue(path: string): QueueFile {
     // Security (C2): an unvalidated [repo:] value is interpolated into `git clone`
     // for code/analysis tasks (git-ops.cloneExternalRepo). Reject anything that
     // isn't an `owner/name` repo or a greenfield keyword so a value carrying shell
-    // metacharacters can never reach the clone command. A flagged task has
-    // invalidTags.length > 0 and is therefore never returned by pickNextTask —
-    // it surfaces to the operator via tasksWithInvalidTags instead of executing.
-    if (tags['repo'] != null && !isValidRepoTag(tags['repo'])) {
+    // metacharacters can never reach the clone command. `app:<slug>` is accepted
+    // for [type: pipeline] ONLY — on any other type it would route into git clone
+    // as a guaranteed-404 GitHub URL, so it's flagged here at parse time instead.
+    // A flagged task has invalidTags.length > 0 and is therefore never returned
+    // by pickNextTask — it surfaces via tasksWithInvalidTags instead of executing.
+    if (tags['repo'] != null && !isValidRepoTag(tags['repo'], t.value)) {
       invalidTags.push({ tag: 'repo', raw: tags['repo'] });
     }
 

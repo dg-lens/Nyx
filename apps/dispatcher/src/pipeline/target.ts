@@ -77,19 +77,28 @@ export function appDestination(repo: string | null | undefined): string {
 }
 
 /**
- * A `[repo:]` tag value is acceptable for ANY task type iff it's an `owner/name`
- * GitHub repo, a greenfield keyword, or an `app:<slug>` tag. This is the primary
- * guard against shell command injection: an unvalidated repo string is
- * interpolated into `git clone` (see git-ops.cloneExternalRepo), so a value
- * bearing shell metacharacters (`"`, `;`, `$(…)`, backticks, spaces) would
- * execute arbitrary commands on the dispatcher host. `OWNER_NAME`/greenfield-
- * keyword/`APP_TAG` shapes contain none of those — the app slug's strict
- * [a-z0-9-]+ charset is what preserves the guarantee. Empty/absent repo (self
- * mode) is the caller's concern, not this predicate's.
+ * A `[repo:]` tag value is acceptable iff it's an `owner/name` GitHub repo, a
+ * greenfield keyword, or — for `[type: pipeline]` ONLY — an `app:<slug>` tag.
+ * This is the primary guard against shell command injection: an unvalidated
+ * repo string is interpolated into `git clone` (see git-ops.cloneExternalRepo),
+ * so a value bearing shell metacharacters (`"`, `;`, `$(…)`, backticks, spaces)
+ * would execute arbitrary commands on the dispatcher host. `OWNER_NAME`/
+ * greenfield-keyword/`APP_TAG` shapes contain none of those — the app slug's
+ * strict [a-z0-9-]+ charset is what preserves the guarantee.
+ *
+ * Why `app:` is gated on taskType: only the pipeline orchestrator understands
+ * the shape. Every other task type routes its repo straight into
+ * `git clone https://github.com/<repo>.git` (run-once.createWorkingDir), where
+ * `app:foo` is a guaranteed 404 that burns the recoverable-failure/Opus-audit
+ * machinery at runtime. Rejecting it here keeps the failure where it belongs:
+ * a loud, cheap invalidTags flag at parse time — the same treatment a typo'd
+ * repo gets on main. Empty/absent repo (self mode) is the caller's concern,
+ * not this predicate's.
  */
-export function isValidRepoTag(repo: string): boolean {
+export function isValidRepoTag(repo: string, taskType: string): boolean {
   const m = targetMode(repo);
-  return m === 'external' || m === 'greenfield' || m === 'app';
+  if (m === 'app') return taskType === 'pipeline';
+  return m === 'external' || m === 'greenfield';
 }
 
 /** Human-facing reason for an `invalid` repo, used in the terminal-failure message. */
