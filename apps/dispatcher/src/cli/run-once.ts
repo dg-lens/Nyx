@@ -41,6 +41,7 @@ import { listPending, markApplied, markFailed } from '../control/db.js';
 import { invokeDecomposer, type DecomposeIntent } from '../decomposer.js';
 import { submitDecision } from '../pipeline/decide.js';
 import { isValidRepoTag, targetMode } from '../pipeline/target.js';
+import { maybeRenderLedgerAtTickEnd } from '../ledger.js';
 import { acquire } from '../lockfile.js';
 import { maybeFlushDigest } from '../notification-digest-flush.js';
 import * as notify from '../notifier.js';
@@ -1587,6 +1588,17 @@ async function main(): Promise<void> {
     await runEvalLoop();
   } catch (err) {
     console.error('[nyx] eval loop threw (non-fatal):', (err as Error).message);
+  }
+
+  // Activity ledger: re-render the narrative projection of the chain to
+  // Data/ledger/LEDGER.md so the next brief/digest reads a current view. Cheap
+  // and skipped entirely when no new audit row was appended since the last
+  // render. The render swallows its own errors internally; the extra try/catch
+  // here guarantees a ledger bug can NEVER fail a tick that already did its work.
+  try {
+    maybeRenderLedgerAtTickEnd();
+  } catch (err) {
+    console.error('[nyx] ledger render threw (non-fatal):', (err as Error).message);
   }
 
   await emitHook('tick.after', { slot: slotOf(), pid: process.pid });

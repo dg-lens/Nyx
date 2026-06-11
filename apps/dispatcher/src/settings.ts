@@ -6,6 +6,7 @@
  * NAME / OPERATOR_NAME live in Data/.env (the scaffolding contract), not here.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 
 /**
@@ -150,8 +151,18 @@ export interface NyxSettings {
     check: boolean;
     autoApply: boolean;
   };
+  // Stable actor identity for this Nyx instance. Every line the activity ledger
+  // renders is prefixed with this token, so a future hub-side rollup across
+  // federated instances can attribute each entry to the instance that produced
+  // it. Defaults to `nyx@<hostname>`; the operator overrides it via settings.json
+  // (or the desktop) when running multiple instances behind one hub. This is the
+  // FEDERATION KEY — keep it stable across renders for a given install.
+  instanceName: string;
   notifications: NotificationsSettings;
 }
+
+/** Default instance identity: `nyx@<hostname>`. Computed once per process. */
+export const DEFAULT_INSTANCE_NAME = `nyx@${hostname()}`;
 
 export const SETTINGS_DEFAULTS: NyxSettings = {
   pipeline: { concurrentCap: 4, slackNotifications: true, autoMerge: false, reviewStrictness: 'normal' },
@@ -177,6 +188,7 @@ export const SETTINGS_DEFAULTS: NyxSettings = {
   // OFF by default — the loop accumulates no scores until the operator enables it.
   evaluation: { enabled: false, sampleRate: 0.1, judgeModel: 'haiku' },
   updates: { check: true, autoApply: false },
+  instanceName: DEFAULT_INSTANCE_NAME,
   notifications: {
     // Slack on, Pushover off by default → with no settings.json present, behavior
     // is exactly today's (Slack-only). Pushover opts in via settings + creds.
@@ -372,6 +384,12 @@ export function loadSettings(dataDir: string): NyxSettings {
         check: typeof raw.updates?.check === 'boolean' ? raw.updates.check : d.updates.check,
         autoApply: typeof raw.updates?.autoApply === 'boolean' ? raw.updates.autoApply : d.updates.autoApply,
       },
+      // A blank/whitespace-only instanceName falls back to the hostname default —
+      // an empty federation key would make every ledger line ambiguous.
+      instanceName:
+        typeof raw.instanceName === 'string' && raw.instanceName.trim().length > 0
+          ? raw.instanceName.trim()
+          : d.instanceName,
       notifications: coerceNotifications(raw.notifications, d.notifications),
       mcp: coerceMcp(raw.mcp, d.mcp),
     };

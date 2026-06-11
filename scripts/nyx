@@ -20,6 +20,7 @@ SUBCOMMANDS
   composer    Review composer shadow output  (e.g. 'nyx composer normalizations')
   dispatch    Run one dispatch tick via the wrapper script
   down        Stop Nyx via launchctl
+  ledger      Render the activity ledger or add a note  (e.g. 'nyx ledger show')
   logs        Tail Nyx logs
   pipeline    Control pipeline runs at their gates   (e.g. 'nyx pipeline list')
   queue       Inspect the task queue
