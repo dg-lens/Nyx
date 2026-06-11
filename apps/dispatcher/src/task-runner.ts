@@ -72,7 +72,11 @@ export interface BuildPromptOpts {
 
 export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): string {
   if (task.type === 'assistant') {
-    const tpl = findTemplate(task.id);
+    // An explicit [template: <ID>] tag wins over id-prefix auto-matching: resolve
+    // the named family directly. The task-reader already validated the id exists
+    // and is type-applicable, so findTemplate is guaranteed to resolve it. Absent
+    // tag => fall back to exactly the prior auto-match-by-id behavior.
+    const tpl = findTemplate(task.template ?? task.id);
     if (tpl) return tpl(task.description);
   }
 

@@ -35,6 +35,7 @@ struct AuditRow: Identifiable {
     let at: String
     let event: String
     let detail: String
+    let subjectId: String?   // taskId/runId extracted from payload, or nil for system rows
 }
 
 struct NyxState {

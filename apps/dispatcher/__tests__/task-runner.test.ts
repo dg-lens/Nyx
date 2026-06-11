@@ -1,8 +1,9 @@
 import { strict as assert } from 'node:assert';
 import { describe, test, afterEach } from 'node:test';
 
-import { permissionArgs, buildSpawnInvocation, buildAgentEnv } from '../src/task-runner.js';
+import { permissionArgs, buildSpawnInvocation, buildAgentEnv, buildPrompt } from '../src/task-runner.js';
 import { _resetCache } from '../src/mcp-discovery.js';
+import { REGISTRY } from '@nyx/assistant';
 import type { ParsedTask } from '../src/types.js';
 
 const BASE: Omit<ParsedTask, 'type'> = {
@@ -103,5 +104,30 @@ describe('buildSpawnInvocation', () => {
     const { command, extraEnv } = buildSpawnInvocation(t, ['-p', 'hi']);
     assert.equal(command, 'claude');
     assert.equal(Object.keys(extraEnv).length, 0);
+  });
+});
+
+describe('buildPrompt template resolution', () => {
+  test('explicit task.template wins over the id-prefix auto-match', () => {
+    // id auto-matches MORNING-BRIEF, but the explicit template overrides to the
+    // competitor-brief builder — the produced prompt is the competitor one.
+    const t = task('assistant', { id: 'MORNING-BRIEF', description: 'desc', template: 'BRIEF-COMPETITOR' });
+    const got = buildPrompt(t);
+    assert.equal(got, REGISTRY['BRIEF-COMPETITOR']!('desc'));
+    assert.ok(got.includes('Competitor Brief'));
+    assert.notEqual(got, REGISTRY['MORNING-BRIEF']!('desc'));
+  });
+
+  test('no template tag falls back to exactly the id auto-match (unchanged)', () => {
+    const t = task('assistant', { id: 'MORNING-BRIEF-DAILY', description: 'desc' });
+    const got = buildPrompt(t);
+    // Prefix match resolves MORNING-BRIEF-DAILY -> MORNING-BRIEF builder.
+    assert.equal(got, REGISTRY['MORNING-BRIEF']!('desc'));
+  });
+
+  test('explicit template resolves even when the id matches no family', () => {
+    const t = task('assistant', { id: 'AD-HOC-123', description: 'desc', template: 'INBOX-TRIAGE' });
+    const got = buildPrompt(t);
+    assert.equal(got, REGISTRY['INBOX-TRIAGE']!('desc'));
   });
 });

@@ -128,10 +128,13 @@ enum Database {
         }
     }
 
-    static func loadAudit(limit: Int = 25) -> [AuditRow] {
+    static func loadAudit(limit: Int = 120) -> [AuditRow] {
         let rows = query("SELECT at, event, payload FROM system_audit ORDER BY id DESC LIMIT \(limit)")
         return rows.map { r in
-            AuditRow(at: shortTime(r["at"] ?? ""), event: r["event"] ?? "", detail: subject(r["payload"] ?? ""))
+            let payload = r["payload"] ?? ""
+            let sid = subjectId(payload)
+            return AuditRow(at: shortTime(r["at"] ?? ""), event: r["event"] ?? "",
+                            detail: detailFrom(payload, subjectId: sid), subjectId: sid)
         }
     }
 
@@ -222,11 +225,31 @@ enum Database {
         return localHM.string(from: date)
     }
 
-    private static func subject(_ payload: String) -> String {
+    // The task/run identifier this audit row is about, or nil if the event isn't
+    // scoped to a subject (dispatch.tick, plugin.loaded, chain_verified, …).
+    private static func subjectId(_ payload: String) -> String? {
+        guard let data = payload.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        for key in ["taskId", "runId", "task_id", "id"] {
+            if let v = obj[key] as? String, !v.isEmpty { return v }
+        }
+        return nil
+    }
+
+    // A short human-readable detail derived from the payload — the operator-facing
+    // "what happened" line. Skips the id keys (those become subjectId) and prefers
+    // a small set of descriptive fields before falling back to the first scalar.
+    private static func detailFrom(_ payload: String, subjectId: String?) -> String {
         guard let data = payload.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
-        for key in ["taskId", "runId", "task_id", "id"] {
-            if let v = obj[key] as? String { return v }
+        let idKeys: Set<String> = ["taskId", "runId", "task_id", "id"]
+        for key in ["summary", "reason", "stage", "current_stage", "gate", "decision", "title", "message", "note", "type", "status", "target", "pattern"] {
+            if let v = obj[key] as? String, !v.isEmpty, v != subjectId { return v }
+        }
+        for (k, v) in obj where !idKeys.contains(k) {
+            if let s = v as? String, !s.isEmpty, s != subjectId { return "\(k): \(s)" }
+            if let n = v as? Int { return "\(k): \(n)" }
+            if let b = v as? Bool { return "\(k): \(b)" }
         }
         return ""
     }
