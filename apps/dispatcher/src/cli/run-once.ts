@@ -452,7 +452,7 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
           : 'Audit halted.';
     return haltTask(task, workingDir, startedAt, {
       operatorReport: report,
-      pattern: auditOutcome.kind === 'escalated_to_halt' ? auditOutcome.pattern : undefined,
+      pattern: auditOutcome.kind === 'escalated_to_halt' ? auditOutcome.pattern : 'audit-failed',
     });
   }
 

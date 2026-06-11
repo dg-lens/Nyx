@@ -77,12 +77,33 @@ describe('sentenceForRun — one human sentence per run via run-tree outcome', (
     assert.match(sentenceForRun(trees[0]!), /T-2 \(code\) failed at gate/);
   });
 
-  test('a halted run carries the halt reason', () => {
+  test('a halted run carries the halt pattern (production payload shape)', () => {
     const trees = projectRunTrees([
       row('2026-06-09T10:00:00.000Z', 'task.started', 'dispatcher', { taskId: 'T-3', type: 'code' }),
-      row('2026-06-09T10:01:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'T-3', reason: 'aesthetic-ambiguity' }),
+      row('2026-06-09T10:01:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'T-3', pattern: 'aesthetic-ambiguity', operator_report: 'needs a call' }),
     ]);
     assert.match(sentenceForRun(trees[0]!), /T-3 \(code\) halted — aesthetic-ambiguity/);
+  });
+
+  test('halt pattern is read from the halt event itself, not shadowed by another event’s reason', () => {
+    const trees = projectRunTrees([
+      row('2026-06-09T10:00:00.000Z', 'task.started', 'dispatcher', { taskId: 'T-3b', type: 'code' }),
+      row('2026-06-09T10:04:00.000Z', 'task.wisdom.skipped', 'dispatcher', { taskId: 'T-3b', reason: 'no file or malformed' }),
+      row('2026-06-09T10:05:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'T-3b', pattern: 'audit-cap', operator_report: 'cap reached' }),
+    ]);
+    const s = sentenceForRun(trees[0]!);
+    assert.match(s, /T-3b \(code\) halted — audit-cap/);
+    assert.doesNotMatch(s, /no file or malformed/);
+  });
+
+  test('halted → resumed → halted again renders the latest halt’s pattern', () => {
+    const trees = projectRunTrees([
+      row('2026-06-09T10:00:00.000Z', 'task.started', 'dispatcher', { taskId: 'T-3c', type: 'code' }),
+      row('2026-06-09T10:01:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'T-3c', pattern: 'expects-prevalidate' }),
+      row('2026-06-09T10:02:00.000Z', 'task.resumed', 'dispatcher', { taskId: 'T-3c', note: 'paths fixed' }),
+      row('2026-06-09T10:03:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'T-3c', pattern: 'audit-cap' }),
+    ]);
+    assert.match(sentenceForRun(trees[0]!), /T-3c \(code\) halted — audit-cap/);
   });
 
   test('an in-progress run reads as in flight', () => {
@@ -117,7 +138,7 @@ describe('projectLedger — categorises runs + observations + notes into section
       row('2026-06-09T10:00:00.000Z', 'task.completed', 'dispatcher', { taskId: 'D-1', type: 'code' }),
       row('2026-06-09T10:01:00.000Z', 'task.started', 'dispatcher', { taskId: 'F-1', type: 'analysis' }),
       row('2026-06-09T10:02:00.000Z', 'task.failed', 'dispatcher', { taskId: 'X-1', type: 'code', stage: 'gate' }),
-      row('2026-06-09T10:03:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'H-1', type: 'code', reason: 'needs-decision' }),
+      row('2026-06-09T10:03:00.000Z', 'task.halted_for_review', 'dispatcher', { taskId: 'H-1', type: 'code', pattern: 'needs-decision' }),
     ];
     const { entries } = projectLedger(rows, [], 'nyx@hub');
     const sectionOf = (id: string) => entries.find((e) => e.sentence.startsWith(id))?.section;
