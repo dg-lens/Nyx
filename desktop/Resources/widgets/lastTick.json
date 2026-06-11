@@ -1,0 +1,9 @@
+{
+  "id": "lastTick",
+  "pluginId": "core",
+  "title": "Last Tick",
+  "description": "When the dispatcher last ran a tick.",
+  "defaultSize": { "w": 2, "h": 2 },
+  "viz": "stat",
+  "source": { "kind": "store", "key": "lastTick" }
+}

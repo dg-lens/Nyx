@@ -1,0 +1,9 @@
+{
+  "id": "queueCount",
+  "pluginId": "core",
+  "title": "Queue",
+  "description": "Pending + standing tasks in the queue.",
+  "defaultSize": { "w": 2, "h": 2 },
+  "viz": "stat",
+  "source": { "kind": "store", "key": "queueCount" }
+}
