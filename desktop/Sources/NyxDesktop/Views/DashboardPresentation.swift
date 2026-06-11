@@ -30,13 +30,20 @@ struct DashboardPresentation: View {
             customizing: $customizing)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.windowBackgroundColor))
-        // Esc exits presentation. An invisible default-cancel button captures the
-        // key without drawing chrome; the visible exit affordance is the corner hint.
+        // Esc exits presentation. The hidden default-cancel button covers the case
+        // where focus sits in chrome, but a focused note TextEditor (WidgetView's
+        // non-customizing text branch renders an editable TextEditor) installs an
+        // NSText field editor that swallows the Esc keyDown so .cancelAction never
+        // fires — the kiosk would trap the operator with all chrome hidden. The
+        // PresentationEscHandler bridge intercepts keyCode 53 at the window level
+        // via performKeyEquivalent, the same fix TasksWorkspace's EscHandler uses
+        // for its embedded TextEditor.
         .overlay(alignment: .topTrailing) { exitHint }
         .background(
             Button("", action: onExit)
                 .keyboardShortcut(.cancelAction)
                 .hidden())
+        .background(PresentationEscHandler(onEsc: onExit))
     }
 
     // A faint top-right "Esc to exit" hint so the kiosk view isn't a dead end. Kept
@@ -106,6 +113,36 @@ struct WindowChromeHider: NSViewRepresentable {
                 win.standardWindowButton(.miniaturizeButton)?.isHidden = false
                 win.standardWindowButton(.zoomButton)?.isHidden = false
             }
+        }
+    }
+}
+
+// Bridges the AppKit Esc key to the presentation-exit closure. A bare
+// .keyboardShortcut(.cancelAction) covers the case where focus sits in chrome, but
+// when focus is inside a note widget's editable TextEditor (WidgetView's
+// non-customizing text branch) the NSText field editor swallows the Esc keyDown and
+// .cancelAction never fires — leaving the operator trapped in a chrome-hidden kiosk.
+// performKeyEquivalent runs before the field editor consumes the event, so keyCode
+// 53 reliably exits presentation regardless of first responder. Mirrors the
+// EscHandler bridge TasksWorkspace already uses for the same class of bug.
+private struct PresentationEscHandler: NSViewRepresentable {
+    let onEsc: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let v = KeyView()
+        v.onEsc = onEsc
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? KeyView)?.onEsc = onEsc
+    }
+
+    final class KeyView: NSView {
+        var onEsc: (() -> Void)?
+        override var acceptsFirstResponder: Bool { false }
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            if event.keyCode == 53 { onEsc?(); return true }   // 53 = Esc
+            return super.performKeyEquivalent(with: event)
         }
     }
 }
