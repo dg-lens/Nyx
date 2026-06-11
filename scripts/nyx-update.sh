@@ -50,7 +50,7 @@ if [ "$IS_SOURCE_CHECKOUT" = "0" ]; then
         exit 1
       fi
     else
-      BACKUP=\"\$(dirname \"\$KEG_DIR\")/.nyx-keg-backup.\$\$\"
+      BACKUP=\"/tmp/nyx-keg-backup.\$\$\"
       if ! cp -R \"\$KEG_DIR\" \"\$BACKUP\"; then
         echo \"FATAL: keg backup failed — refusing to uninstall, system stays kegged\"
         mkdir -p \"$NYX_DATA_DIR/data\"
@@ -65,8 +65,8 @@ if [ "$IS_SOURCE_CHECKOUT" = "0" ]; then
       else
         echo \"install failed or keg incomplete — restoring backup\"
         cp -R \"\$BACKUP\" \"/opt/homebrew/Cellar/nyx/\$(basename \"\$KEG_DIR\")\" || true
-        brew link nyx || brew link --overwrite nyx || true
         rm -rf \"\$BACKUP\"
+        brew link nyx || brew link --overwrite nyx || true
         mkdir -p \"$NYX_DATA_DIR/data\"
         tail -n 30 \"$LOG\" >\"\$MARKER\" 2>/dev/null || true
         ls /opt/homebrew/Cellar/nyx/ || true

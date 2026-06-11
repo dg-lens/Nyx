@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { VALID_KINDS, isValidKind } from '@nyx/dispatcher/dist/memory/arachne.js';
 import { IndexCache, vaultDir } from './vault.js';
 import {
   loadTool,
@@ -102,7 +103,16 @@ export function buildServer(cache: IndexCache): McpServer {
         triggers: z.array(z.string()).optional(),
       },
     },
-    async (a) => json(writeTool(cache, cache.vault, a)),
+    async (a) => {
+      if (!isValidKind(a.kind)) {
+        return json({
+          written: false,
+          action: 'REJECT',
+          reason: `invalid kind '${a.kind}' — valid kinds: ${[...VALID_KINDS].join(' ')}`,
+        });
+      }
+      return json(writeTool(cache, cache.vault, { ...a, kind: a.kind }));
+    },
   );
 
   server.registerTool(
