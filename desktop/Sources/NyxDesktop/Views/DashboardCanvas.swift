@@ -15,6 +15,7 @@ struct DashboardCanvas: View {
     @State private var showAddPanel = false
     @State private var dragId: String? = nil
     @State private var dragTranslation: CGSize = .zero
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geo in
@@ -39,10 +40,14 @@ struct DashboardCanvas: View {
                                    gridCols: grid.cols)
                         .frame(width: 240)
                         .frame(maxHeight: .infinity)
-                        .transition(.move(edge: .trailing))
+                        .transition(MotionTransition.slide(from: .trailing,
+                                                           reduceMotion: reduceMotion))
                 }
             }
         }
+        // The add-panel slides in/out on the window spring (the same feel as the
+        // Tasks create overlay); reduce-motion collapses it to a fade.
+        .nyxAnimation(Motion.window, value: showAddPanel)
         .onChange(of: customizing) { isOn in
             if !isOn { showAddPanel = false }
         }
@@ -110,9 +115,11 @@ struct DashboardCanvas: View {
     }
 
     // Blue rounded-square "+" at bottom-right that opens the add-widget panel.
+    // The toggle is a plain state flip; the .nyxAnimation(value: showAddPanel)
+    // modifier on the body owns the (reduce-motion-aware) window-spring animation.
     private var addButton: some View {
         Button {
-            withAnimation { showAddPanel.toggle() }
+            showAddPanel.toggle()
         } label: {
             Image(systemName: "plus")
                 .font(.title2.bold())

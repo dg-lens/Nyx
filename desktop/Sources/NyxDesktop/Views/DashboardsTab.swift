@@ -10,6 +10,7 @@ import SwiftUI
 struct DashboardsTab: View {
     @EnvironmentObject var store: Store
     @StateObject private var dash = DashboardStore()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var selection: String = ""
     @State private var showAddSheet = false
@@ -83,7 +84,9 @@ struct DashboardsTab: View {
     // for drag/delete/add (iPhone-style management).
     private var customizeButton: some View {
         Button {
-            withAnimation { customizing.toggle() }
+            withAnimation(Motion.resolve(Motion.quick, reduceMotion: reduceMotion)) {
+                customizing.toggle()
+            }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: customizing ? "checkmark" : "slider.horizontal.3")

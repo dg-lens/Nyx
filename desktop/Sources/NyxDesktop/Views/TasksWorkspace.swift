@@ -7,11 +7,22 @@ import SwiftUI
 // "Create a new Workflow" (placeholder for a later stage).
 struct TasksWorkspace: View {
     @EnvironmentObject var store: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showCreate = false
+    // True for the brief settle after a successful submit, so the contracting
+    // overlay reads as "queued" rather than just "closed".
+    @State private var justSubmitted = false
+    // Shared namespace driving the + button ⇄ overlay marquee: the source (the
+    // AddButton) and the destination (the overlay container) carry the same
+    // matchedGeometryEffect id, so the button geometrically expands into the
+    // overlay on open and contracts back on dismiss.
+    @Namespace private var marquee
 
     private var queue: [QueueItem] { store.state.queue }
     private var scheduled: [QueueItem] { queue.filter { !$0.isStanding } }
     private var standing: [QueueItem] { queue.filter { $0.isStanding } }
+
+    private static let marqueeID = "tasks.create.marquee"
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -24,55 +35,118 @@ struct TasksWorkspace: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             if !showCreate {
-                AddButton { showCreate = true }
+                AddButton(settling: justSubmitted) { open() }
+                    .matchedGeometryEffect(id: Self.marqueeID, in: marquee,
+                                           properties: .frame, isSource: true)
                     .padding(16)
             }
         }
+        // Backdrop scrim + overlay, both fading with the window spring. The scrim
+        // sits UNDER the overlay container and dims the workspace; tapping it
+        // dismisses (same path as the X / Esc).
         .overlay {
             if showCreate {
-                CreateOverlay(isPresented: $showCreate)
-                    .transition(.opacity)
+                ZStack {
+                    Color.black.opacity(reduceMotion ? 0.18 : 0.22)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { dismiss() }
+                        .transition(.opacity)
+
+                    CreateOverlay(
+                        onDismiss: { dismiss() },
+                        onSubmitted: { submitted() })
+                        // matchedGeometry owns the geometric morph: the overlay's
+                        // frame interpolates from the +'s last frame, so it visually
+                        // EXPANDS out of the button (and CONTRACTS back on dismiss).
+                        // The transition is opacity-only — layering a scale on top
+                        // of the matched-frame morph double-scales and jitters.
+                        .matchedGeometryEffect(id: Self.marqueeID, in: marquee,
+                                               properties: .frame, isSource: false)
+                        .transition(.opacity)
+                        .padding(40)
+                }
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: showCreate)
+        .nyxAnimation(Motion.window, value: showCreate)
+    }
+
+    private func open() {
+        justSubmitted = false
+        showCreate = true
+    }
+
+    private func dismiss() {
+        showCreate = false
+    }
+
+    // Submit path: DispatchView has already called store.dispatch. We only animate
+    // the contract-back here — flash the settle affordance, then close on the same
+    // window spring after a brief, non-blocking beat.
+    private func submitted() {
+        justSubmitted = true
+        showCreate = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            justSubmitted = false
+        }
     }
 }
 
 // ─── Blue rounded-square + (mirrors the Dashboards customize button) ──────────
 
 private struct AddButton: View {
+    // When true, the button has just received a queued submission — it briefly
+    // shows a checkmark instead of the plus, so the contract-back reads as success.
+    var settling: Bool = false
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "plus")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
-                .background(Color.blue.opacity(hovering ? 1.0 : 0.9),
-                            in: RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+            ZStack {
+                Image(systemName: "plus").opacity(settling ? 0 : 1)
+                Image(systemName: "checkmark").opacity(settling ? 1 : 0)
+            }
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 44, height: 44)
+            .background(Color.blue.opacity(hovering ? 1.0 : 0.9),
+                        in: RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help("Create a new task or workflow")
+        .nyxAnimation(Motion.quick, value: settling)
     }
 }
 
 // ─── Full-content-area create overlay ─────────────────────────────────────────
 
 private struct CreateOverlay: View {
-    @Binding var isPresented: Bool
+    // Called to dismiss with the contract-back marquee (X / Esc / scrim tap).
+    var onDismiss: () -> Void = {}
+    // Called AFTER DispatchView has queued the task. Drives the success settle +
+    // contract-back. Does NOT change what submit does — purely the dismissal hook.
+    var onSubmitted: () -> Void = {}
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // nil = the two-choice menu; "task" = embedded DispatchView; "workflow" =
     // placeholder. The operator expands the workflow branch in a later stage.
     @State private var choice: String? = nil
+    // Drives the push direction: forward (chooser → branch) slides the incoming
+    // step in from trailing; back (branch → chooser) reverses it. Set by `go` /
+    // `back` BEFORE choice changes so the transition reads the right edge.
+    @State private var goingForward = true
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            Group {
+            // Step body. nil ⇒ chooser; a set value ⇒ the branch. .id keys the
+            // transition to the step so SwiftUI animates the swap (push/pop) rather
+            // than diffing in place. The forward push enters from trailing; back
+            // pops toward trailing — direction comes from `goingForward`.
+            ZStack {
                 switch choice {
                 case "task":     taskBranch
                 case "workflow": workflowBranch
@@ -80,9 +154,16 @@ private struct CreateOverlay: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .id(choice ?? "__chooser__")
+            .transition(MotionTransition.push(from: goingForward ? .trailing : .leading,
+                                              reduceMotion: reduceMotion))
+            .clipped()
+            .nyxAnimation(Motion.nav, value: choice)
         }
+        .frame(maxWidth: 760, maxHeight: 620)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary))
+        .shadow(color: .black.opacity(0.25), radius: 24, y: 8)
         // Esc closes (or steps back to the chooser from a sub-branch).
         .background(EscHandler { back() })
     }
@@ -90,7 +171,7 @@ private struct CreateOverlay: View {
     private var header: some View {
         HStack(spacing: 8) {
             if choice != nil {
-                Button { choice = nil } label: {
+                Button { pop() } label: {
                     Image(systemName: "chevron.left")
                 }
                 .buttonStyle(.plain)
@@ -98,7 +179,7 @@ private struct CreateOverlay: View {
             }
             Text(title).font(.headline)
             Spacer()
-            Button { isPresented = false } label: {
+            Button { onDismiss() } label: {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.plain)
@@ -116,8 +197,22 @@ private struct CreateOverlay: View {
         }
     }
 
+    // Esc handler: step back to the chooser from a branch, else dismiss the overlay.
     private func back() {
-        if choice != nil { choice = nil } else { isPresented = false }
+        if choice != nil { pop() } else { onDismiss() }
+    }
+
+    // Forward push into a branch — set direction first so the transition reads the
+    // trailing edge, then change the step.
+    private func go(_ branch: String) {
+        goingForward = true
+        choice = branch
+    }
+
+    // Back pop to the chooser — direction reversed so the step slides toward trailing.
+    private func pop() {
+        goingForward = false
+        choice = nil
     }
 
     // The two big choices with an "or" between them.
@@ -129,13 +224,13 @@ private struct CreateOverlay: View {
                     icon: "checklist",
                     title: "Create a new task",
                     subtitle: "Describe work in plain language; a sonnet pass tags and queues it.",
-                    tint: .blue) { choice = "task" }
+                    tint: .blue) { go("task") }
                 Text("or").font(.title3).foregroundStyle(.secondary)
                 ChoiceCard(
                     icon: "point.3.connected.trianglepath.dotted",
                     title: "Create a new Workflow",
                     subtitle: "Chain tasks into a multi-step workflow.",
-                    tint: .purple) { choice = "workflow" }
+                    tint: .purple) { go("workflow") }
             }
             Spacer()
         }
@@ -145,7 +240,9 @@ private struct CreateOverlay: View {
 
     private var taskBranch: some View {
         ScrollView {
-            DispatchView()
+            // onSubmitted fires AFTER DispatchView calls store.dispatch — it only
+            // drives the dismissal animation; the queue action itself is unchanged.
+            DispatchView(onSubmitted: onSubmitted)
                 .padding(16)
         }
     }
