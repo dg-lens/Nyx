@@ -1,0 +1,12 @@
+{
+  "name": "route-to",
+  "version": "0.1.0",
+  "sdkVersion": "1",
+  "tier": "approved",
+  "runtime": "both",
+  "coreVersion": ">=1.2.0",
+  "capabilities": {
+    "ioSinks": ["ssh", "ssh-local", "icloud", "telegram"],
+    "env": ["NYX_DATA_DIR", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
+  }
+}
