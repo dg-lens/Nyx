@@ -122,6 +122,18 @@ describe('arachne engine', () => {
     assert.deepEqual(hits.map((n) => n.id), ['rs-1']);
   });
 
+  test('search tokenizes the query: any-token overlap recalls, trigger hits outrank id hits', () => {
+    const idx = buildIndex(vault());
+    // No contiguous "decideMerges shipping" exists anywhere — a whole-phrase
+    // substring test returns []; tokenized overlap must recall both nodes.
+    const hits = search(idx, { text: 'decideMerges shipping' });
+    const ids = hits.map((n) => n.id);
+    assert.ok(ids.includes('redux-merge'), 'trigger token recalls redux-merge');
+    assert.ok(ids.includes('shipping-only'), 'id token recalls shipping-only');
+    assert.ok(ids.indexOf('redux-merge') < ids.indexOf('shipping-only'), 'trigger hit (w3) outranks id hit (w2)');
+    assert.equal(search(idx, { text: 'zzzqqq xxxyyy' }).length, 0, 'zero overlap → no hits');
+  });
+
   test('the kind vocabulary stays CLOSED: an unknown kind is rejected', () => {
     assert.equal(isValidKind('ruleset'), true);
     assert.equal(isValidKind('invariant'), true);

@@ -332,20 +332,49 @@ export interface SearchQuery {
   limit?: number;
 }
 
+// Per-field weights for the query-token overlap rank. Triggers are the author's
+// hand-picked retrieval handles, so they weigh heaviest; id/title are strong
+// identity signals; summary is the broadest (and noisiest) field.
+const SEARCH_FIELDS: Array<[number, (n: NodeMeta) => string]> = [
+  [3, (n) => n.triggers.join(' ')],
+  [2, (n) => n.id],
+  [2, (n) => n.title],
+  [1, (n) => n.summary],
+];
+
+/**
+ * Frontmatter search: tokenize the query and rank by any-token overlap across
+ * triggers + title + summary + id. A whole-phrase substring test has zero recall
+ * the moment a query interleaves terms from different fields ("assistant task
+ * hang exit 124" never appears contiguously even when every term hits a trigger)
+ * — so any single overlapping token is a hit, ranked by weighted overlap count
+ * (triggers heaviest), ties broken by node weight.
+ */
 export function search(index: NodeMeta[], q: SearchQuery): NodeMeta[] {
-  const text = (q.text || '').toLowerCase();
-  const hits = index.filter((n) => {
-    if (n.status !== 'active') return false;
-    if (q.kind && n.kind !== q.kind) return false;
-    if (q.loc && !n.loc.some((l) => isAncestor(l, q.loc!) || isAncestor(q.loc!, l))) return false;
-    if (text) {
-      const hay = (n.id + ' ' + n.title + ' ' + n.summary + ' ' + n.triggers.join(' ')).toLowerCase();
-      if (!hay.includes(text)) return false;
+  const text = (q.text || '').toLowerCase().trim();
+  const tokens = tokenize(text);
+  // A query of only sub-3-char tokens ("ci") tokenizes to nothing — fall back to
+  // the raw text so short queries keep substring recall instead of matching all.
+  const terms = text ? (tokens.size ? [...tokens] : [text]) : [];
+  const rank = (n: NodeMeta): number => {
+    let score = 0;
+    for (const [w, field] of SEARCH_FIELDS) {
+      const hay = field(n).toLowerCase();
+      for (const t of terms) if (hay.includes(t)) score += w;
     }
-    return true;
-  });
-  hits.sort((a, b) => b.weight - a.weight);
-  return hits.slice(0, q.limit ?? 20);
+    return score;
+  };
+  const hits = index
+    .filter((n) => {
+      if (n.status !== 'active') return false;
+      if (q.kind && n.kind !== q.kind) return false;
+      if (q.loc && !n.loc.some((l) => isAncestor(l, q.loc!) || isAncestor(q.loc!, l))) return false;
+      return true;
+    })
+    .map((n) => ({ n, score: rank(n) }))
+    .filter((x) => terms.length === 0 || x.score > 0);
+  hits.sort((a, b) => b.score - a.score || b.n.weight - a.n.weight);
+  return hits.slice(0, q.limit ?? 20).map((x) => x.n);
 }
 
 export interface WriteInput {
