@@ -19,7 +19,7 @@ struct MonitorView: View {
                     }
                 }
             }
-            panel("Recent audit") {
+            panel("Task History") {
                 if store.state.audit.isEmpty {
                     Text("no recent events").font(.caption).foregroundStyle(.tertiary)
                 } else {
@@ -168,9 +168,7 @@ struct SubjectBubble: View {
 
     init(group: AuditGroup) {
         self.group = group
-        // System bubble collapsed by default; subject bubbles expanded so the
-        // status phrase reads without a click.
-        _expanded = State(initialValue: !group.isSystem)
+        _expanded = State(initialValue: false)
     }
 
     private var titleText: String { group.isSystem ? "System" : group.id }
