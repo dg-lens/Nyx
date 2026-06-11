@@ -429,14 +429,15 @@ const JUDGE_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * Content-judge spawn (P7): an INDEPENDENT haiku Read/Grep-only `claude -p` that
- * scores the just-committed diff PASS/FAIL against the task's acceptance criteria
+ * scores the working-tree diff PASS/FAIL against the task's acceptance criteria
  * and writes NYX_JUDGE.md. Shares the wisdom-capture spawn shape exactly (haiku,
  * restricted read-only tools, 5-min cap, GIT-class attribution) — it runs only
  * for code tasks inside the GIT task's lifetime.
  *
- * Read-ONLY by construction: only Read/Glob/Grep are allowed, so the judge can
- * inspect the diff but can neither run the gate (no second compute) nor mutate
- * the diff it's judging. Non-fatal: the caller treats any non-zero exit / missing
+ * Inspection-only by construction: only Read/Glob/Grep/Write are allowed — Write
+ * solely so the judge can emit its NYX_JUDGE.md verdict — so the judge can inspect
+ * the diff but has no Bash/Edit to run the gate (no second compute) or mutate the
+ * source it's judging. Non-fatal: the caller treats any non-zero exit / missing
  * file as "no concern".
  */
 export async function invokeContentJudge(task: ParsedTask, cwd: string): Promise<ClaudeResult> {
@@ -540,14 +541,30 @@ export async function invokeClaude(
       ? parseMcpToolEvents(result.stdout)
       : [];
 
-  // Reconcile the metered JSON envelope (extract the agent's result text + usage)
-  // when metering is on and the spawn exited cleanly, THEN scrub secret values from
-  // the result before it leaves task-runner. A non-zero exit keeps stdout raw.
-  // scrubResult also threads through the rate-limit/overload signal so the
-  // dispatcher can leave the task queued + open a cooldown rather than fail it.
-  const metered = config.costMeteringEnabled && result.exitCode === 0
-    ? reconcileMeteredOutput(result.stdout)
-    : { stdout: result.stdout, usage: null };
+  // Reconcile the metered JSON envelope, THEN scrub secret values from the result
+  // before it leaves task-runner. On a CLEAN exit this extracts both the agent's
+  // result text (the VERDICT/sentinel) and the cost/token usage. On a NON-ZERO exit
+  // we still pull the result text — failure reports + audit-pass prompts otherwise
+  // carry raw stream-json NDJSON noise — but leave usage null (per-spawn metering
+  // stays a clean-exit-only event, unchanged). extractResultText keeps stdout
+  // byte-identical when no `type:"result"` line parses (e.g. a crash before the
+  // result message), so a garbage non-NDJSON failure stdout is preserved verbatim.
+  // The RAW stdout was already consumed by parseMcpToolEvents above, so the breaker
+  // still sees the unmodified NDJSON regardless of exit code. scrubResult also threads
+  // through the rate-limit/overload signal so the dispatcher can leave the task queued +
+  // open a cooldown rather than fail it.
+  let meteredStdout = result.stdout;
+  let meteredUsage: SpawnUsage | null = null;
+  if (config.costMeteringEnabled) {
+    if (result.exitCode === 0) {
+      const reconciled = reconcileMeteredOutput(result.stdout);
+      meteredStdout = reconciled.stdout;
+      meteredUsage = reconciled.usage;
+    } else {
+      meteredStdout = extractResultText(result.stdout) ?? result.stdout;
+    }
+  }
+  const metered = { stdout: meteredStdout, usage: meteredUsage };
   const scrubbed = scrubResult(
     {
       exitCode: result.exitCode,
