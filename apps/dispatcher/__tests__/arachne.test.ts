@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
-import { buildIndex, assemble, search, writeNode, deriveLoc, renderPack } from '../src/memory/arachne.js';
+import { buildIndex, assemble, search, writeNode, deriveLoc, renderPack, isValidKind } from '../src/memory/arachne.js';
 
 function vault(): string {
   const root = mkdtempSync(join(tmpdir(), 'arachne-'));
@@ -91,5 +91,55 @@ describe('arachne engine', () => {
     const pack = assemble(idx, { loc: 'stack.nyx.pipeline.redux', role: 'coder', paths: ['apps/dispatcher/src/pipeline/redux.ts'], text: 'decideMerges', budget: 5000 });
     assert.match(renderPack(pack), /## MEMORY/);
     assert.equal(renderPack({ nodes: [], ids: [], tokens: 0, reasons: {} }), '');
+  });
+
+  test("ruleset is a first-class kind: writeNode round-trips it through parseNode", () => {
+    const dir = vault();
+    const p = writeNode(dir, {
+      id: 'ruleset-node',
+      kind: 'ruleset',
+      title: 'A codified ruleset',
+      summary: 'a set of rules',
+      loc: ['stack.nyx'],
+      triggers: ['rules'],
+      body: 'RULE: follow the set.',
+    });
+    assert.ok(p.endsWith('ruleset-node.md'));
+    const idx = buildIndex(dir);
+    const w = idx.find((n) => n.id === 'ruleset-node');
+    assert.ok(w, 'ruleset node is included in buildIndex');
+    assert.equal(w!.kind, 'ruleset');
+    assert.ok(w!.loc.length > 0, 'ruleset node has non-empty loc');
+    assert.deepEqual(w!.loc, ['stack.nyx']);
+  });
+
+  test('search with kind filter ruleset returns the ruleset node', () => {
+    const dir = vault();
+    writeNode(dir, { id: 'rs-1', kind: 'ruleset', title: 'RS', summary: 's', loc: ['stack.nyx'], body: 'RULE: x' });
+    writeNode(dir, { id: 'inv-1', kind: 'invariant', title: 'INV', summary: 's', loc: ['stack.nyx'], body: 'RULE: y' });
+    const idx = buildIndex(dir);
+    const hits = search(idx, { kind: 'ruleset' });
+    assert.deepEqual(hits.map((n) => n.id), ['rs-1']);
+  });
+
+  test('the kind vocabulary stays CLOSED: an unknown kind is rejected', () => {
+    assert.equal(isValidKind('ruleset'), true);
+    assert.equal(isValidKind('invariant'), true);
+    assert.equal(isValidKind('regulation'), false);
+
+    const dir = vault();
+    // writeNode rejects an out-of-vocabulary kind at the write boundary.
+    assert.throws(
+      () => writeNode(dir, { id: 'bad', kind: 'regulation' as never, title: 't', summary: 's', loc: ['stack.nyx'], body: 'b' }),
+      /invalid kind 'regulation'/,
+    );
+
+    // parseNode/buildIndex drop a hand-authored node carrying an invalid kind.
+    writeFileSync(
+      join(dir, 'nodes', 'regulation-node.md'),
+      `---\nid: regulation-node\nkind: regulation\ntitle: Bad\nsummary: s\nloc: [stack.nyx]\nload: match\nweight: 5\n---\n\nBODY\n`,
+    );
+    const idx = buildIndex(dir);
+    assert.equal(idx.find((n) => n.id === 'regulation-node'), undefined, 'invalid-kind node is dropped from the index');
   });
 });

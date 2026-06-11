@@ -2,6 +2,12 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.3.1 — 2026-06-10
+
+### Memory engine
+- Added `ruleset` to the Arachne engine's **closed** node-kind vocabulary (`apps/dispatcher/src/memory/arachne.ts`). The kind vocabulary is now an explicit `NodeKind` union + `VALID_KINDS` set (`invariant`/`lesson`/`decision`/`playbook`/`proposal`/`overview`/`reference`/`ruleset`/`moc`), exported alongside an `isValidKind` guard. `parseNode` drops, and `writeNode` rejects, any node whose kind is outside the set — the enum stays CLOSED; unknown kinds (e.g. `regulation`) are not accepted. `NodeMeta.kind`, `WriteInput.kind`, and `SearchQuery.kind` are typed `NodeKind`. The wisdom layer's advisory kinds (`procedure`→`playbook`, `aesthetic`→`invariant`) now normalize onto the closed vocabulary before write. `isInjectable` is unchanged (provenance/review-based, kind-agnostic).
+- Touched: `apps/dispatcher/src/memory/arachne.ts`, `apps/dispatcher/src/wisdom-capture.ts`, `apps/dispatcher/__tests__/arachne.test.ts`.
+
 ## v1.3.0 — 2026-06-09
 
 ### Composer normalizer (shadow stage)
