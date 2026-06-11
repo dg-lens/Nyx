@@ -21,6 +21,10 @@
 
 ### Added
 - **Undelivered notifications surface in the audit chain.** When a `deliver()` reaches no sink (Slack + Pushover both absent or failing), the notifier now emits a `notification.undelivered` audit event alongside the existing console fall-through, carrying `{ category, text_excerpt }` — the excerpt is passed through the existing `redactSecrets` and truncated to 200 chars, so the chain never holds full message text or a leaked secret. Emitted once per `deliver()` call (not per sink) and only on a total miss — a working sink still returns early with no event. The audit write is try/catch-wrapped so an audit-write failure can never throw out of `deliver()`. Touched: `apps/dispatcher/src/notifier.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/__tests__/notifier-deliver.test.ts`.
+## v1.4.1 — 2026-06-10
+
+### Fixed
+- **Halted task no longer freezes the standing queue.** A halted task was excluded only by the in-dispatch re-check in `prepareSingleSpawn` (after selection), so the picker kept returning the same halted (often high-priority) task each tick, the re-check skipped it, and no eligible task ran — one halted task stalled the whole queue. `pickNextTask` now excludes halted tasks at SELECTION time via an injected `isHalted` predicate on `PickerInput`, so the picker falls through to the next eligible task in the same tick. The real call in `cli/run-once.ts` wires `isTaskHalted` (the audit-backed halt store). Preserved: the in-dispatch halt re-check + its halt-check-before-`inFlight` ordering (race backstop, untouched); `[depends:]` semantics (a halted task never lands in `completedIds`, so its descendants stay blocked); and queue/portal visibility (`q.active` is untouched — filtering is selection-only). Touched: `apps/dispatcher/src/task-reader.ts`, `apps/dispatcher/src/cli/run-once.ts`, `apps/dispatcher/__tests__/task-reader.test.ts`.
 
 ## v1.3.1 — 2026-06-10
 

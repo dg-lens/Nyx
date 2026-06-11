@@ -421,6 +421,23 @@ export interface PickerInput {
    * passes `'git'` (code/pipeline). Omitted → all classes (legacy behavior).
    */
   classFilter?: TaskClass;
+  /**
+   * Halt-aware selection: returns true for a task currently halted for operator
+   * review. A halted task must never be the tick's pick — otherwise it freezes
+   * the standing queue, the picker keeps returning it, the in-dispatch re-check
+   * skips it, and no eligible task runs that tick. Excluding it here lets the
+   * picker fall through to the next eligible task in the SAME tick.
+   *
+   * Injected (not imported) so `pickNextTask` stays a pure function over a
+   * `QueueFile` — unit tests pass a fake predicate; the real call in
+   * `cli/run-once.ts` wires `isTaskHalted` (the audit-backed halt store). Omitted
+   * → no halt filtering (legacy behavior; the in-dispatch re-check still applies).
+   *
+   * A halted task being filtered out keeps `[depends:]` semantics intact: it
+   * never lands in `completedIds`, so its descendants stay blocked. It is filtered
+   * from SELECTION only — `q.active` is untouched, so listings/portal still show it.
+   */
+  isHalted?: (taskId: string) => boolean;
 }
 
 /**
@@ -447,11 +464,13 @@ export function pickNextTask(q: QueueFile, input: PickerInput = {}): ParsedTask 
   ]);
 
   const classFilter = input.classFilter;
+  const isHalted = input.isHalted;
   const baseFilter = (t: ParsedTask) =>
     !t.checked
     && !t.description.startsWith('[FAILED]')
     && t.invalidTags.length === 0
     && !skipped.has(t.id)
+    && (isHalted == null || !isHalted(t.id))
     && (classFilter == null || classOf(t.type) === classFilter)
     && (!t.depends || t.depends.every(d => completedIds.has(d)));
 
