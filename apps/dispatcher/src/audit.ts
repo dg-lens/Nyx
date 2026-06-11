@@ -73,6 +73,17 @@ export type AuditEvent =
   | 'task.audit.autofix.applied'
   | 'task.audit.autofix.succeeded'
   | 'task.audit.autofix.failed'
+  // Diagnostic agent shipped the deliverable itself (e.g. opened the PR after a
+  // transient gh-create failure); the attempt loop short-circuits to completion
+  // instead of re-running the task and hitting the same failure twice.
+  | 'task.audit.delivered'
+  | 'task.audit.delivered.succeeded'
+  // A `delivered` verdict that the routing layer refused to auto-complete:
+  //   - `wrong_stage`: the audited failure was not at the finalize stage, so the
+  //     gate never validated this tree — demoted back to the re-run path.
+  //   - `no_evidence`: the verdict cited no PR URL and no commit SHA, so the
+  //     ship is unverifiable — demoted to an operator halt.
+  | 'task.audit.delivered.demoted'
   | 'task.audit.escalated'
   | 'task.halted_for_review'
   | 'task.resumed'

@@ -51,6 +51,13 @@ export type AuditOutcome =
       classification: FailureClass;
     }
   | {
+      kind: 'delivered';
+      pattern: string;
+      note: string;
+      prUrl?: string;
+      commitSha?: string;
+    }
+  | {
       kind: 'escalated_to_halt';
       pattern?: string;
       operatorReport: string;
@@ -59,6 +66,60 @@ export type AuditOutcome =
       kind: 'audit_failed';
       reason: string;
     };
+
+/**
+ * The stage at which the audited attempt failed. These are exactly the six
+ * `failed-recoverable` exit points of `attemptTask` (each already stamps this
+ * string on its `task.failed` audit event). The stage is load-bearing for the
+ * `delivered` outcome: only a FINALIZE-stage failure (where the gate has
+ * already passed and the only remaining work is the push/PR/merge ship step)
+ * may auto-complete on a `delivered` verdict. A `delivered` claim from any
+ * earlier stage means the gate never validated this tree, so completing would
+ * skip the gate — instead we demote it back through the re-run path.
+ */
+export type AttemptStage = 'preflight' | 'claude' | 'gate' | 'lint' | 'expects' | 'finalize';
+
+/**
+ * Pure routing decision for an audit outcome. Extracted from the
+ * `cli/run-once.ts` attempt loop so the three safety-critical branches —
+ * complete / re-run / halt — are exhaustively testable without spawning Claude,
+ * running a gate, or touching a working dir. The attempt loop calls this and
+ * acts on the verb; the side effects (audit events, notify, cleanup) stay in
+ * run-once where they belong.
+ *
+ * Decisions:
+ *   - `autofix_applied`              → 'rerun'   (re-run Claude + gate)
+ *   - `delivered`, stage ≠ finalize  → 'rerun'   (DEMOTED: `wrong_stage` — gate
+ *                                                 never validated this tree, so
+ *                                                 a re-run revalidates; if it
+ *                                                 truly is delivered the re-run
+ *                                                 is cheap)
+ *   - `delivered`, finalize, no evidence
+ *                                    → 'halt'    (DEMOTED: `no_evidence` — a
+ *                                                 ship with no PR URL and no
+ *                                                 commit SHA is unverifiable;
+ *                                                 operator decides)
+ *   - `delivered`, finalize, w/ evidence
+ *                                    → 'complete'
+ *   - `escalated_to_halt` / `audit_failed`
+ *                                    → 'halt'
+ */
+export type AuditRouteDecision =
+  | { decision: 'complete' }
+  | { decision: 'rerun'; demoted?: 'wrong_stage' }
+  | { decision: 'halt'; demoted?: 'no_evidence' };
+
+export function routeAuditOutcome(stage: AttemptStage, outcome: AuditOutcome): AuditRouteDecision {
+  if (outcome.kind === 'autofix_applied') return { decision: 'rerun' };
+  if (outcome.kind === 'delivered') {
+    if (stage !== 'finalize') return { decision: 'rerun', demoted: 'wrong_stage' };
+    const hasEvidence = Boolean(outcome.prUrl) || Boolean(outcome.commitSha);
+    if (!hasEvidence) return { decision: 'halt', demoted: 'no_evidence' };
+    return { decision: 'complete' };
+  }
+  // 'escalated_to_halt' | 'audit_failed'
+  return { decision: 'halt' };
+}
 
 export interface AuditContext {
   task: ParsedTask;
@@ -404,9 +465,10 @@ async function runDiagnosticAgent(ctx: AuditContext): Promise<AuditOutcome> {
   const result = scrubDiagnosticResult(raw, extraEnv);
 
   // Parse the diagnostic agent's structured response. Convention:
-  //   - Exit 0  + stdout contains "VERDICT: fixed"     → autofix_applied
-  //   - Exit 0  + stdout contains "VERDICT: halt: …"   → escalated_to_halt
-  //   - Anything else                                  → escalated_to_halt with raw report
+  //   - Exit 0  + stdout contains "VERDICT: fixed"      → autofix_applied (re-run)
+  //   - Exit 0  + stdout contains "VERDICT: delivered"  → delivered (do NOT re-run)
+  //   - Exit 0  + stdout contains "VERDICT: halt: …"    → escalated_to_halt
+  //   - Anything else                                   → escalated_to_halt with raw report
   const verdict = parseDiagnosticVerdict(result.stdout);
 
   if (verdict.kind === 'fixed') {
@@ -420,6 +482,28 @@ async function runDiagnosticAgent(ctx: AuditContext): Promise<AuditOutcome> {
       kind: 'autofix_applied',
       pattern: 'claude-diagnostic',
       classification: 'unknown',
+    };
+  }
+
+  if (verdict.kind === 'delivered') {
+    // The diagnostic agent shipped the task's deliverable itself (e.g. opened
+    // the PR after a transient gh-create failure). Re-running Claude + finalize
+    // would attempt to ship a second time and hit the same failure — the bug
+    // this verdict exists to stop. Audit emits the delivered event; the caller
+    // short-circuits the attempt loop to completion.
+    audit('task.audit.delivered', 'audit-runner', {
+      taskId: ctx.task.id,
+      pattern: 'claude-diagnostic',
+      note: verdict.note,
+      ...(verdict.prUrl ? { pr_url: verdict.prUrl } : {}),
+      ...(verdict.commitSha ? { commit_sha: verdict.commitSha } : {}),
+    });
+    return {
+      kind: 'delivered',
+      pattern: 'claude-diagnostic',
+      note: verdict.note,
+      ...(verdict.prUrl ? { prUrl: verdict.prUrl } : {}),
+      ...(verdict.commitSha ? { commitSha: verdict.commitSha } : {}),
     };
   }
 
@@ -494,28 +578,79 @@ If your fix is trivial (typo, missing import, etc.), skip the memory entry.
 Your LAST line of output MUST be one of:
 
   VERDICT: fixed — <one-sentence note about what you changed>
+  VERDICT: delivered — <one-sentence note; MUST include the PR URL or the commit/branch SHA you shipped>
   VERDICT: halt: <one-paragraph operator report — what they need to do, then run nyx-resume>
 
-Do not commit. Do not push. Nyx handles those after the gate re-runs.
+Use \`delivered\` (NOT \`fixed\`) when the task's primary deliverable is already complete by the time you exit — e.g. the original failure was a transient \`gh pr create\` glitch and you opened the PR yourself, or you pushed the integration branch directly. \`fixed\` means "I patched something; re-run Claude + the gate". \`delivered\` means "the deliverable exists; do not re-run". Picking \`fixed\` when the work is already shipped causes a full task re-run (a second Claude spawn that tries to ship the same deliverable again and fails identically).
+
+REQUIRED for \`delivered\`: your note MUST carry hard evidence of the ship — either the full GitHub PR URL (\`https://github.com/<org>/<repo>/pull/<n>\`) or the commit/branch SHA you pushed (7- or 40-char hex). A \`delivered\` verdict with no PR URL and no SHA is treated as unverifiable: Nyx demotes it to an operator halt rather than auto-completing the task. If you genuinely shipped but cannot cite a URL or SHA, use \`halt:\` and explain. Also note: \`delivered\` only auto-completes when the failure was at the FINALIZE stage (the gate had already passed and only the push/PR step remained). If the failure was earlier (the gate itself failed, Claude crashed, expects missing), Nyx will re-run regardless of this verdict — so just fix the underlying problem and use \`fixed\`.
+
+Do not commit. Do not push. Nyx handles those after the gate re-runs — UNLESS your verdict is \`delivered\`, in which case YOU did the ship, Nyx will not run finalize again, and your VERDICT line is the single source of truth.
 
 If you spend more than 4 minutes on a single fix without progress, halt instead.
 `;
 }
 
-function parseDiagnosticVerdict(stdout: string):
+export function parseDiagnosticVerdict(stdout: string):
   | { kind: 'fixed'; note: string }
+  | { kind: 'delivered'; note: string; prUrl?: string; commitSha?: string }
   | { kind: 'halt'; note: string }
   | { kind: 'unparseable' } {
   const lines = stdout.trim().split('\n');
   for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
     const line = lines[i]?.trim();
     if (!line) continue;
+    // Check delivered BEFORE fixed: `delivered` shares the `VERDICT: <word> — note`
+    // prefix shape but means "task shipped; do NOT re-run", which is the inverse
+    // of `fixed` ("I patched something; please re-run"). The strict ordering
+    // guards against a future ambiguity in the regex that might match fixed first.
+    const deliveredMatch = line.match(/^VERDICT:\s*delivered\s*[—:-]?\s*(.*)$/i);
+    if (deliveredMatch) {
+      const note = (deliveredMatch[1] ?? '').trim();
+      const { prUrl, commitSha } = extractDeliveredEvidence(note);
+      return {
+        kind: 'delivered',
+        note,
+        ...(prUrl ? { prUrl } : {}),
+        ...(commitSha ? { commitSha } : {}),
+      };
+    }
     const fixedMatch = line.match(/^VERDICT:\s*fixed\s*[—:-]?\s*(.*)$/i);
     if (fixedMatch) return { kind: 'fixed', note: (fixedMatch[1] ?? '').trim() };
     const haltMatch = line.match(/^VERDICT:\s*halt\s*[—:-]?\s*(.*)$/i);
     if (haltMatch) return { kind: 'halt', note: (haltMatch[1] ?? '').trim() };
   }
   return { kind: 'unparseable' };
+}
+
+/**
+ * Extract artifact evidence from a `delivered` note. A genuine `delivered` ship
+ * leaves a trace: a PR URL or a commit/branch SHA the operator can inspect. A
+ * bare prose claim ("merged it locally") with NO such trace is unverifiable —
+ * the routing layer (`routeAuditOutcome`) demotes an evidence-free `delivered`
+ * to a halt so a human decides, rather than auto-completing on the agent's word.
+ *
+ * `prUrl` — a GitHub pull-request URL.
+ * `commitSha` — a git SHA, matched as a whole token:
+ *   - a full 40-char hex SHA, OR
+ *   - a 7-to-40-char hex token that contains at least one DIGIT.
+ * The digit requirement on the short form is deliberate: it rejects ordinary
+ * all-letter English words that happen to be valid hex (`defaced`, `facade`,
+ * `beaded`) — those would otherwise masquerade as evidence and let an
+ * evidence-free `delivered` slip through to auto-completion. Real abbreviated
+ * git SHAs almost always carry a digit; the rare all-letter short SHA degrades
+ * safely to "no evidence" → operator halt, which is the correct conservative
+ * default. A full 40-char hex token is unambiguous enough to accept on its own.
+ */
+export function extractDeliveredEvidence(note: string): { prUrl?: string; commitSha?: string } {
+  const prUrlMatch = note.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/);
+  const fullShaMatch = note.match(/\b[0-9a-f]{40}\b/i);
+  const shortShaMatch = note.match(/\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/i);
+  const commitSha = fullShaMatch?.[0] ?? shortShaMatch?.[0];
+  return {
+    ...(prUrlMatch ? { prUrl: prUrlMatch[0] } : {}),
+    ...(commitSha ? { commitSha } : {}),
+  };
 }
 
 /**
