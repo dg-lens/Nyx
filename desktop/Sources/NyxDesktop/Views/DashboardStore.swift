@@ -17,10 +17,16 @@ final class DashboardStore: ObservableObject {
     // resolving inside a view body re-reads disk ~1×/sec under the countdown
     // timer's invalidation. WidgetView only ever reads this cache.
     @Published private(set) var statusPayloads: [String: StatusPayload] = [:]
+    // Resolved action buttons, keyed by manifest id. Same cadence-not-render
+    // contract: WidgetActionRegistry.resolveAll reads widget-actions.json and
+    // realpath-validates reveal targets (file IO), so it runs here in a detached
+    // task; WidgetView only ever reads this cache.
+    @Published private(set) var widgetActions: [String: [ResolvedWidgetAction]] = [:]
 
     private var loadWasCorrupt = false
     private var pendingSave: Task<Void, Never>?
     private var statusGeneration = 0
+    private var actionsGeneration = 0
 
     private static var docPath: URL { Layout.dataDir.appendingPathComponent("dashboards.json") }
 
@@ -59,6 +65,35 @@ final class DashboardStore: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self, gen == self.statusGeneration else { return }
                 self.statusPayloads = result
+            }
+        }
+    }
+
+    // Resolve every manifest's action buttons off the main actor and publish in
+    // one batch. Mirrors refreshStatusPayloads: config load + reveal-path
+    // validation are file IO, and the same launch-burst generation guard applies.
+    func refreshWidgetActions() {
+        let withActions = manifests.values
+            .filter { !$0.actions.isEmpty }
+            .map { (id: $0.id, actions: $0.actions) }
+        let dashboardIds = Set(dashboards.map(\.id))
+        actionsGeneration += 1
+        let gen = actionsGeneration
+        guard !withActions.isEmpty else {
+            widgetActions = [:]
+            return
+        }
+        Task.detached(priority: .utility) {
+            let config = WidgetActionsConfig.load()
+            var resolved: [String: [ResolvedWidgetAction]] = [:]
+            for m in withActions {
+                resolved[m.id] = WidgetActionRegistry.resolveAll(
+                    m.actions, manifestId: m.id, config: config, dashboardIds: dashboardIds)
+            }
+            let result = resolved
+            await MainActor.run { [weak self] in
+                guard let self, gen == self.actionsGeneration else { return }
+                self.widgetActions = result
             }
         }
     }

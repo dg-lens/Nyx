@@ -9,6 +9,7 @@ import SwiftUI
 // dynamic. The starred dashboard is the tab's home page on open.
 struct DashboardsTab: View {
     @EnvironmentObject var store: Store
+    @EnvironmentObject var router: ActionRouter
     @StateObject private var dash = DashboardStore()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -41,12 +42,26 @@ struct DashboardsTab: View {
             if selection.isEmpty { selection = dash.starred?.id ?? "" }
             dash.reloadManifests()
             dash.refreshStatusPayloads(store.state)
+            dash.refreshWidgetActions()
         }
-        // Status payloads refresh on the Store cadence (15s), NOT per render — the 1s
-        // countdown timer invalidates this tree every second and resolve does file IO.
-        // This subscription lives on the OUTER group so it survives entering/exiting
-        // presentation mode: status widgets must keep auto-refreshing on a wall display.
-        .onReceive(store.$state) { dash.refreshStatusPayloads($0) }
+        // Status payloads + resolved widget actions refresh on the Store cadence
+        // (15s), NOT per render — the 1s countdown timer invalidates this tree every
+        // second and both resolves do file IO. These subscriptions live on the OUTER
+        // group so they survive entering/exiting presentation mode: widgets must keep
+        // auto-refreshing on a wall display.
+        .onReceive(store.$state) { state in
+            dash.refreshStatusPayloads(state)
+            dash.refreshWidgetActions()
+        }
+        // nav target dashboard:<id> from a widget action button: this view owns the
+        // dashboard selection, so it consumes the id (RootView has already switched
+        // the tab). Unknown ids never reach here — resolution validates them.
+        .onReceive(router.$navTarget) { target in
+            if case .dashboard(let id) = target,
+               dash.dashboards.contains(where: { $0.id == id }) {
+                selection = id
+            }
+        }
         .sheet(isPresented: $showAddSheet) {
             AddDashboardSheet(
                 onPick: { layout in

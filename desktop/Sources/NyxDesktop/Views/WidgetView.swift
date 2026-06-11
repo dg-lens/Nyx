@@ -4,7 +4,8 @@ import SwiftUI
 // referencing a MISSING manifest renders a neutral "widget unavailable" placeholder
 // rather than crashing. In customize mode it shows the red delete X (top-right) and
 // a subtle wobble-free lift; text widgets become editable only outside customize so
-// dragging doesn't fight the text field.
+// dragging doesn't fight the text field, and action buttons disable so dragging
+// keeps priority (they stay live in presentation mode — kiosk quick-actions).
 struct WidgetView: View {
     let instance: WidgetInstance
     let manifest: WidgetManifest?
@@ -13,9 +14,17 @@ struct WidgetView: View {
     // Resolution does file IO and must never run inside body (the countdown
     // timer invalidates ~1×/sec).
     let statusPayload: StatusPayload
+    // Pre-resolved action buttons, same cache contract as statusPayload — the
+    // registry/config resolution (file IO) never runs inside body.
+    let actions: [ResolvedWidgetAction]
     let customizing: Bool
     let onDelete: () -> Void
     let onEditText: (String) -> Void
+
+    // Action execution reuses the app-wide Store + the RootView-owned router,
+    // both injected as environmentObjects (the existing Store idiom).
+    @EnvironmentObject private var appStore: Store
+    @EnvironmentObject private var router: ActionRouter
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -37,11 +46,17 @@ struct WidgetView: View {
     private var card: some View {
         Group {
             if let manifest {
-                switch manifest.viz {
-                case "stat":   statBody(manifest)
-                case "text":   textBody(manifest)
-                case "status": statusBody(manifest)
-                default:       unavailable(manifest.title)
+                VStack(alignment: .leading, spacing: 8) {
+                    Group {
+                        switch manifest.viz {
+                        case "stat":   statBody(manifest)
+                        case "text":   textBody(manifest)
+                        case "status": statusBody(manifest)
+                        default:       unavailable(manifest.title)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    if !actions.isEmpty { actionRow }
                 }
             } else {
                 unavailable("widget unavailable: \(instance.manifestId)")
@@ -96,6 +111,43 @@ struct WidgetView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
+    }
+
+    // MARK: action row — compact capsule buttons at the card's bottom edge,
+    // matching the tag/chip idiom. A resolved action with `op == nil` (unknown
+    // id, operator-disabled, refused path) renders disabled with its reason as
+    // the help tooltip — visible, never executable. All buttons disable in
+    // customize mode so the drag gesture keeps priority.
+    private var actionRow: some View {
+        HStack(spacing: 6) {
+            ForEach(actions) { a in
+                actionButton(a)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func actionButton(_ a: ResolvedWidgetAction) -> some View {
+        Button {
+            if let op = a.op {
+                WidgetActionRegistry.perform(op, store: appStore, router: router)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if let icon = a.icon {
+                    Image(systemName: icon).font(.caption2)
+                }
+                Text(a.label).font(.caption).lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .foregroundStyle(a.op == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
+            .background(.quaternary.opacity(0.4), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(customizing || a.op == nil)
+        .help(a.help)
     }
 
     private func unavailable(_ msg: String) -> some View {

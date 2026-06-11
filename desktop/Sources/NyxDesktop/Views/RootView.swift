@@ -5,6 +5,10 @@ struct RootView: View {
     @EnvironmentObject var store: Store
     @State private var tab: ShellTab = .dashboards
     @State private var showSettings = false
+    // Widget action buttons navigate via this router (RootView owns the tab
+    // selection, so it consumes the requests). Injected as an environmentObject
+    // alongside Store; DashboardsTab additionally handles dashboard:<id> targets.
+    @StateObject private var router = ActionRouter()
     // Driven by the Dashboards tab's "Present" control. While on, the shell strips
     // its tab bar, top toolbar, and (via DashboardPresentation's WindowChromeHider)
     // the window chrome, leaving only the edge-to-edge widget grid.
@@ -51,6 +55,19 @@ struct RootView: View {
         // survives the presentation view being torn down on exit and reliably RESTORES
         // the chrome — a hider that unmounts on exit would never fire its restore.
         .background(WindowChromeHider(hidden: presenting))
+        .environmentObject(router)
+        .onReceive(router.$navTarget) { target in
+            guard let target else { return }
+            switch target {
+            case .monitor: presenting = false; tab = .monitor
+            case .apps:    presenting = false; tab = .apps
+            case .tasks:   presenting = false; tab = .tasks
+            // dashboard:<id> keeps presentation alive on purpose — a kiosk button
+            // that flips the wall display to another dashboard. DashboardsTab owns
+            // the id selection.
+            case .dashboard: tab = .dashboards
+            }
+        }
     }
 
     // Custom navigation shell top bar: the 3 tabs on the left, and a right-aligned

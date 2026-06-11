@@ -78,6 +78,7 @@ struct DashboardCanvas: View {
             manifest: store.manifest(w.manifestId),
             state: state,
             statusPayload: store.statusPayloads[w.manifestId] ?? .preparing,
+            actions: store.widgetActions[w.manifestId] ?? [],
             customizing: customizing,
             onDelete: { deleteWidget(w.instanceId) },
             onEditText: { setText(w.instanceId, $0) })
