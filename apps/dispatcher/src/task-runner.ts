@@ -259,8 +259,15 @@ export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): strin
  *     Per-type policy:
  *       - assistant → READ_ONLY tools + all discovered MCPs (Gmail, Notion, Slack, …)
  *       - content   → READ_ONLY tools (NO MCPs — content tasks don't need email/calendar/etc.)
- *       - analysis  → READ_ONLY + Bash + all discovered MCPs (codebase scans need shells)
- *       - code      → no flag at all (default Claude tool set)
+ *       - analysis  → READ_ONLY + Bash + all discovered MCPs (codebase scans need
+ *         shells) MINUS the SPAWN_HOST_DENYLIST patterns (`--disallowed-tools`).
+ *         Analysis gets bare Bash on the live host, so it carries the same
+ *         host-mutation denylist as code (see SPAWN_HOST_DENYLIST below).
+ *       - code      → default Claude tool set MINUS the SPAWN_HOST_DENYLIST patterns
+ *         (`--disallowed-tools`). Code tasks need Bash to run the local gate
+ *         (pnpm/tsc/tests/git) so a tight allowlist isn't viable; instead the
+ *         known host-mutating commands (brew, sudo, launchctl, systemctl, apt,
+ *         pkill, …) are denied explicitly. See SPAWN_HOST_DENYLIST below.
  *
  *  2. **Working directory isolation**. Assistant cwd is an empty
  *     `outputs/<TASK-ID>/` dir — even with Write/Edit, there's nothing real to
@@ -268,9 +275,14 @@ export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): strin
  *     push credentials — mutations there can't escape. Code cwd is a real
  *     worktree where mutations are the entire point.
  *
- * The "no shell access" guarantee for assistant/content is (1). The "mutations
- * can't escape" guarantee for assistant/content/analysis is (2). Code has
- * neither restriction by design.
+ * The "no shell access" guarantee for assistant/content is (1). The cwd-isolation
+ * of (2) keeps assistant/content/analysis mutations from escaping their working
+ * dir — but cwd isolation does NOT protect the live HOST: any spawn with Bash can
+ * reach out to `brew`/`launchctl`/`sudo` regardless of where its cwd points. So
+ * BOTH spawns that get Bash — code AND analysis — carry the host-command denylist
+ * from layer (1) so the agent can't mutate the host while it works. Code lacks the
+ * cwd-isolation of (2) by design (a worktree IS a real mutation target); analysis
+ * has it, but the denylist is orthogonal to it — host mutation is not a cwd-escape.
  */
 /**
  * Resolve the MCP servers that survive the resilience layer for this spawn.
@@ -322,6 +334,43 @@ export function resolveMcpAllowlist(task: ParsedTask): string[] {
   }
 }
 
+/**
+ * Bash patterns denied to any spawn that gets Bash on the live host — code AND
+ * analysis. Both legitimately need Bash (code runs the local gate: pnpm install,
+ * tsc, tests, git; analysis shells out to scan a clone) — so we can't allowlist
+ * as tightly as assistant/content do. Instead, we explicitly deny the commands
+ * that mutate the HOST itself: host package managers and service controllers. The
+ * concrete trigger was a code agent running `brew uninstall && brew install`
+ * against the live host while testing its change, unlinking the running keg
+ * (see nyx-task-agent-live-system-mutation). Analysis carries the same exposure —
+ * it gets bare Bash on the live host too — so the same denylist applies to it.
+ * The list stays narrow on purpose — each pattern is a known foot-gun, not
+ * "anything that looks risky".
+ *
+ * Residual: the colon-rule matcher keys on the first token, so absolute-path or
+ * wrapper invocations (`/opt/homebrew/bin/brew`, `env brew …`, `bash -c 'brew …'`,
+ * `xargs brew`) are NOT caught by the bare-name patterns. `env`/`xargs` wrapper
+ * forms are denied below; absolute paths and `bash -c`/`sh -c` re-exec remain a
+ * known gap (closing them would also block legitimate gate commands). The
+ * first-token colon-rule is the CLI's contract — this denylist is defense in
+ * depth on top of cwd isolation, not a sandbox boundary.
+ */
+export const SPAWN_HOST_DENYLIST: readonly string[] = [
+  'Bash(brew:*)',
+  'Bash(sudo:*)',
+  'Bash(launchctl:*)',
+  'Bash(systemctl:*)',
+  'Bash(apt:*)',
+  'Bash(apt-get:*)',
+  'Bash(yum:*)',
+  'Bash(dnf:*)',
+  'Bash(pacman:*)',
+  'Bash(pkill:*)',
+  'Bash(killall:*)',
+  'Bash(env:*)',
+  'Bash(xargs:*)',
+];
+
 export function permissionArgs(task: ParsedTask): string[] {
   const args: string[] = ['--permission-mode', config.claudePermissionMode];
   const READ_ONLY = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite', 'Write', 'Edit'];
@@ -330,9 +379,16 @@ export function permissionArgs(task: ParsedTask): string[] {
   } else if (task.type === 'content') {
     args.push('--allowed-tools', READ_ONLY.join(' '));
   } else if (task.type === 'analysis') {
+    // Analysis gets bare Bash on the live host (it scans a clone) — same host-
+    // mutation exposure as code — so it carries the same --disallowed-tools deny
+    // patterns alongside its allowlist. --disallowed-tools takes precedence over
+    // --allowed-tools, so the allowlisted bare `Bash` stays usable for everything
+    // except the denied host-mutating first tokens.
     args.push('--allowed-tools', [...READ_ONLY, 'Bash', ...resolveMcpAllowlist(task)].join(' '));
+    args.push('--disallowed-tools', SPAWN_HOST_DENYLIST.join(' '));
+  } else if (task.type === 'code') {
+    args.push('--disallowed-tools', SPAWN_HOST_DENYLIST.join(' '));
   }
-  // type === 'code' → no --allowed-tools, full default tool access
   return args;
 }
 
