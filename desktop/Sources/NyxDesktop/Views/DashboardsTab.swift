@@ -12,6 +12,11 @@ struct DashboardsTab: View {
     @StateObject private var dash = DashboardStore()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    // Drives the wall-display presentation mode. Owned by RootView so it can strip
+    // its own tab bar + top toolbar while the grid is fullscreen; the trigger and
+    // the fullscreen overlay live here because this view owns the selection + store.
+    @Binding var presenting: Bool
+
     @State private var selection: String = ""
     @State private var showAddSheet = false
     @State private var customizing = false
@@ -25,20 +30,22 @@ struct DashboardsTab: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            sidebar
-            Divider()
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        Group {
+            if presenting {
+                presentationView
+            } else {
+                normalView
+            }
         }
         .onAppear {
             if selection.isEmpty { selection = dash.starred?.id ?? "" }
             dash.reloadManifests()
             dash.refreshStatusPayloads(store.state)
         }
-        // Status payloads refresh on the Store cadence (15s), NOT per render —
-        // the 1s countdown timer invalidates this tree every second and resolve
-        // does file IO.
+        // Status payloads refresh on the Store cadence (15s), NOT per render — the 1s
+        // countdown timer invalidates this tree every second and resolve does file IO.
+        // This subscription lives on the OUTER group so it survives entering/exiting
+        // presentation mode: status widgets must keep auto-refreshing on a wall display.
         .onReceive(store.$state) { dash.refreshStatusPayloads($0) }
         .sheet(isPresented: $showAddSheet) {
             AddDashboardSheet(
@@ -48,6 +55,42 @@ struct DashboardsTab: View {
                     showAddSheet = false
                 },
                 onCancel: { showAddSheet = false })
+        }
+        // Enter/exit rides the signature window spring; reduce-motion collapses it to
+        // a fade via Motion.resolve inside nyxAnimation. The grid is the same view in
+        // both states, so it cross-fades rather than rebuilding.
+        .nyxAnimation(Motion.window, value: presenting)
+    }
+
+    private var normalView: some View {
+        HStack(alignment: .top, spacing: 12) {
+            sidebar
+            Divider()
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    // MARK: presentation (wall display)
+
+    // Fullscreen edge-to-edge grid for the currently-selected dashboard. RootView has
+    // already stripped its tab bar + top toolbar; this strips the dashboard sidebar
+    // and window chrome and hands the canvas the full content rect.
+    @ViewBuilder
+    private var presentationView: some View {
+        if let idx = dash.dashboards.firstIndex(where: { $0.id == selectedId }) {
+            DashboardPresentation(
+                layout: Binding(
+                    get: { dash.dashboards[idx] },
+                    set: { dash.updateDashboard($0) }),
+                store: dash,
+                state: store.state,
+                onExit: exitPresentation)
+            .id(selectedId)
+        } else {
+            // No dashboard to present — bail straight back to the normal tab rather
+            // than show an empty kiosk.
+            Color.clear.onAppear { exitPresentation() }
         }
     }
 
@@ -78,11 +121,53 @@ struct DashboardsTab: View {
                 sidebarRow(d)
             }
             Spacer()
+            presentButton
             customizeButton
             addDashboardButton
         }
         .frame(width: 168, alignment: .topLeading)
         .onChange(of: selectedId) { _ in customizing = false }
+    }
+
+    // Enter the wall-display presentation mode for the selected dashboard. Sits just
+    // above Customize in the sidebar. ⌘⏎ is the keyboard equivalent (the hidden
+    // shortcut button below) so a presenter can trigger it without the mouse.
+    private var presentButton: some View {
+        Button(action: enterPresentation) {
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.inset.filled.on.rectangle")
+                    .frame(width: 16)
+                Text("Present").font(.callout)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .disabled(selectedId.isEmpty)
+        .help("Present this dashboard fullscreen (⌘⏎)")
+        // Hidden ⌘⏎ shortcut: keyboardShortcut needs a focusable control in the tree,
+        // and the sidebar is always present in normal mode, so park it here.
+        .background(
+            Button("", action: enterPresentation)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(selectedId.isEmpty)
+                .hidden())
+    }
+
+    // MARK: presentation control
+
+    private func enterPresentation() {
+        guard !selectedId.isEmpty else { return }
+        customizing = false
+        presenting = true
+    }
+
+    private func exitPresentation() {
+        presenting = false
     }
 
     // Customize toggle — the dashboard's left-toolbar control that unlocks widgets
