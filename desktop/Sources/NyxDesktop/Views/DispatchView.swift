@@ -181,6 +181,10 @@ private enum TemplateCatalog {
 }
 
 struct DispatchView: View {
+    // Optional hook fired AFTER a successful submit (store.dispatch + field reset).
+    // Lets a host (the create overlay) animate its dismissal around submit WITHOUT
+    // changing what submit does. Defaults to no-op so standalone use is unaffected.
+    var onSubmitted: () -> Void = {}
     @EnvironmentObject var store: Store
     @State private var text = ""
     @State private var type = "code"
@@ -351,6 +355,7 @@ struct DispatchView: View {
                                    template: template)
                     text = ""
                     lastSkeleton = ""
+                    onSubmitted()
                 } label: {
                     if store.ticking {
                         HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Decomposing…") }
