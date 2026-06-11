@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test, afterEach } from 'node:test';
 
-import { permissionArgs, buildSpawnInvocation, buildAgentEnv, buildPrompt, CODE_HOST_DENYLIST } from '../src/task-runner.js';
+import { permissionArgs, buildSpawnInvocation, buildAgentEnv, buildPrompt, SPAWN_HOST_DENYLIST } from '../src/task-runner.js';
 import { _resetCache } from '../src/mcp-discovery.js';
 import { REGISTRY } from '@nyx/assistant';
 import type { ParsedTask } from '../src/types.js';
@@ -92,17 +92,46 @@ describe('permissionArgs', () => {
     assert.match(list, /Bash\(brew:\*\)/);
     assert.match(list, /Bash\(launchctl:\*\)/);
     assert.match(list, /Bash\(sudo:\*\)/);
-    // Every CODE_HOST_DENYLIST entry must reach the flag — the list is the
+    // Every SPAWN_HOST_DENYLIST entry must reach the flag — the list is the
     // contract, not just the seed.
-    for (const pattern of CODE_HOST_DENYLIST) {
+    for (const pattern of SPAWN_HOST_DENYLIST) {
       assert.ok(list.includes(pattern), `denylist must include ${pattern}`);
     }
   });
 
-  test('non-code task types do NOT pass --disallowed-tools (allowlist suffices)', () => {
-    for (const t of ['assistant', 'content', 'analysis'] as const) {
+  test('analysis gets --disallowed-tools with host-mutating Bash patterns', () => {
+    // Analysis gets BARE Bash on the live host (it scans a clone) — same host-
+    // mutation exposure as code — so it MUST carry the same denylist. The prior
+    // form of this test asserted analysis must NOT deny on the false premise that
+    // "its allowlist already excludes host commands"; the allowlist contains bare
+    // `Bash`, so that premise was wrong and green-locked the gap.
+    const args = permissionArgs(task('analysis'));
+    const idx = args.indexOf('--disallowed-tools');
+    assert.notEqual(idx, -1, 'analysis task must pass --disallowed-tools (it has bare Bash)');
+    const list = args[idx + 1] ?? '';
+    assert.match(list, /Bash\(brew:\*\)/);
+    assert.match(list, /Bash\(launchctl:\*\)/);
+    assert.match(list, /Bash\(sudo:\*\)/);
+    // Every SPAWN_HOST_DENYLIST entry must reach the flag for analysis too.
+    for (const pattern of SPAWN_HOST_DENYLIST) {
+      assert.ok(list.includes(pattern), `analysis denylist must include ${pattern}`);
+    }
+    // The allowlist still grants Bash — the denylist narrows it, not removes it.
+    const allowIdx = args.indexOf('--allowed-tools');
+    assert.notEqual(allowIdx, -1, 'analysis still carries its allowlist');
+    assert.match(args[allowIdx + 1] ?? '', /\bBash\b/);
+  });
+
+  test('assistant/content do NOT pass --disallowed-tools (no Bash, nothing to deny)', () => {
+    // Only assistant + content have NO Bash in their allowlist, so there is no
+    // host-mutation surface to deny. Analysis is excluded here — it has bare Bash
+    // and IS covered above. (Was the false-premise "non-code" test.)
+    for (const t of ['assistant', 'content'] as const) {
       const args = permissionArgs(task(t));
-      assert.equal(args.indexOf('--disallowed-tools'), -1, `${t} should not deny — its allowlist already excludes host commands`);
+      assert.equal(args.indexOf('--disallowed-tools'), -1, `${t} should not deny — it has no Bash`);
+      // Defense in depth: confirm the premise — Bash really is absent.
+      const list = args[args.indexOf('--allowed-tools') + 1] ?? '';
+      assert.doesNotMatch(list, /(^| )Bash($| )/, `${t} allowlist must not contain Bash`);
     }
   });
 
