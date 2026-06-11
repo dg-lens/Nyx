@@ -323,6 +323,55 @@ describe('pickNextTask (slot model)', () => {
   });
 });
 
+describe('pickNextTask (halted-task exclusion at selection)', () => {
+  test('a halted high-priority standing task does not freeze the queue — picks the normal one', () => {
+    write(
+      `## Active Tasks\n\n- [ ] HALTED-HI — halted, high priority\n      [type: code] [gate: none] [priority: high]\n- [ ] NORMAL-1 — standing\n      [type: code] [gate: none]\n`,
+    );
+    const q = readQueue(queuePath);
+    const isHalted = (id: string) => id === 'HALTED-HI';
+    // Without the filter the high-priority halted task would win and stall.
+    assert.equal(pickNextTask(q, { now: atSlot(50) })?.id, 'HALTED-HI');
+    // With it, the picker falls through to the eligible normal task in one tick.
+    assert.equal(pickNextTask(q, { now: atSlot(50), isHalted })?.id, 'NORMAL-1');
+  });
+
+  test('a [depends:] descendant of a halted task is NOT picked', () => {
+    write(
+      `## Active Tasks\n\n- [ ] PARENT — halted parent\n      [type: code] [gate: none]\n- [ ] CHILD — waits on parent\n      [type: code] [gate: none] [depends: PARENT]\n`,
+    );
+    const q = readQueue(queuePath);
+    const isHalted = (id: string) => id === 'PARENT';
+    // Parent is excluded; child's dep is unsatisfied (parent never completed) → nothing picked.
+    assert.equal(pickNextTask(q, { now: atSlot(50), isHalted }), null);
+  });
+
+  test('un-halting a task makes it pickable again', () => {
+    write(
+      `## Active Tasks\n\n- [ ] SOLO — only task\n      [type: code] [gate: none]\n`,
+    );
+    const q = readQueue(queuePath);
+    assert.equal(pickNextTask(q, { now: atSlot(50), isHalted: (id) => id === 'SOLO' }), null);
+    assert.equal(pickNextTask(q, { now: atSlot(50), isHalted: () => false })?.id, 'SOLO');
+  });
+
+  test('all candidates halted → picker returns null (idle path)', () => {
+    write(
+      `## Active Tasks\n\n- [ ] A — one\n      [type: code] [gate: none]\n- [ ] B — two\n      [type: code] [gate: none] [priority: high]\n`,
+    );
+    const q = readQueue(queuePath);
+    assert.equal(pickNextTask(q, { now: atSlot(50), isHalted: () => true }), null);
+  });
+
+  test('omitting isHalted preserves legacy behavior (no halt filtering)', () => {
+    write(
+      `## Active Tasks\n\n- [ ] LEGACY — standing\n      [type: code] [gate: none]\n`,
+    );
+    const q = readQueue(queuePath);
+    assert.equal(pickNextTask(q, { now: atSlot(50) })?.id, 'LEGACY');
+  });
+});
+
 describe('[repo:] validation (C2 command-injection guard)', () => {
   test('a repo with shell metacharacters is flagged invalid and never picked', () => {
     const evil = 'a";echo INJECTED > /tmp/marker;"b';

@@ -1707,6 +1707,11 @@ async function main(): Promise<void> {
             firedInSlot,
             skipThisTick: skippedThisTick,
             classFilter,
+            // Exclude halted tasks at SELECTION time so a halted high-priority
+            // task can't freeze the standing queue — the picker falls through to
+            // the next eligible task in the same tick. The in-dispatch re-check in
+            // prepareSingleSpawn stays as the race backstop (halt arriving mid-tick).
+            isHalted: isTaskHalted,
           }),
         prepareSingleSpawn: (task) => prepareSingleSpawn(task, skippedThisTick),
         markScheduled: (task) => {
