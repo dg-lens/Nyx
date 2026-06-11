@@ -391,12 +391,17 @@ struct DispatchView: View {
                 }
                 Spacer()
                 Button {
-                    store.dispatch(text: text, type: type, model: model, priority: priority,
-                                   repo: repo.isEmpty ? nil : repo, schedule: scheduleString,
-                                   template: template)
-                    text = ""
-                    lastSkeleton = ""
-                    onSubmitted()
+                    // Only reset + fire onSubmitted when the row was actually
+                    // recorded — on failure the editor keeps its text and
+                    // store.lastDispatch shows the error inline below.
+                    let ok = store.dispatch(text: text, type: type, model: model, priority: priority,
+                                            repo: repo.isEmpty ? nil : repo, schedule: scheduleString,
+                                            template: template)
+                    if ok {
+                        text = ""
+                        lastSkeleton = ""
+                        onSubmitted()
+                    }
                 } label: {
                     if store.ticking {
                         HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Decomposing…") }

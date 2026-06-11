@@ -105,4 +105,18 @@ describe('drainPendingActions', () => {
     assert.match(getAction(1)?.result ?? '', /bad task/);
     assert.equal(getAction(2)?.status, 'applied');
   });
+
+  test('pre-phase kinds (decompose_task, compose_template) survive the generic drain untouched', () => {
+    enqueueAction('decompose_task', { text: 'build a thing' }, 'desktop', 1000);
+    enqueueAction('compose_template', { prompt: 'a daily digest template', kind: 'task' }, 'desktop', 1001);
+    enqueueAction('force_tick', {}, 'cli', 1002);
+    const applied = drainPendingActions(stubDeps([]), () => 2000);
+    assert.equal(applied, 1);
+    assert.equal(getAction(1)?.status, 'pending');
+    assert.equal(getAction(1)?.result, null);
+    assert.equal(getAction(2)?.status, 'pending');
+    assert.equal(getAction(2)?.result, null);
+    assert.equal(getAction(3)?.status, 'applied');
+    assert.deepEqual(listPending().map((a) => a.action), ['decompose_task', 'compose_template']);
+  });
 });

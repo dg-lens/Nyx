@@ -90,6 +90,18 @@ describe('validateComposedTemplate', () => {
     assert.equal(t.type, 'pipeline');
   });
 
+  test('type pipeline forces kind workflow (taxonomy: workflow ⟺ pipeline, even against intent)', () => {
+    const drafted = validateComposedTemplate(composed({ kind: 'task', type: 'pipeline' }), { nowIso: NOW });
+    assert.ok(drafted);
+    assert.equal(drafted.kind, 'workflow');
+    assert.equal(drafted.type, 'pipeline');
+
+    const intentTask = validateComposedTemplate(composed({ kind: 'task', type: 'pipeline' }), { kind: 'task', nowIso: NOW });
+    assert.ok(intentTask);
+    assert.equal(intentTask.kind, 'workflow');
+    assert.equal(intentTask.type, 'pipeline');
+  });
+
   test('invalid enums fall back to defaults', () => {
     const t = validateComposedTemplate(
       composed({ type: 'banana', model: 'gpt', gate: 'vibes', priority: 'urgent' }),

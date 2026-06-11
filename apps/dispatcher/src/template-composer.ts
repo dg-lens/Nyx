@@ -156,10 +156,14 @@ export function validateComposedTemplate(
 
   const rawKind = typeof obj['kind'] === 'string' ? obj['kind'].trim().toLowerCase() : '';
   const intentKind = opts.kind === 'workflow' ? 'workflow' : opts.kind === 'task' ? 'task' : null;
-  const kind: 'task' | 'workflow' =
+  const resolvedKind: 'task' | 'workflow' =
     intentKind ?? (rawKind === 'workflow' ? 'workflow' : 'task');
 
-  const type = kind === 'workflow' ? 'pipeline' : pickEnum(obj['type'], VALID_TYPES, 'code');
+  const type = resolvedKind === 'workflow' ? 'pipeline' : pickEnum(obj['type'], VALID_TYPES, 'code');
+  // Taxonomy invariant (matches the desktop): workflow ⟺ pipeline. A
+  // kind:"task" draft whose type resolves to "pipeline" would contradict it,
+  // so the type wins and kind is forced to "workflow".
+  const kind: 'task' | 'workflow' = type === 'pipeline' ? 'workflow' : resolvedKind;
   const gate = validGate(obj['gate']) ?? (type === 'code' ? 'typecheck,tests' : 'none');
 
   return {

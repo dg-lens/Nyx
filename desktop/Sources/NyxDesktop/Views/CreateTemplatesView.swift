@@ -23,7 +23,6 @@ struct CreateTemplatesView: View {
     @State private var text = ""
     @State private var type = "code"
     @State private var model = "auto"
-    @State private var gate = "typecheck,tests"
     @State private var priority = "normal"
     @State private var repo = ""
     @State private var schedule = "standing"
@@ -37,7 +36,6 @@ struct CreateTemplatesView: View {
     @State private var draftStatus = ""
 
     private let taskTypes = ["code", "analysis", "assistant", "content"]
-    private let gates = ["typecheck,tests", "typecheck", "tests", "lint", "none"]
     private let priorities = ["high", "normal", "low"]
 
     var body: some View {
@@ -86,8 +84,8 @@ struct CreateTemplatesView: View {
                     }
                     .labelsHidden().fixedSize()
                     .onChange(of: kind) { k in
-                        if k == "workflow" { type = "pipeline"; gate = "none" }
-                        else if type == "pipeline" { type = "code"; gate = "typecheck,tests" }
+                        if k == "workflow" { type = "pipeline" }
+                        else if type == "pipeline" { type = "code" }
                     }
                 }
                 Spacer()
@@ -118,10 +116,6 @@ struct CreateTemplatesView: View {
                         Text("opus").tag("opus")
                     }
                     .labelsHidden().fixedSize()
-                }
-                labeled("Gate") {
-                    Picker("", selection: $gate) { ForEach(gates, id: \.self) { Text($0) } }
-                        .labelsHidden().fixedSize()
                 }
                 labeled("Priority") {
                     Picker("", selection: $priority) { ForEach(priorities, id: \.self) { Text($0) } }
@@ -201,7 +195,9 @@ struct CreateTemplatesView: View {
             text: trimmedText,
             type: kind == "workflow" ? "pipeline" : type,
             model: model,
-            gate: gate,
+            // No Gate UI — gates are the decomposer's call at issue time; the
+            // stored field is forward-compat only (see TemplatesStore schema).
+            gate: kind != "workflow" && type == "code" ? "typecheck,tests" : "none",
             priority: priority,
             repo: repo.isEmpty ? nil : repo,
             schedule: scheduleString,

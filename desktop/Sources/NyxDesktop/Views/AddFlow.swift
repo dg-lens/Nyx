@@ -254,7 +254,10 @@ struct RecentsStep: View {
 
 // What's about to be queued, with the two terminals: "Add to queue" re-issues
 // through the same Store.dispatch path DispatchView submits through, "Edit
-// first" opens the prefilled editor instead.
+// first" opens the prefilled editor instead. onAdd returns whether the enqueue
+// actually landed — the host fires its success dismissal only on true; false
+// keeps the step open and shows the inline error here (the Store.lastDispatch
+// error-text idiom), never the success checkmark.
 struct AddSummaryStep: View {
     let kind: AddKind
     let name: String
@@ -264,8 +267,10 @@ struct AddSummaryStep: View {
     let schedule: String?
     let repo: String?
     let text: String
-    let onAdd: () -> Void
+    let onAdd: () -> Bool
     let onEdit: () -> Void
+
+    @State private var addError = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -295,11 +300,16 @@ struct AddSummaryStep: View {
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
 
             HStack {
+                if !addError.isEmpty {
+                    Text(addError).font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button { onEdit() } label: {
                     Label("Edit first", systemImage: "pencil")
                 }
-                Button { onAdd() } label: {
+                Button {
+                    addError = onAdd() ? "" : "Failed to enqueue — nothing was queued. Try again, or use Edit first."
+                } label: {
                     Label("Add to queue", systemImage: "wand.and.stars")
                 }
                 .buttonStyle(.borderedProminent)
@@ -359,10 +369,13 @@ enum AddFlowDispatch {
     }
 
     // One-click re-issue — the same Store.dispatch path DispatchView submits
-    // through (enqueue decompose_task + fire a tick).
+    // through (enqueue decompose_task + fire a tick). Returns whether the row
+    // was actually recorded: empty re-issuable text and a busy DB are both
+    // failures the summary step must surface, never report as queued.
     @MainActor
-    static func issue(_ t: TaskTemplate, via store: Store) {
-        store.dispatch(
+    static func issue(_ t: TaskTemplate, via store: Store) -> Bool {
+        guard !t.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return store.dispatch(
             text: t.text,
             type: t.kind == "workflow" ? "pipeline" : t.type,
             model: t.model,
@@ -372,8 +385,9 @@ enum AddFlowDispatch {
     }
 
     @MainActor
-    static func issue(_ r: RecentTask, via store: Store) {
-        store.dispatch(
+    static func issue(_ r: RecentTask, via store: Store) -> Bool {
+        guard !r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return store.dispatch(
             text: r.text,
             type: validTypes.contains(r.type) ? r.type : "assistant",
             model: r.model ?? "auto",

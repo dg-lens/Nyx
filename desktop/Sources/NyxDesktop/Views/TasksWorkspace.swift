@@ -284,7 +284,14 @@ private struct CreateOverlay: View {
                     type: t.kind == "workflow" ? "pipeline" : t.type,
                     model: t.model, priority: t.priority,
                     schedule: t.schedule, repo: t.repo, text: t.text,
-                    onAdd: { AddFlowDispatch.issue(t, via: store); onSubmitted() },
+                    onAdd: {
+                        // Honest result: the success settle + dismissal only
+                        // fire when the enqueue actually landed; false keeps
+                        // the summary open showing its inline error.
+                        let ok = AddFlowDispatch.issue(t, via: store)
+                        if ok { onSubmitted() }
+                        return ok
+                    },
                     onEdit: { go(.editor(k, AddFlowDispatch.prefill(t))) })
             } else {
                 PlaceholderPage(icon: "folder", title: "Template removed",
@@ -299,7 +306,11 @@ private struct CreateOverlay: View {
                 kind: k, name: r.title.isEmpty ? r.id : r.title,
                 type: r.type, model: r.model ?? "auto", priority: r.priority,
                 schedule: r.schedule, repo: r.repo, text: r.text,
-                onAdd: { AddFlowDispatch.issue(r, via: store); onSubmitted() },
+                onAdd: {
+                    let ok = AddFlowDispatch.issue(r, via: store)
+                    if ok { onSubmitted() }
+                    return ok
+                },
                 onEdit: { go(.editor(k, AddFlowDispatch.prefill(r))) })
         case .editor(let k, let prefill):
             editor(kind: k, prefill: prefill)

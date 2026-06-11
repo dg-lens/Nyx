@@ -134,8 +134,12 @@ final class Store: ObservableObject {
         refresh()
     }
 
-    func dispatch(text: String, type: String, model: String, priority: String, repo: String?, schedule: String, template: String = "auto") {
-        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+    // Returns whether the decompose_task row was actually recorded, so callers
+    // (DispatchView's submit, the add-flow's one-click re-issue) can report an
+    // honest result instead of an unconditional success.
+    @discardableResult
+    func dispatch(text: String, type: String, model: String, priority: String, repo: String?, schedule: String, template: String = "auto") -> Bool {
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         var params = ["text": text, "type": type, "model": model, "priority": priority]
         if let repo, !repo.isEmpty { params["repo"] = repo }
         if !schedule.isEmpty { params["schedule"] = schedule }
@@ -148,6 +152,7 @@ final class Store: ObservableObject {
         lastDispatch = ok ? "Decomposing via sonnet… tasks will appear in the queue." : "Failed to enqueue"
         refresh()
         if ok { runTick() }
+        return ok
     }
 
     func runTick() {
