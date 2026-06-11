@@ -3,6 +3,7 @@ import {
   classifyWrite,
   deriveLoc,
   isInjectable,
+  isValidKind,
   orderBodySections,
   relevanceScore,
   renderPack,
@@ -141,6 +142,7 @@ export interface SearchHit extends Stub {
  * flag so a caller never mistakes a searchable node for an injectable one.
  */
 export function searchTool(cache: IndexCache, a: SearchArgs): SearchHit[] {
+  if (a.kind !== undefined && !isValidKind(a.kind)) return [];
   const text = [a.query ?? '', ...(a.triggers ?? [])].join(' ').trim();
   const q: SearchQuery = {
     ...(text ? { text } : {}),
