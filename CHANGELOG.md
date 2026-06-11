@@ -2,6 +2,11 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.3.1 — 2026-06-10
+
+### Fixed
+- **Absence-aware content-judge.** The advisory content-judge could score a delivery PASS/77–96 while it was missing 40–67% of the spec's declared parts — prose-dimension scores masked omitted deliverables. The judge prompt now builds a DELIVERABLES CHECKLIST *before* dimension scoring: it enumerates the spec's discrete parts (numbered/lettered items, `[expects:]` paths, named invariants), verifies each present/absent against the tree, and ties `spec-conformance` to the fraction present (absent parts contribute 0 — a delivery missing 2 of 5 parts cannot exceed 60 on that dimension). The verdict JSON gains a `parts: [{name, present}]` array; the parser round-trips it (backward compatible — verdicts with no `parts` field still parse), and `task.judge.captured` now carries `parts` + `parts_present`/`parts_total`. The judge stays ADVISORY — no change to how its verdict is consumed downstream. Touched: `apps/dispatcher/src/content-judge.ts`, `apps/dispatcher/src/cli/run-once.ts`, `apps/dispatcher/__tests__/content-judge.test.ts`.
+
 ## v1.4.0 — 2026-06-10
 
 ### Arachne memory MCP server
