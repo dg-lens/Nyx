@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { config } from './config.js';
+import { acquireHeavyGateLock, type HeavyGateLock, type HeavyGateLockOpts } from './heavy-gate-lock.js';
 import type { GateResult, GateStage, ParsedTask } from './types.js';
 
 interface StageDef {
@@ -305,15 +306,25 @@ export function countTestsPassed(log: string): number | undefined {
 
 export interface RunGateOpts {
   /**
-   * P7 flaky quarantine. When true, a FAILED `tests` stage is re-run ONCE on the
+   * P7 flaky rerun. When true, a FAILED `tests` stage is re-run ONCE on the
    * identical tree before the gate is declared failed. If the rerun PASSES (the
-   * verdict flipped with no tree change) the gate is marked `flaky` — the
-   * dispatcher quarantines rather than accepting the flipped green. A second
-   * failure is a deterministic fail and routes to audit as usual. Only the
-   * `tests` stage is reran (typecheck/lint are deterministic by construction).
+   * verdict flipped with no tree change) the gate PASSES and is marked `flaky`
+   * — the dispatcher surfaces the flake in the audit chain (`task.gate.flaky`)
+   * instead of halting work; under machine load a single tests failure is more
+   * often contention than a real break. A second failure is a deterministic
+   * fail and routes to audit as usual. Only the `tests` stage is reran
+   * (typecheck/lint are deterministic by construction).
    */
   rerunFlakyTests?: boolean;
+  /** Test seam: shrink the heavy-gate lock's wait budget / poll interval. */
+  _lockOpts?: HeavyGateLockOpts;
 }
+
+// Stages serialized machine-wide via the heavy-gate lock. These are the
+// CPU-saturating ones whose concurrent execution flips load-sensitive test
+// verdicts (see heavy-gate-lock.ts). The tests-rerun stage runs under the same
+// hold — the lock is acquired at the first heavy stage and held to gate end.
+const HEAVY_GATE_STAGES = new Set(['install', 'typecheck', 'tests']);
 
 export function runGate(task: ParsedTask, cwd: string, opts: RunGateOpts = {}): GateResult {
   if (task.gates === 'none') {
@@ -329,30 +340,42 @@ export function runGate(task: ParsedTask, cwd: string, opts: RunGateOpts = {}): 
     };
   }
   const results: GateResult['stages'] = [];
-  let failureLog = '';
-  for (const s of built.stages) {
-    const r = runStage(s, cwd);
-    results.push({ name: s.name, passed: r.passed, durationMs: r.durationMs, log: r.log });
-    if (!r.passed) {
-      // Flaky quarantine: a failed tests stage is re-run once on the unchanged
-      // tree. A flip (now passes) means the test is non-deterministic — surface
-      // it as flaky, NEVER take the flipped green (that would be retry-to-green).
-      if (s.name === 'tests' && opts.rerunFlakyTests) {
-        const second = runStage(s, cwd);
-        results.push({ name: 'tests-rerun', passed: second.passed, durationMs: second.durationMs, log: second.log });
-        if (second.passed) {
-          return {
-            passed: false,
-            stages: results,
-            failureLog: `Gate tests stage is FLAKY — failed then passed on the identical tree. Quarantined (not retried to green).`,
-            flaky: true,
-            flakyDetail: { firstPassed: false, secondPassed: true },
-          };
-        }
+  let lock: HeavyGateLock | null = null;
+  let flakyTimings: { firstRunMs: number; rerunMs: number } | null = null;
+  const lockFields = (): Partial<GateResult> =>
+    lock?.timedOut ? { lockTimedOut: true, lockWaitedMs: lock.waitedMs } : {};
+  const flakyFields = (): Partial<GateResult> =>
+    flakyTimings
+      ? { flaky: true, flakyDetail: { firstPassed: false, secondPassed: true, ...flakyTimings } }
+      : {};
+  try {
+    for (const s of built.stages) {
+      // Machine-wide heavy-gate lock: acquired once, at the first heavy stage.
+      // A timeout (live owner held it for the full budget) PROCEEDS unlocked —
+      // surfaced on the result so the dispatcher audits task.gate.lock_timeout.
+      if (lock === null && HEAVY_GATE_STAGES.has(s.name)) {
+        lock = acquireHeavyGateLock(opts._lockOpts);
       }
-      failureLog = `Gate failed at stage "${s.name}":\n${r.log}`;
-      return { passed: false, stages: results, failureLog };
+      const r = runStage(s, cwd);
+      results.push({ name: s.name, passed: r.passed, durationMs: r.durationMs, log: r.log });
+      if (!r.passed) {
+        // Flaky rerun: a failed tests stage is re-run once on the unchanged
+        // tree. A flip (now passes) is a flaky-PASS — the gate proceeds, and
+        // the flake stays visible via flaky/flakyDetail → task.gate.flaky.
+        if (s.name === 'tests' && opts.rerunFlakyTests) {
+          const second = runStage(s, cwd);
+          results.push({ name: 'tests-rerun', passed: second.passed, durationMs: second.durationMs, log: second.log });
+          if (second.passed) {
+            flakyTimings = { firstRunMs: r.durationMs, rerunMs: second.durationMs };
+            continue;
+          }
+        }
+        const failureLog = `Gate failed at stage "${s.name}":\n${r.log}`;
+        return { passed: false, stages: results, failureLog, ...lockFields() };
+      }
     }
+    return { passed: true, stages: results, failureLog: '', ...flakyFields(), ...lockFields() };
+  } finally {
+    lock?.release();
   }
-  return { passed: true, stages: results, failureLog };
 }

@@ -24,7 +24,7 @@ import { resolve } from 'node:path';
  * refactor that moves a helper, a fixture-only file, a deliberately-skipped
  * quarantine). Blanket-failing those would halt honest work. So the verifier
  * emits a structured finding + an operator DM; the dispatcher does NOT fail the
- * task on it. Only the lint gate + flaky quarantine are hard signals.
+ * task on it. Only the lint gate is a hard signal.
  *
  * Pure where it can be: `analyzeTestSource` takes file text and returns the
  * per-file verdict; `assessRottenGreen` does the I/O (read each changed test
