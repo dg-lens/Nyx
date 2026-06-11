@@ -2,6 +2,15 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.7.0 — 2026-06-11
+
+### Desktop create-flow + personal templates
+- The desktop's + overlay becomes a progressive branching add-flow (task/workflow chooser → pick existing saved-template/recent | create new from template/scratch) backed by a personal template library — Manage/Create Templates pages, folder grouping, promote-a-recent-task — persisted to `$NYX_DATA_DIR/templates.json` (schema v1).
+- **New `compose_template` control action + `template-composer` engine module.** The Create Templates page's "Draft with Claude" enqueues `compose_template`; the dispatcher drains it in a dedicated pre-phase (`processComposeTemplateActions`, mirroring `decompose_task`) that spawns a sonnet `claude -p`, validates the marker-fenced draft forgivingly (taxonomy invariant enforced: a type resolving to `pipeline` forces `kind: workflow`), and appends it to `templates.json` atomically with `source: "ai"` — a corrupt existing file is refused, never clobbered. The generic `drainPendingActions` now skips pre-phase kinds (`decompose_task`, `compose_template`) instead of failing them as unknown, so a mid-tick enqueue waits for the next tick.
+- New audit events: `control.compose_template.applied` — payload `{ id, source, templateId }` — and `control.compose_template.failed` — payload `{ id, source, error }`.
+- **Caveat — `templates.json` is a two-writer file.** The engine APPENDS `source:"ai"` entries between ticks; the desktop `TemplatesStore` MERGES-ON-SAVE (re-reads the disk doc, keeps the in-memory version for ids it knows, adopts disk-only entries unless deleted this session, then writes the union atomically). Any new writer must follow the same contract — a blind snapshot write silently erases concurrent appends.
+- Touched: `desktop/Sources/NyxDesktop/Views/{AddFlow,TasksWorkspace,TasksTab,DispatchView,TemplatesStore,ManageTemplatesView,CreateTemplatesView}.swift`, `desktop/Sources/NyxDesktop/{RecentTasks,Store}.swift`, `apps/dispatcher/src/template-composer.ts`, `apps/dispatcher/src/control/{db,actions}.ts`, `apps/dispatcher/src/cli/run-once.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/__tests__/{template-composer,control}.test.ts`.
+
 ## v1.6.0 — 2026-06-11
 
 ### `app:<slug>` pipeline target mode

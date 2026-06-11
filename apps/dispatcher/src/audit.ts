@@ -211,7 +211,9 @@ export type AuditEvent =
   | 'control.action.applied'
   | 'control.action.failed'
   | 'control.decompose.applied'
-  | 'control.decompose.failed';
+  | 'control.decompose.failed'
+  | 'control.compose_template.applied'
+  | 'control.compose_template.failed';
 
 export interface AuditRow {
   id: number;

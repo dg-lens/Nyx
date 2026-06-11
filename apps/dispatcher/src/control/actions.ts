@@ -12,6 +12,15 @@ export interface ActionDeps {
   pipelineDecision: (params: Record<string, unknown>) => string;
 }
 
+/**
+ * Action kinds drained by dedicated pre-phases in run-once
+ * (processDecomposeActions / processComposeTemplateActions), not by the
+ * generic drain. A row enqueued MID-tick — after its pre-phase already ran but
+ * before drainPendingActions — must stay pending for the next tick, not be
+ * marked failed as an unknown action.
+ */
+export const PRE_PHASE_ACTIONS: ReadonlySet<string> = new Set(['decompose_task', 'compose_template']);
+
 /** Insert a raw task block under the `## Active Tasks` header (pure). */
 export function insertUnderActiveTasks(content: string, raw: string): string {
   const lines = content.split('\n');
@@ -41,6 +50,7 @@ export function executeAction(a: PendingAction, deps: ActionDeps): string {
 export function drainPendingActions(deps: ActionDeps, now: () => number): number {
   let applied = 0;
   for (const a of listPending()) {
+    if (PRE_PHASE_ACTIONS.has(a.action)) continue;
     try {
       const result = executeAction(a, deps);
       markApplied(a.id, result, now());

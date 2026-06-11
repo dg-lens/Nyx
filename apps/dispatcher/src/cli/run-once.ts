@@ -42,6 +42,12 @@ import { emitHook, initPlugins } from '../plugins/index.js';
 import { drainPendingActions, insertUnderActiveTasks } from '../control/actions.js';
 import { listPending, markApplied, markFailed } from '../control/db.js';
 import { invokeDecomposer, type DecomposeIntent } from '../decomposer.js';
+import {
+  invokeTemplateComposer,
+  templatesStorePath,
+  writeTemplateIntoStore,
+  type ComposeTemplateIntent,
+} from '../template-composer.js';
 import { submitDecision } from '../pipeline/decide.js';
 import { isValidRepoTag, targetMode } from '../pipeline/target.js';
 import { maybeRenderLedgerAtTickEnd } from '../ledger.js';
@@ -1505,6 +1511,38 @@ async function processDecomposeActions(): Promise<number> {
   return decomposed;
 }
 
+/**
+ * Drain pending `compose_template` actions — the desktop Create Templates
+ * page's "Draft with Claude" path. Mirrors processDecomposeActions: each
+ * action spawns a sonnet `claude -p` (invokeTemplateComposer), the validated
+ * template is appended to $NYX_DATA_DIR/templates.json atomically with
+ * source: "ai", and the action is marked applied/failed HERE so the generic
+ * drainPendingActions (status='pending') skips it.
+ */
+async function processComposeTemplateActions(): Promise<number> {
+  const pending = listPending().filter((a) => a.action === 'compose_template');
+  let composed = 0;
+  for (const a of pending) {
+    try {
+      const { template, error } = await invokeTemplateComposer(a.params as unknown as ComposeTemplateIntent);
+      if (!template) {
+        markFailed(a.id, error ?? 'no template produced', Date.now());
+        audit('control.compose_template.failed', 'control', { id: a.id, source: a.source, error: error ?? 'no template' });
+        continue;
+      }
+      writeTemplateIntoStore(templatesStorePath(), template);
+      markApplied(a.id, `composed ${template.id}`, Date.now());
+      audit('control.compose_template.applied', 'control', { id: a.id, source: a.source, templateId: template.id });
+      composed++;
+      console.log(`[nyx] compose_template action ${a.id} -> template ${template.id} written`);
+    } catch (err) {
+      markFailed(a.id, (err as Error).message, Date.now());
+      audit('control.compose_template.failed', 'control', { id: a.id, source: a.source, error: (err as Error).message });
+    }
+  }
+  return composed;
+}
+
 async function main(): Promise<void> {
   const lock = acquire(config.lockfilePath);
   if (!lock) {
@@ -1559,6 +1597,11 @@ async function main(): Promise<void> {
   // marked applied/failed here, so drainPendingActions (status='pending') skips
   // them.
   const decomposedThisTick = await processDecomposeActions();
+
+  // Compose any pending compose_template actions (Create Templates "Draft with
+  // Claude") the same way — handled before the generic drain, marked
+  // applied/failed in-place.
+  await processComposeTemplateActions();
 
   const controlApplied = drainPendingActions(
     {

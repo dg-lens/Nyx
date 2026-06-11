@@ -3,8 +3,9 @@ import SwiftUI
 // The Tasks workspace — n8n-style. Left 4/5 is a week calendar (24 hour-rows x
 // 7 day-columns) where scheduled tasks render as chips; right 1/5 is the
 // standing-task list. A blue + button (bottom-right) opens a full-content-area
-// overlay offering "Create a new task" (the existing DispatchView) or
-// "Create a new Workflow" (placeholder for a later stage).
+// overlay hosting the progressive add-flow (AddFlow.swift): task/workflow
+// chooser, pick-existing (saved templates / recents) and create-new
+// (use-template / fresh editor) branches.
 struct TasksWorkspace: View {
     @EnvironmentObject var store: Store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -116,7 +117,7 @@ private struct AddButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Create a new task or workflow")
+        .help("Add a task or workflow")
         .nyxAnimation(Motion.quick, value: settling)
     }
 }
@@ -126,51 +127,50 @@ private struct AddButton: View {
 private struct CreateOverlay: View {
     // Called to dismiss with the contract-back marquee (X / Esc / scrim tap).
     var onDismiss: () -> Void = {}
-    // Called AFTER DispatchView has queued the task. Drives the success settle +
-    // contract-back. Does NOT change what submit does — purely the dismissal hook.
+    // Called AFTER a task has been queued (DispatchView submit, or a summary
+    // step's one-click Add). Drives the success settle + contract-back. Does NOT
+    // change what submit does — purely the dismissal hook.
     var onSubmitted: () -> Void = {}
+    @EnvironmentObject var store: Store
+    @EnvironmentObject var templates: TemplatesStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    // nil = the two-choice menu; "task" = embedded DispatchView; "workflow" =
-    // placeholder. The operator expands the workflow branch in a later stage.
-    @State private var choice: String? = nil
-    // Drives the push direction: forward (chooser → branch) slides the incoming
-    // step in from trailing; back (branch → chooser) reverses it. Set by `go` /
-    // `back` BEFORE choice changes so the transition reads the right edge.
+    // The step stack. Empty = the task/workflow chooser; pushes/pops drive the
+    // within-overlay navigation. Step vocabulary lives in AddFlow.swift.
+    @State private var path: [AddStep] = []
+    // Drives the push direction: forward slides the incoming step in from
+    // trailing; back reverses it. Set by `go` / `pop` BEFORE path changes so the
+    // transition reads the right edge.
     @State private var goingForward = true
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            // Step body. nil ⇒ chooser; a set value ⇒ the branch. .id keys the
-            // transition to the step so SwiftUI animates the swap (push/pop) rather
-            // than diffing in place. The forward push enters from trailing; back
-            // pops toward trailing — direction comes from `goingForward`.
+            // Step body. .id keys the transition to the step so SwiftUI animates
+            // the swap (push/pop) rather than diffing in place. The forward push
+            // enters from trailing; back pops toward trailing — direction comes
+            // from `goingForward`.
             ZStack {
-                switch choice {
-                case "task":     taskBranch
-                case "workflow": workflowBranch
-                default:         chooser
-                }
+                stepBody
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .id(choice ?? "__chooser__")
+            .id(path.last?.key ?? "__chooser__")
             .transition(MotionTransition.push(from: goingForward ? .trailing : .leading,
                                               reduceMotion: reduceMotion))
             .clipped()
-            .nyxAnimation(Motion.nav, value: choice)
+            .nyxAnimation(Motion.nav, value: path)
         }
         .frame(maxWidth: 760, maxHeight: 620)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary))
         .shadow(color: .black.opacity(0.25), radius: 24, y: 8)
-        // Esc closes (or steps back to the chooser from a sub-branch).
+        // Esc steps back (or closes from the chooser).
         .background(EscHandler { back() })
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            if choice != nil {
+            if !path.isEmpty {
                 Button { pop() } label: {
                     Image(systemName: "chevron.left")
                 }
@@ -190,101 +190,167 @@ private struct CreateOverlay: View {
     }
 
     private var title: String {
-        switch choice {
-        case "task":     return "Create a new task"
-        case "workflow": return "Create a new Workflow"
-        default:         return "Create"
+        switch path.last {
+        case .none:                              return "Add"
+        case .kind(let k):                       return k.addTitle
+        case .pickExisting:                      return "Pick existing"
+        case .createNew:                         return "Create new"
+        case .templatePicker(_, true):           return "Use a template"
+        case .templatePicker(_, false):          return "Saved templates"
+        case .templateSummary(_, let id):        return templates.template(id)?.name ?? "Template"
+        case .recents:                           return "Recent tasks"
+        case .recentSummary(_, let r):           return r.id
+        case .editor(let k, _):                  return k == .task ? "Create a task" : "Create a workflow"
         }
     }
 
-    // Esc handler: step back to the chooser from a branch, else dismiss the overlay.
+    // Esc handler: step back when inside the flow, else dismiss the overlay.
     private func back() {
-        if choice != nil { pop() } else { onDismiss() }
+        if !path.isEmpty { pop() } else { onDismiss() }
     }
 
-    // Forward push into a branch — set direction first so the transition reads the
-    // trailing edge, then change the step.
-    private func go(_ branch: String) {
+    // Forward push — set direction first so the transition reads the trailing
+    // edge, then change the step.
+    private func go(_ step: AddStep) {
         goingForward = true
-        choice = branch
+        path.append(step)
     }
 
-    // Back pop to the chooser — direction reversed so the step slides toward trailing.
+    // Back pop — direction reversed so the step slides toward trailing.
     private func pop() {
         goingForward = false
-        choice = nil
+        path.removeLast()
     }
 
-    // The two big choices with an "or" between them.
-    private var chooser: some View {
-        VStack {
-            Spacer()
-            HStack(spacing: 24) {
+    @ViewBuilder
+    private var stepBody: some View {
+        switch path.last {
+        case .none:
+            chooser
+        case .kind(let k):
+            ChoicePairStep {
                 ChoiceCard(
-                    icon: "checklist",
-                    title: "Create a new task",
-                    subtitle: "Describe work in plain language; a sonnet pass tags and queues it.",
-                    tint: .blue) { go("task") }
-                Text("or").font(.title3).foregroundStyle(.secondary)
+                    icon: "tray.full",
+                    title: "Pick existing",
+                    subtitle: "Re-issue a saved template or one of your recent \(k.noun == "task" ? "tasks" : "workflows").",
+                    tint: k.tint) { go(.pickExisting(k)) }
+            } second: {
                 ChoiceCard(
-                    icon: "point.3.connected.trianglepath.dotted",
-                    title: "Create a new Workflow",
-                    subtitle: "Chain tasks into a multi-step workflow.",
-                    tint: .purple) { go("workflow") }
+                    icon: "square.and.pencil",
+                    title: "Create new",
+                    subtitle: "Write a new \(k.noun) — from a template or from scratch.",
+                    tint: k.tint) { go(.createNew(k)) }
             }
-            Spacer()
+        case .pickExisting(let k):
+            ChoicePairStep {
+                ChoiceCard(
+                    icon: "folder",
+                    title: "Saved template",
+                    subtitle: "Pick from your personal template library.",
+                    tint: k.tint) { go(.templatePicker(k, editFirst: false)) }
+            } second: {
+                ChoiceCard(
+                    icon: "clock.arrow.circlepath",
+                    title: "Recent",
+                    subtitle: "Re-issue one of the last 10 \(k.noun == "task" ? "tasks" : "workflows").",
+                    tint: k.tint) { go(.recents(k)) }
+            }
+        case .createNew(let k):
+            ChoicePairStep {
+                ChoiceCard(
+                    icon: "doc.on.doc",
+                    title: "Use template",
+                    subtitle: "Start from a saved template and tweak it before queueing.",
+                    tint: k.tint) { go(.templatePicker(k, editFirst: true)) }
+            } second: {
+                ChoiceCard(
+                    icon: "square.and.pencil",
+                    title: "Create fresh",
+                    subtitle: "Start with an empty editor.",
+                    tint: k.tint) { go(.editor(k, nil)) }
+            }
+        case .templatePicker(let k, let editFirst):
+            TemplatePickerStep(kind: k) { t in
+                if editFirst {
+                    go(.editor(k, AddFlowDispatch.prefill(t)))
+                } else {
+                    go(.templateSummary(k, templateId: t.id))
+                }
+            }
+        case .templateSummary(let k, let id):
+            if let t = templates.template(id) {
+                AddSummaryStep(
+                    kind: k, name: t.name,
+                    type: t.kind == "workflow" ? "pipeline" : t.type,
+                    model: t.model, priority: t.priority,
+                    schedule: t.schedule, repo: t.repo, text: t.text,
+                    onAdd: {
+                        // Honest result: the success settle + dismissal only
+                        // fire when the enqueue actually landed; false keeps
+                        // the summary open showing its inline error.
+                        let ok = AddFlowDispatch.issue(t, via: store)
+                        if ok { onSubmitted() }
+                        return ok
+                    },
+                    onEdit: { go(.editor(k, AddFlowDispatch.prefill(t))) })
+            } else {
+                PlaceholderPage(icon: "folder", title: "Template removed",
+                                message: "This template no longer exists.")
+            }
+        case .recents(let k):
+            RecentsStep(kind: k) { r in
+                go(.recentSummary(k, r))
+            }
+        case .recentSummary(let k, let r):
+            AddSummaryStep(
+                kind: k, name: r.title.isEmpty ? r.id : r.title,
+                type: r.type, model: r.model ?? "auto", priority: r.priority,
+                schedule: r.schedule, repo: r.repo, text: r.text,
+                onAdd: {
+                    let ok = AddFlowDispatch.issue(r, via: store)
+                    if ok { onSubmitted() }
+                    return ok
+                },
+                onEdit: { go(.editor(k, AddFlowDispatch.prefill(r))) })
+        case .editor(let k, let prefill):
+            editor(kind: k, prefill: prefill)
         }
-        .frame(maxWidth: .infinity)
-        .padding(24)
     }
 
-    private var taskBranch: some View {
+    // The two big choices with an "or" between them. The two icons here are the
+    // canonical task/workflow icons app-wide (AddKind.icon) — unchanged from the
+    // original chooser.
+    private var chooser: some View {
+        ChoicePairStep {
+            ChoiceCard(
+                icon: AddKind.task.icon,
+                title: AddKind.task.addTitle,
+                subtitle: "Queue a single task — from a saved template, a recent task, or scratch.",
+                tint: AddKind.task.tint) { go(.kind(.task)) }
+        } second: {
+            ChoiceCard(
+                icon: AddKind.workflow.icon,
+                title: AddKind.workflow.addTitle,
+                subtitle: "Queue a multi-step workflow — planned, built, and gated by the pipeline.",
+                tint: AddKind.workflow.tint) { go(.kind(.workflow)) }
+        }
+    }
+
+    // The editor terminal. kind=task is DispatchView exactly as today (plus the
+    // optional prefill); kind=workflow is the SAME editor with type preset+locked
+    // to "pipeline" — Store.dispatch's type param feeds the decomposer's pipeline
+    // branch, which emits one [type: pipeline] task the orchestrator runs
+    // end-to-end, so no separate workflow editor is needed.
+    private func editor(kind: AddKind, prefill: DispatchPrefill?) -> some View {
         ScrollView {
             // onSubmitted fires AFTER DispatchView calls store.dispatch — it only
             // drives the dismissal animation; the queue action itself is unchanged.
-            DispatchView(onSubmitted: onSubmitted)
+            DispatchView(
+                onSubmitted: onSubmitted,
+                prefill: prefill ?? (kind == .workflow ? DispatchPrefill(type: "pipeline") : nil),
+                lockType: kind == .workflow)
                 .padding(16)
         }
-    }
-
-    private var workflowBranch: some View {
-        PlaceholderPage(
-            icon: "point.3.connected.trianglepath.dotted",
-            title: "Workflow builder",
-            message: "Next stage. Chaining tasks into workflows lands here.")
-    }
-}
-
-private struct ChoiceCard: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-    let tint: Color
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 34, weight: .regular))
-                    .foregroundStyle(tint)
-                Text(title).font(.title3.weight(.semibold))
-                Text(subtitle)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(24)
-            .frame(width: 260, height: 200)
-            .background(.quaternary.opacity(hovering ? 0.7 : 0.4),
-                        in: RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(hovering ? tint.opacity(0.6) : Color.clear, lineWidth: 1.5))
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
     }
 }
 
