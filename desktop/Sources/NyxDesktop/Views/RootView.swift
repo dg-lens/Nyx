@@ -5,37 +5,52 @@ struct RootView: View {
     @EnvironmentObject var store: Store
     @State private var tab: ShellTab = .dashboards
     @State private var showSettings = false
+    // Driven by the Dashboards tab's "Present" control. While on, the shell strips
+    // its tab bar, top toolbar, and (via DashboardPresentation's WindowChromeHider)
+    // the window chrome, leaving only the edge-to-edge widget grid.
+    @State private var presenting = false
 
     var body: some View {
         VStack(spacing: 0) {
-            if store.updateAvailable {
-                updateBanner
+            if !presenting {
+                if store.updateAvailable {
+                    updateBanner
+                }
+                topBar
+                Divider()
             }
-            topBar
-            Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(12)
+                .padding(presenting ? 0 : 12)
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                HStack(spacing: 6) {
-                    if let url = Layout.effectiveLogoURL, let logo = NSImage(contentsOf: url) {
-                        Image(nsImage: logo).resizable().scaledToFit().frame(width: 16, height: 16)
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                // The toolbar status cluster is part of the chrome the wall display
+                // hides; collapse it to nothing while presenting.
+                if !presenting {
+                    HStack(spacing: 6) {
+                        if let url = Layout.effectiveLogoURL, let logo = NSImage(contentsOf: url) {
+                            Image(nsImage: logo).resizable().scaledToFit().frame(width: 16, height: 16)
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                        }
+                        Circle()
+                            .fill(store.state.healthy ? Color.green : Color.secondary)
+                            .frame(width: 8, height: 8)
+                        Text(store.systemName).font(.headline)
+                        Text("· next tick \(store.nextTickCountdown)")
+                            .foregroundStyle(.secondary).font(.caption).monospacedDigit()
                     }
-                    Circle()
-                        .fill(store.state.healthy ? Color.green : Color.secondary)
-                        .frame(width: 8, height: 8)
-                    Text(store.systemName).font(.headline)
-                    Text("· next tick \(store.nextTickCountdown)")
-                        .foregroundStyle(.secondary).font(.caption).monospacedDigit()
                 }
             }
         }
         .sheet(isPresented: $showSettings) {
             settingsSheet
         }
+        // Always-mounted window-chrome bridge: toggles the titlebar/traffic-lights to
+        // match `presenting`. Mounted here (not inside the presentation view) so it
+        // survives the presentation view being torn down on exit and reliably RESTORES
+        // the chrome — a hider that unmounts on exit would never fire its restore.
+        .background(WindowChromeHider(hidden: presenting))
     }
 
     // Custom navigation shell top bar: the 3 tabs on the left, and a right-aligned
@@ -102,7 +117,7 @@ struct RootView: View {
     @ViewBuilder
     private var content: some View {
         switch tab {
-        case .dashboards: DashboardsTab()
+        case .dashboards: DashboardsTab(presenting: $presenting)
         case .tasks:      TasksTab()
         case .monitor:    MonitorTab()
         case .apps:       AppsTab()
