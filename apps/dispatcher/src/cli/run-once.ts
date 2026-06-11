@@ -345,6 +345,35 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
       // Loop back — re-run Claude + gate + finalize against the fixed working dir.
       continue;
     }
+    if (auditOutcome.kind === 'delivered') {
+      // The audit pass found (or made) the deliverable already complete — e.g.
+      // the original gh-create failure was transient and the diagnostic agent
+      // opened the PR itself. Re-running Claude + finalize would attempt a
+      // second ship and hit the same failure, the loop this branch exists to
+      // stop. Emit the completion events the success finalize path normally
+      // emits (so downstream consumers — Slack, ledger, desktop — see the same
+      // shape), clean up the working dir, and return a completed outcome.
+      audit('task.audit.delivered.succeeded', 'dispatcher', {
+        taskId: task.id,
+        pattern: auditOutcome.pattern,
+        ...(auditOutcome.prUrl ? { pr_url: auditOutcome.prUrl } : {}),
+      });
+      if (auditOutcome.prUrl) {
+        audit('task.pr.created', 'dispatcher', {
+          taskId: task.id,
+          prUrl: auditOutcome.prUrl,
+          source: 'audit-delivered',
+        });
+        await notify.prCreated(task.id, auditOutcome.prUrl);
+      }
+      workingDir.cleanup();
+      return {
+        taskId: task.id,
+        status: 'completed',
+        durationMs: Date.now() - startedAt,
+        ...(auditOutcome.prUrl ? { prUrl: auditOutcome.prUrl } : {}),
+      };
+    }
     // 'escalated_to_halt' or 'audit_failed' — both halt the chain.
     const report =
       auditOutcome.kind === 'escalated_to_halt'

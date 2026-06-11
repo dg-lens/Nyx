@@ -73,6 +73,11 @@ export type AuditEvent =
   | 'task.audit.autofix.applied'
   | 'task.audit.autofix.succeeded'
   | 'task.audit.autofix.failed'
+  // Diagnostic agent shipped the deliverable itself (e.g. opened the PR after a
+  // transient gh-create failure); the attempt loop short-circuits to completion
+  // instead of re-running the task and hitting the same failure twice.
+  | 'task.audit.delivered'
+  | 'task.audit.delivered.succeeded'
   | 'task.audit.escalated'
   | 'task.halted_for_review'
   | 'task.resumed'

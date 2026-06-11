@@ -51,6 +51,12 @@ export type AuditOutcome =
       classification: FailureClass;
     }
   | {
+      kind: 'delivered';
+      pattern: string;
+      note: string;
+      prUrl?: string;
+    }
+  | {
       kind: 'escalated_to_halt';
       pattern?: string;
       operatorReport: string;
@@ -404,9 +410,10 @@ async function runDiagnosticAgent(ctx: AuditContext): Promise<AuditOutcome> {
   const result = scrubDiagnosticResult(raw, extraEnv);
 
   // Parse the diagnostic agent's structured response. Convention:
-  //   - Exit 0  + stdout contains "VERDICT: fixed"     → autofix_applied
-  //   - Exit 0  + stdout contains "VERDICT: halt: …"   → escalated_to_halt
-  //   - Anything else                                  → escalated_to_halt with raw report
+  //   - Exit 0  + stdout contains "VERDICT: fixed"      → autofix_applied (re-run)
+  //   - Exit 0  + stdout contains "VERDICT: delivered"  → delivered (do NOT re-run)
+  //   - Exit 0  + stdout contains "VERDICT: halt: …"    → escalated_to_halt
+  //   - Anything else                                   → escalated_to_halt with raw report
   const verdict = parseDiagnosticVerdict(result.stdout);
 
   if (verdict.kind === 'fixed') {
@@ -420,6 +427,26 @@ async function runDiagnosticAgent(ctx: AuditContext): Promise<AuditOutcome> {
       kind: 'autofix_applied',
       pattern: 'claude-diagnostic',
       classification: 'unknown',
+    };
+  }
+
+  if (verdict.kind === 'delivered') {
+    // The diagnostic agent shipped the task's deliverable itself (e.g. opened
+    // the PR after a transient gh-create failure). Re-running Claude + finalize
+    // would attempt to ship a second time and hit the same failure — the bug
+    // this verdict exists to stop. Audit emits the delivered event; the caller
+    // short-circuits the attempt loop to completion.
+    audit('task.audit.delivered', 'audit-runner', {
+      taskId: ctx.task.id,
+      pattern: 'claude-diagnostic',
+      note: verdict.note,
+      ...(verdict.prUrl ? { pr_url: verdict.prUrl } : {}),
+    });
+    return {
+      kind: 'delivered',
+      pattern: 'claude-diagnostic',
+      note: verdict.note,
+      ...(verdict.prUrl ? { prUrl: verdict.prUrl } : {}),
     };
   }
 
@@ -494,22 +521,38 @@ If your fix is trivial (typo, missing import, etc.), skip the memory entry.
 Your LAST line of output MUST be one of:
 
   VERDICT: fixed — <one-sentence note about what you changed>
+  VERDICT: delivered — <one-sentence note; include the PR/branch URL if you created one>
   VERDICT: halt: <one-paragraph operator report — what they need to do, then run nyx-resume>
 
-Do not commit. Do not push. Nyx handles those after the gate re-runs.
+Use \`delivered\` (NOT \`fixed\`) when the task's primary deliverable is already complete by the time you exit — e.g. the original failure was a transient \`gh pr create\` glitch and you opened the PR yourself, or you pushed the integration branch directly. \`fixed\` means "I patched something; re-run Claude + the gate". \`delivered\` means "the deliverable exists; do not re-run". Picking \`fixed\` when the work is already shipped causes a full task re-run (a second Claude spawn that tries to ship the same deliverable again and fails identically).
+
+Do not commit. Do not push. Nyx handles those after the gate re-runs — UNLESS your verdict is \`delivered\`, in which case YOU did the ship, Nyx will not run finalize again, and your VERDICT line is the single source of truth.
 
 If you spend more than 4 minutes on a single fix without progress, halt instead.
 `;
 }
 
-function parseDiagnosticVerdict(stdout: string):
+export function parseDiagnosticVerdict(stdout: string):
   | { kind: 'fixed'; note: string }
+  | { kind: 'delivered'; note: string; prUrl?: string }
   | { kind: 'halt'; note: string }
   | { kind: 'unparseable' } {
   const lines = stdout.trim().split('\n');
   for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
     const line = lines[i]?.trim();
     if (!line) continue;
+    // Check delivered BEFORE fixed: `delivered` shares the `VERDICT: <word> — note`
+    // prefix shape but means "task shipped; do NOT re-run", which is the inverse
+    // of `fixed` ("I patched something; please re-run"). The strict ordering
+    // guards against a future ambiguity in the regex that might match fixed first.
+    const deliveredMatch = line.match(/^VERDICT:\s*delivered\s*[—:-]?\s*(.*)$/i);
+    if (deliveredMatch) {
+      const note = (deliveredMatch[1] ?? '').trim();
+      const prUrlMatch = note.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/);
+      return prUrlMatch
+        ? { kind: 'delivered', note, prUrl: prUrlMatch[0] }
+        : { kind: 'delivered', note };
+    }
     const fixedMatch = line.match(/^VERDICT:\s*fixed\s*[—:-]?\s*(.*)$/i);
     if (fixedMatch) return { kind: 'fixed', note: (fixedMatch[1] ?? '').trim() };
     const haltMatch = line.match(/^VERDICT:\s*halt\s*[—:-]?\s*(.*)$/i);
