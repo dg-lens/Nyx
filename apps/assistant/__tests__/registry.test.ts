@@ -1,7 +1,14 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
-import { REGISTRY, findTemplate, TEMPLATE_TYPES, isTemplateId, templateTypeOf } from '../src/index.js';
+import {
+  REGISTRY,
+  findTemplate,
+  TEMPLATE_TYPES,
+  TEMPLATE_CATALOG,
+  isTemplateId,
+  templateTypeOf,
+} from '../src/index.js';
 
 const EXPECT: Record<string, string[]> = {
   'MORNING-BRIEF': ['ASSISTANT_OUTPUT.md', 'Brief'],
@@ -118,5 +125,45 @@ describe('TEMPLATE_TYPES (single source of truth)', () => {
     assert.equal(templateTypeOf('DRAFT-OUTREACH'), 'content');
     assert.equal(templateTypeOf('WATCH-DEPS'), 'assistant');
     assert.equal(templateTypeOf('NOPE'), null);
+  });
+});
+
+describe('TEMPLATE_CATALOG (catalog <-> registry)', () => {
+  test('every REGISTRY key has a catalog entry and vice-versa', () => {
+    const reg = new Set(Object.keys(REGISTRY));
+    const cat = new Set(Object.keys(TEMPLATE_CATALOG));
+    for (const k of reg) assert.ok(cat.has(k), `${k} in REGISTRY has no TEMPLATE_CATALOG entry`);
+    for (const k of cat) assert.ok(reg.has(k), `${k} in TEMPLATE_CATALOG has no REGISTRY builder`);
+  });
+
+  test('every catalog entry has a non-empty blurb, valid type, and inputs array', () => {
+    for (const [k, entry] of Object.entries(TEMPLATE_CATALOG)) {
+      assert.ok(
+        typeof entry.blurb === 'string' && entry.blurb.trim().length > 0,
+        `${k} must have a non-empty blurb`,
+      );
+      assert.ok(entry.blurb.length < 90, `${k} blurb must be under 90 chars (got ${entry.blurb.length})`);
+      assert.ok(
+        entry.type === 'assistant' || entry.type === 'content',
+        `${k} maps to an unexpected type '${entry.type}'`,
+      );
+      assert.ok(Array.isArray(entry.inputs), `${k} inputs must be an array`);
+      for (const input of entry.inputs) {
+        assert.ok(
+          typeof input === 'string' && input.trim().length > 0,
+          `${k} has an empty input label`,
+        );
+      }
+    }
+  });
+
+  test('TEMPLATE_TYPES is derived from the catalog (types match for every id)', () => {
+    const typed = new Set(Object.keys(TEMPLATE_TYPES));
+    const cat = new Set(Object.keys(TEMPLATE_CATALOG));
+    for (const k of cat) assert.ok(typed.has(k), `${k} in catalog missing from TEMPLATE_TYPES`);
+    for (const k of typed) assert.ok(cat.has(k), `${k} in TEMPLATE_TYPES missing from catalog`);
+    for (const [k, entry] of Object.entries(TEMPLATE_CATALOG)) {
+      assert.equal(TEMPLATE_TYPES[k], entry.type, `${k} type must match the catalog`);
+    }
   });
 });
