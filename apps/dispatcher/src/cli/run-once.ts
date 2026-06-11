@@ -823,6 +823,7 @@ async function attemptTask(
     audit('task.gate.lock_timeout', 'dispatcher', {
       taskId: task.id,
       waitedMs: gate.lockWaitedMs ?? 0,
+      ownerPid: gate.lockOwnerPid ?? null,
     });
   }
   audit('task.gate.completed', 'dispatcher', {

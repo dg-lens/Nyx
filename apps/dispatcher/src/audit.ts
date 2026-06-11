@@ -41,7 +41,9 @@ export type AuditEvent =
   // Heavy-gate lock (heavy-gate-lock.ts): the machine-wide advisory lock at
   // $NYX_DATA_DIR/run/heavy-gate.lock was NOT acquired within the wait budget
   // (a live owner held it the whole time). The gate PROCEEDED unlocked —
-  // observational, never blocks. Payload { taskId, waitedMs }.
+  // observational, never blocks. Payload { taskId, waitedMs, ownerPid } —
+  // ownerPid is the pid recorded in the foreign lock (null when unreadable),
+  // the operator's diagnosis handle for a stuck holder.
   | 'task.gate.lock_timeout'
   | 'task.committed'
   | 'task.merged'

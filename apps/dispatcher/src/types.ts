@@ -100,6 +100,8 @@ export interface GateResult {
    */
   lockTimedOut?: boolean;
   lockWaitedMs?: number;
+  /** On lock timeout: the pid recorded in the foreign lock — diagnosis handle for the operator. */
+  lockOwnerPid?: number;
 }
 
 export interface RunOutcome {

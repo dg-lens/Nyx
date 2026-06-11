@@ -343,7 +343,13 @@ export function runGate(task: ParsedTask, cwd: string, opts: RunGateOpts = {}): 
   let lock: HeavyGateLock | null = null;
   let flakyTimings: { firstRunMs: number; rerunMs: number } | null = null;
   const lockFields = (): Partial<GateResult> =>
-    lock?.timedOut ? { lockTimedOut: true, lockWaitedMs: lock.waitedMs } : {};
+    lock?.timedOut
+      ? {
+          lockTimedOut: true,
+          lockWaitedMs: lock.waitedMs,
+          ...(lock.ownerPid !== undefined ? { lockOwnerPid: lock.ownerPid } : {}),
+        }
+      : {};
   const flakyFields = (): Partial<GateResult> =>
     flakyTimings
       ? { flaky: true, flakyDetail: { firstPassed: false, secondPassed: true, ...flakyTimings } }
