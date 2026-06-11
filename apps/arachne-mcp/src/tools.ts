@@ -16,7 +16,7 @@ import {
   type SearchQuery,
   type WriteInput,
 } from '@nyx/dispatcher/dist/memory/arachne.js';
-import { IndexCache, validateVault, type ValidationResult } from './vault.js';
+import { IndexCache, isKegPath, validateVault, type ValidationResult } from './vault.js';
 
 const ROLES: Role[] = ['dispatcher', 'planner', 'coder', 'reviewer', 'operator', 'all'];
 const asRole = (v: string | undefined): Role => (v && (ROLES as string[]).includes(v) ? (v as Role) : 'all');
@@ -201,8 +201,20 @@ export interface WriteResult {
  * node id and does NOT write (this thin front never auto-supersedes; the operator/
  * wisdom layer owns merges). Only an ADD verdict reaches writeNode. A successful
  * write invalidates the cache.
+ *
+ * The keg gate runs before everything: a vault under Cellar/libexec is replaced
+ * wholesale on every `nyx update`, so a write there is silent data loss — refuse
+ * structurally rather than persist into a doomed directory.
  */
 export function writeTool(cache: IndexCache, vault: string, n: WriteInput): WriteResult {
+  if (isKegPath(vault)) {
+    return {
+      written: false,
+      action: 'REJECT',
+      reason: `vault '${vault}' is keg-resident (Cellar/libexec) and is wiped on every nyx update — set NYX_DATA_DIR to the real vault (default ~/Nyx/Data)`,
+      score: 0,
+    };
+  }
   const decision = classifyWrite(cache.get(), n);
   if (decision.action !== 'ADD') {
     return {
