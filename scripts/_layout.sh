@@ -4,6 +4,8 @@ NYX_REPO_ROOT="${NYX_REPO_ROOT:-$(cd "$_NYX_LAYOUT_DIR/.." && pwd)}"
 if [ -z "${NYX_DATA_DIR:-}" ]; then
   if [ -d "$NYX_REPO_ROOT/../Data" ]; then
     NYX_DATA_DIR="$(cd "$NYX_REPO_ROOT/../Data" && pwd)"
+  elif [ -d "$HOME/Nyx/Data" ]; then
+    NYX_DATA_DIR="$HOME/Nyx/Data"
   else
     NYX_DATA_DIR="$NYX_REPO_ROOT"
   fi
