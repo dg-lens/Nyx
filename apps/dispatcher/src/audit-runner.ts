@@ -21,9 +21,10 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { audit } from './audit.js';
+import { audit, autofixRepeatIneffective } from './audit.js';
 import {
   classifyFailure,
+  demoteRepeatedAutofix,
   type AutofixHint,
   type ClassifiedFailure,
   type FailureClass,
@@ -134,6 +135,13 @@ export interface AuditContext {
   originalPrompt: string;
   /** How many audit passes have already run on this task. */
   priorAuditPasses: number;
+  /**
+   * The stage at which this attempt failed (preflight | claude | gate | lint |
+   * expects | finalize). Load-bearing for the repeat-demotion check: a heuristic
+   * is only proven ineffective when its prior autofix was followed by a failure
+   * at the SAME stage. See `autofixRepeatIneffective`.
+   */
+  stage: AttemptStage;
 }
 
 /** Top-level entry. */
@@ -155,12 +163,24 @@ export async function runAudit(ctx: AuditContext): Promise<AuditOutcome> {
     failure_log_excerpt: ctx.failureLog.slice(0, 500),
   });
 
-  const classification = classifyFailure(ctx.failureLog);
+  const rawClassification = classifyFailure(ctx.failureLog);
+
+  // Repeat-demotion: if the heuristic for this pattern already ran on this task
+  // and the SAME stage re-failed afterwards, the patch is proven ineffective —
+  // re-applying it just re-enters the loop. Demote to `unknown` so the flow
+  // falls through to the Opus diagnostic. The check reads audit-chain EVENTS
+  // (autofix.succeeded + a later same-stage task.failed), never log text.
+  const repeatedAndIneffective =
+    rawClassification.kind === 'auto-fixable' && rawClassification.pattern != null
+      ? autofixRepeatIneffective(ctx.task.id, rawClassification.pattern, ctx.stage)
+      : false;
+  const classification = demoteRepeatedAutofix(rawClassification, repeatedAndIneffective);
 
   audit('task.audit.classified', 'audit-runner', {
     taskId: ctx.task.id,
     pattern: classification.pattern ?? null,
     classification: classification.kind,
+    ...(classification.repeatDemoted ? { repeat_demoted: true } : {}),
   });
 
   if (classification.kind === 'auto-fixable' && classification.autofix) {

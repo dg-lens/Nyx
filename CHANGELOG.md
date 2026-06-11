@@ -13,6 +13,10 @@
 - New audit event: `composer.normalize.rejected` — payload `{ taskId, blocking_issues, reject_reason }`.
 - The shadow recording (persist + audit + outcome) is preserved unchanged in both modes; it is the single source of truth (`recordNormalization`) both the shadow and enforcement paths consume.
 - Touched: `apps/dispatcher/src/composer/orchestrate.ts`, `apps/dispatcher/src/composer/normalizer-spawner.ts`, `apps/dispatcher/src/task-runner.ts`, `apps/dispatcher/src/cli/run-once.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/__tests__/orchestrate-shadow.test.ts`, `apps/dispatcher/__tests__/task-runner.test.ts`.
+## v1.4.1 — 2026-06-10
+
+### Fixed
+- **Heuristic audit classifier now escalates instead of repeating a proven-futile autofix.** When a heuristic autofix (e.g. `rewrite-pnpm-workspace`) patched the tree, the dispatcher re-ran, and the SAME stage failed again with the SAME signature, the classifier re-classified it `auto-fixable` and re-applied the identical patch — looping until the audit cap halted the task, burning both passes on a fix already known not to work instead of routing to the Opus diagnostic. `runAudit` now consults the audit chain (EVENTS, never log text) before returning an auto-fixable classification: if a `task.audit.autofix.succeeded` with the same pattern already exists for this task AND a later `task.failed` at the same stage followed it, the classification is demoted to `unknown` so the flow falls through to the diagnostic agent. The `task.audit.classified` event carries `repeat_demoted: true` in that case. The check is keyed strictly on (task, pattern, stage) and bounded to events after the last `task.failure_reset`. `MAX_AUDIT_PASSES` is unchanged; no heuristic signatures changed. Touched: `apps/dispatcher/src/audit.ts` (`autofixRepeatIneffective`), `apps/dispatcher/src/audit-classifier.ts` (`demoteRepeatedAutofix` + `repeatDemoted`), `apps/dispatcher/src/audit-runner.ts` (consult in `runAudit`, `stage` on `AuditContext`), `apps/dispatcher/src/cli/run-once.ts` (thread `result.stage`), `apps/dispatcher/__tests__/audit-repeat-demote.test.ts`.
 
 ## v1.3.1 — 2026-06-10
 

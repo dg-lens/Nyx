@@ -468,6 +468,60 @@ export function auditPassCountForTask(taskId: string): number {
 }
 
 /**
+ * Has the heuristic autofix for `pattern` already PROVEN ineffective on this
+ * exact task at this exact stage?
+ *
+ * True iff the audit chain holds, for THIS task:
+ *   1. a `task.audit.autofix.succeeded` row with the SAME `pattern`, AND
+ *   2. a later (`id` >) `task.failed` row at the SAME `stage`.
+ *
+ * That pair is the signature of a futile loop: the heuristic patched the tree,
+ * the dispatcher re-ran, and the same stage failed again. Re-applying the same
+ * patch would re-enter the loop, so the audit-runner demotes the classification
+ * to not-auto-fixable and routes to the Opus diagnostic instead.
+ *
+ * Ordering is by `id` (the immutable chain order), not wall-clock `at`, so rows
+ * written within the same millisecond still compare deterministically. Scope is
+ * bounded to events after the last `task.failure_reset` for the task — a reset
+ * deliberately wipes the futility clock so a re-queued task gets a fresh shot at
+ * the heuristic.
+ */
+export function autofixRepeatIneffective(taskId: string, pattern: string, stage: string): boolean {
+  const d = open();
+  const reset = d
+    .prepare(
+      `SELECT id FROM system_audit
+       WHERE event = 'task.failure_reset'
+         AND json_extract(payload, '$.taskId') = ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(taskId) as { id: number } | undefined;
+  const floor = reset?.id ?? 0;
+  const succeeded = d
+    .prepare(
+      `SELECT id FROM system_audit
+       WHERE event = 'task.audit.autofix.succeeded'
+         AND json_extract(payload, '$.taskId') = ?
+         AND json_extract(payload, '$.pattern') = ?
+         AND id > ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(taskId, pattern, floor) as { id: number } | undefined;
+  if (!succeeded) return false;
+  const laterFailure = d
+    .prepare(
+      `SELECT id FROM system_audit
+       WHERE event = 'task.failed'
+         AND json_extract(payload, '$.taskId') = ?
+         AND json_extract(payload, '$.stage') = ?
+         AND id > ?
+       ORDER BY id ASC LIMIT 1`,
+    )
+    .get(taskId, stage, succeeded.id) as { id: number } | undefined;
+  return Boolean(laterFailure);
+}
+
+/**
  * Is `taskId` currently halted for operator review? True when the most recent
  * lifecycle row for the task is `task.halted_for_review` and no subsequent
  * `task.resumed` has cleared it.
