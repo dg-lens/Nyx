@@ -12,11 +12,11 @@ NAME="${NAME//\'/}"
 NAME="${NAME// /}"
 NAME="${NAME:-Nyx}"
 
-APP="$HERE/$NAME.app"
+APP="$HERE/.build/$NAME.app"
 MACOS="$APP/Contents/MacOS"
 BIN="$MACOS/NyxDesktop"
 
-rm -rf "$HERE"/*.app
+rm -rf "$HERE"/*.app "$HERE/.build"
 mkdir -p "$MACOS"
 
 swiftc -O -parse-as-library -swift-version 5 \
