@@ -15,10 +15,15 @@
 import { randomUUID } from 'node:crypto';
 
 import { config } from '../config.js';
+import type { FailureClass } from '../outcomes.js';
 import type { ParsedTask } from '../types.js';
 import type { AncestorContext } from './chain-context.js';
 import { buildChainDag } from './dag.js';
-import { runNormalizerSpawn, type NormalizerSpawnResult } from './normalizer-spawner.js';
+import {
+  runNormalizerSpawn,
+  type NormalizerSpawnFailureClass,
+  type NormalizerSpawnOutcome,
+} from './normalizer-spawner.js';
 import type { ChainDag, NormalizationResult } from './types.js';
 
 const NORMALIZE_MODEL = 'sonnet';
@@ -27,7 +32,32 @@ const NORMALIZE_MODEL = 'sonnet';
 export type NormalizerSpawnFn = (
   task: ParsedTask,
   workingDir: string,
-) => Promise<NormalizerSpawnResult | null>;
+) => Promise<NormalizerSpawnOutcome>;
+
+/**
+ * What `normalizeTaskSpec` returns. The stage-success path carries the
+ * assembled `NormalizationResult`; the stage-skip path carries the structured
+ * `failure_class` so the caller can record it in the outcomes table without
+ * regex-ing prose. Mirrors the spawner-level taxonomy 1:1, plus
+ * `internal_error` for an unexpected throw inside this function itself.
+ */
+export type NormalizeStageFailureClass =
+  | NormalizerSpawnFailureClass
+  | 'internal_error';
+
+export type NormalizeStageOutcome =
+  | { ok: true; result: NormalizationResult }
+  | { ok: false; failure_class: NormalizeStageFailureClass; detail?: string };
+
+/**
+ * Project a `NormalizeStageFailureClass` onto the global outcomes-taxonomy
+ * `FailureClass`. Today every member is identical in name, but the projection
+ * exists so a future stage-local class (e.g. a normalizer-specific verdict
+ * disagreement) can be mapped onto a global class deliberately.
+ */
+export function failureClassForOutcome(c: NormalizeStageFailureClass): FailureClass {
+  return c;
+}
 
 /**
  * Derive the operator-review `would_reject` signal from the verdict + DAG.
@@ -57,19 +87,25 @@ export function deriveWouldReject(
 }
 
 /**
- * Normalize a single task spec. Returns the assembled result, or null when the
- * LLM spawn produced nothing usable (caller treats null as a skip). Never throws.
+ * Normalize a single task spec. Returns a discriminated outcome — `ok: true`
+ * with the assembled result, or `ok: false` with the structured failure_class
+ * (one of the five spawn causes, or `internal_error` for an unexpected throw).
+ * Never throws.
  */
 export async function normalizeTaskSpec(
   task: ParsedTask,
   workingDir: string,
   ancestors: AncestorContext[],
   spawnFn: NormalizerSpawnFn = runNormalizerSpawn,
-): Promise<NormalizationResult | null> {
+): Promise<NormalizeStageOutcome> {
   const start = Date.now();
   try {
     const spawn = await spawnFn(task, workingDir);
-    if (!spawn) return null;
+    if (!spawn.ok) {
+      return spawn.detail !== undefined
+        ? { ok: false, failure_class: spawn.failure_class, detail: spawn.detail }
+        : { ok: false, failure_class: spawn.failure_class };
+    }
 
     // Deterministic DAG compile — null when the task has no [depends:].
     let dag: ChainDag | null = null;
@@ -83,25 +119,28 @@ export async function normalizeTaskSpec(
       dag = null;
     }
 
-    const { wouldReject, reason } = deriveWouldReject({ spec: spawn.spec, dag });
+    const { wouldReject, reason } = deriveWouldReject({ spec: spawn.result.spec, dag });
 
     // SHADOW: read `enforced` for the record, but DO NOT act on it. Enforcement
     // is a future PR — no halt/reject/spec-injection happens regardless of value.
     const enforced = config.composer.normalizer.enforced;
 
     return {
-      normalization_id: `normalize-${task.id}-${Date.now()}-${randomUUID().slice(0, 8)}`,
-      task_id: task.id,
-      spec: spawn.spec,
-      dag,
-      enforced,
-      would_reject: wouldReject,
-      reject_reason: reason,
-      duration_ms: Date.now() - start,
-      model: NORMALIZE_MODEL,
-      raw_response: spawn.rawResponse,
+      ok: true,
+      result: {
+        normalization_id: `normalize-${task.id}-${Date.now()}-${randomUUID().slice(0, 8)}`,
+        task_id: task.id,
+        spec: spawn.result.spec,
+        dag,
+        enforced,
+        would_reject: wouldReject,
+        reject_reason: reason,
+        duration_ms: Date.now() - start,
+        model: NORMALIZE_MODEL,
+        raw_response: spawn.result.rawResponse,
+      },
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return { ok: false, failure_class: 'internal_error', detail: (err as Error).message };
   }
 }

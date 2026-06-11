@@ -20,11 +20,16 @@
 
 import { audit } from '../audit.js';
 import { config } from '../config.js';
+import { safeRecordOutcome } from '../outcomes.js';
 import type { ParsedTask } from '../types.js';
 import { gatherAncestorContext, type AncestorContext } from './chain-context.js';
 import { runComposer } from './composer-runner.js';
 import { saveFlightPlan, saveNormalization } from './db.js';
-import { normalizeTaskSpec, type NormalizerSpawnFn } from './normalizer.js';
+import {
+  failureClassForOutcome,
+  normalizeTaskSpec,
+  type NormalizerSpawnFn,
+} from './normalizer.js';
 import { removeFlightPlanArtifact, runPlanSpawn } from './plan-spawner.js';
 import type { FlightPlan } from './types.js';
 
@@ -173,9 +178,11 @@ export async function runShadowNormalizePhase(
   spawnFn?: NormalizerSpawnFn,
 ): Promise<void> {
   if (!config.composer.normalizer.enabled) return;
+  const stageStart = Date.now();
   try {
-    const norm = await normalizeTaskSpec(task, workingDir, ancestors, spawnFn);
-    if (norm) {
+    const outcome = await normalizeTaskSpec(task, workingDir, ancestors, spawnFn);
+    if (outcome.ok) {
+      const norm = outcome.result;
       saveNormalization(norm);
       audit('composer.normalize.completed', 'composer.orchestrate', {
         taskId: task.id,
@@ -189,16 +196,52 @@ export async function runShadowNormalizePhase(
         predicted_conflict_count: norm.dag?.predicted_conflicts.length ?? 0,
         dag_cycle: norm.dag?.cycle != null,
       });
+      safeRecordOutcome({
+        task_id: task.id,
+        stage: 'composer.normalize',
+        outcome: 'ok',
+        detail: norm.would_reject ? `would_reject: ${norm.reject_reason ?? ''}` : null,
+        payload: {
+          normalization_id: norm.normalization_id,
+          would_reject: norm.would_reject,
+          solvable: norm.spec.verdict.solvable,
+          complete: norm.spec.verdict.complete,
+        },
+        duration_ms: norm.duration_ms,
+      });
     } else {
+      const failure_class = failureClassForOutcome(outcome.failure_class);
       audit('composer.normalize.skipped', 'composer.orchestrate', {
         taskId: task.id,
-        reason: 'normalizer returned null (spawn produced no usable spec)',
+        failure_class,
+        reason: outcome.detail ?? failure_class,
+      });
+      safeRecordOutcome({
+        task_id: task.id,
+        stage: 'composer.normalize',
+        outcome: 'failed',
+        failure_class,
+        detail: outcome.detail ?? null,
+        duration_ms: Date.now() - stageStart,
       });
     }
   } catch (err) {
+    // normalizeTaskSpec already catches its own throws, so reaching here means
+    // saveNormalization/audit threw. Record + propagate-into-audit only.
     audit('composer.normalize.skipped', 'composer.orchestrate', {
       taskId: task.id,
+      failure_class: 'internal_error',
       reason: `normalize threw: ${(err as Error).message}`,
+    });
+    // safeRecordOutcome never throws — the shadow stage cannot propagate a
+    // monitoring-write failure into dispatch.
+    safeRecordOutcome({
+      task_id: task.id,
+      stage: 'composer.normalize',
+      outcome: 'failed',
+      failure_class: 'internal_error',
+      detail: (err as Error).message,
+      duration_ms: Date.now() - stageStart,
     });
   }
 }
