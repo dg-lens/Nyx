@@ -269,3 +269,24 @@ process.env['GIT_COMMITTER_NAME'] = config.gitAuthorName;
 process.env['GIT_COMMITTER_EMAIL'] = config.gitAuthorEmail;
 
 export type Config = typeof config;
+
+export function validateConfig(): void {
+  const appsDir = config.appsDir;
+  const clonePrefix = config.cloneRootPrefix;
+  const projectsDir = config.projectsDir;
+
+  const prefixOf = (a: string, b: string): boolean => a === b || a.startsWith(b + '/');
+
+  if (appsDir.startsWith(clonePrefix)) {
+    throw new Error(
+      `Config error: appsDir (${appsDir}) must not overlap cloneRootPrefix (${clonePrefix}) or projectsDir (${projectsDir}). ` +
+        `Set NYX_APPS_DIR to a distinct directory (default: ~/Nyx/Apps).`,
+    );
+  }
+  if (prefixOf(appsDir, projectsDir) || prefixOf(projectsDir, appsDir)) {
+    throw new Error(
+      `Config error: appsDir (${appsDir}) must not overlap cloneRootPrefix (${clonePrefix}) or projectsDir (${projectsDir}). ` +
+        `Set NYX_APPS_DIR to a distinct directory (default: ~/Nyx/Apps).`,
+    );
+  }
+}

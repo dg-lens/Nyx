@@ -34,7 +34,7 @@ import {
 import { claimRunForResume, runsAwaitingDecision } from '../pipeline/db.js';
 import { isAwaiting, isTerminal, type DecisionKind, type PipelineStatus } from '../pipeline/types.js';
 import { buildPrevalidateFailureLog, prevalidateExpects } from '../expects-prevalidate.js';
-import { config } from '../config.js';
+import { config, validateConfig } from '../config.js';
 import { liveOwnClaudeCount } from '../claude-registry.js';
 import { liveGitTaskExists, removeGitLock, writeGitLock } from '../git-task-lock.js';
 import { runTwoClassTick } from '../tick-scheduler.js';
@@ -1544,6 +1544,7 @@ async function processComposeTemplateActions(): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  validateConfig();
   const lock = acquire(config.lockfilePath);
   if (!lock) {
     console.log('[nyx] another dispatcher is running. exit 0.');
@@ -1614,7 +1615,7 @@ async function main(): Promise<void> {
         if (!raw) {
           const text = String(p.text ?? '').trim();
           if (!text) throw new Error('queue_task missing raw or text');
-          const type = String(p.type ?? 'assistant').trim();
+          const type = String(p.type ?? 'assistant').trim().toLowerCase();
           const id = `UI-${Date.now().toString(36).slice(-6).toUpperCase()}`;
           const tags = [`[type: ${type}]`];
           if (p.repo) {

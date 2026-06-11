@@ -21,7 +21,7 @@ import {
 } from '../src/pipeline/execute.js';
 import { freezePlan, type FlightPlanContract, type PlanningResult } from '../src/pipeline/flight-plan.js';
 import type { PipelineRun } from '../src/pipeline/types.js';
-import { withAppsDir } from './helpers.js';
+import { withAppsDir, withAppsDirAsync } from './helpers.js';
 
 beforeEach(() => {
   const db = new DatabaseSync(':memory:');
@@ -342,6 +342,65 @@ describe('defaultRunCoder (real git worktree)', () => {
       rmSync(base, { recursive: true, force: true });
       rmSync(wtPath, { recursive: true, force: true });
     }
+  });
+});
+
+describe('runExecuting — early-persist crash-resume (app mode)', () => {
+  function fakeCoder(ctx: CoderContext): Promise<CoderResult> {
+    return Promise.resolve({
+      task_id: ctx.plan.task_id,
+      branch: coderBranch(ctx.run.id, ctx.plan.task_id),
+      status: 'committed' as const,
+      commit: `sha-${ctx.plan.task_id}`,
+      files_changed: ctx.plan.modifies,
+      exit_code: 0,
+      log: '',
+    });
+  }
+
+  test('worktree_base and integration_branch are persisted before coders finish', async () => {
+    await withAppsDirAsync(async (appsDir) => {
+      const run = createRun({ id: 'pr_earlypersist', taskId: 'EP', prompt: 'build it', repo: 'app:early-persist-test', now: 1000 });
+      updateRun('pr_earlypersist', { status: 'executing', plan_json: freezePlan(planWith([fp('A')])) }, 1000);
+
+      let capturedBasePath: string | null = null;
+      const trackingCoder = async (ctx: CoderContext): Promise<CoderResult> => {
+        capturedBasePath = ctx.basePath;
+        const mid = getRun('pr_earlypersist');
+        assert.ok(mid?.worktree_base, 'worktree_base persisted before coder finishes');
+        assert.ok(mid?.integration_branch, 'integration_branch persisted before coder finishes');
+        return fakeCoder(ctx);
+      };
+
+      await runExecuting(getRun('pr_earlypersist')!, { runCoder: trackingCoder });
+
+      const persisted = getRun('pr_earlypersist');
+      assert.ok(persisted?.worktree_base, 'worktree_base non-null after runExecuting');
+      assert.ok(persisted?.integration_branch, 'integration_branch non-null after runExecuting');
+      assert.equal(persisted?.worktree_base, capturedBasePath);
+      void appsDir;
+    });
+  });
+
+  test('crash-resume: second runExecuting call takes the reuse branch and does not re-invoke setupIntegrationBase', async () => {
+    await withAppsDirAsync(async () => {
+      const run = createRun({ id: 'pr_crashresume', taskId: 'CR', prompt: 'build it', repo: 'app:crash-resume-test', now: 1000 });
+      updateRun('pr_crashresume', { status: 'executing', plan_json: freezePlan(planWith([fp('A')])) }, 1000);
+
+      await runExecuting(getRun('pr_crashresume')!, { runCoder: fakeCoder });
+
+      const afterFirst = getRun('pr_crashresume')!;
+      assert.ok(afterFirst.worktree_base, 'worktree_base persisted after first call');
+      assert.ok(afterFirst.integration_branch, 'integration_branch persisted after first call');
+
+      // Second call simulates crash-resume. The run now has worktree_base set,
+      // so it takes the reuse branch. If setupIntegrationBase were called instead,
+      // the app-mode collision guard would throw (the dir already exists).
+      await assert.doesNotReject(
+        runExecuting(afterFirst, { runCoder: fakeCoder }),
+        'second call must not throw — reuse branch taken, no collision guard triggered',
+      );
+    });
   });
 });
 

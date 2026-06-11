@@ -414,6 +414,15 @@ export async function runExecuting(run: PipelineRun, deps: ExecuteDeps = {}): Pr
     base = { basePath: run.worktree_base, integrationBranch: run.integration_branch };
   } else {
     base = setupIntegrationBase(run, target);
+    // Persist immediately so a crash mid-wave doesn't leave worktree_base null.
+    // On resume the reuse branch (run.worktree_base && run.integration_branch)
+    // fires instead, and setupIntegrationBase is not called again — preventing
+    // the app-mode collision guard from mis-firing on the run's own scaffold.
+    updateRun(
+      run.id,
+      { worktree_base: base.basePath, integration_branch: base.integrationBranch },
+      Date.now(),
+    );
   }
   const spawn = deps.spawn ?? realCoderSpawn;
   const runCoder = deps.runCoder ?? defaultRunCoder;
