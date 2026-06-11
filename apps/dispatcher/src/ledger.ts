@@ -322,8 +322,7 @@ export function sentenceForRun(tree: RunTree): string {
     case 'completed':
       return `${id} (${kind}) delivered${tailStr}`;
     case 'halted': {
-      const reasonVal = latestField(tree, 'reason');
-      const reason = typeof reasonVal === 'string' && reasonVal ? reasonVal : undefined;
+      const reason = haltReasonOf(tree);
       const r = reason ? ` — ${reason}` : ' — needs operator review';
       return `${id} (${kind}) halted${r}${tailStr}`;
     }
@@ -339,6 +338,23 @@ export function sentenceForRun(tree: RunTree): string {
     default:
       return `${id} (${kind})${tailStr}`;
   }
+}
+
+/**
+ * The halt reason off the run's last halt event itself. haltTask emits
+ * `pattern` (e.g. `audit-cap`); `reason` is the legacy fallback. Must NOT use
+ * latestField('reason') across the whole run — the halt event carries no
+ * `reason` key, so that picks up an unrelated event's reason (a wisdom-skip,
+ * a classifier detail) and renders it as the halt cause.
+ */
+function haltReasonOf(tree: RunTree): string | undefined {
+  for (let i = tree.events.length - 1; i >= 0; i -= 1) {
+    const ev = tree.events[i]!;
+    if (ev.event === 'task.halted_for_review') {
+      return strOf(ev.payload, 'pattern') ?? strOf(ev.payload, 'reason');
+    }
+  }
+  return undefined;
 }
 
 /** The failure stage off the run's last task.failed event, if any. */

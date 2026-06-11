@@ -105,6 +105,7 @@ struct RootView: View {
         case .dashboards: DashboardsTab()
         case .tasks:      TasksTab()
         case .monitor:    MonitorTab()
+        case .apps:       AppsTab()
         }
     }
 
