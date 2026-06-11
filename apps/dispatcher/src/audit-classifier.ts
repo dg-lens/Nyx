@@ -30,6 +30,14 @@ export interface ClassifiedFailure {
   autofix?: AutofixHint;
   /** When kind === 'operator-required', the report shown to the operator. */
   operatorReport?: string;
+  /**
+   * Set when an originally `auto-fixable` classification was DEMOTED to
+   * `unknown` because the same heuristic already ran and re-failed at the same
+   * stage on this task (see `demoteRepeatedAutofix`). The audit-runner stamps
+   * `repeat_demoted: true` on the classification event and routes to the Opus
+   * diagnostic instead of re-applying the proven-futile patch.
+   */
+  repeatDemoted?: boolean;
 }
 
 export type AutofixHint =
@@ -322,6 +330,38 @@ export function classifyFailure(failureLog: string): ClassifiedFailure {
     if (m) return p.build(m);
   }
   return { kind: 'unknown' };
+}
+
+/**
+ * Demote an `auto-fixable` classification when its heuristic patch has already
+ * been proven futile on this task — i.e. the dispatcher applied the same
+ * structural fix on a prior pass and the same stage failed again afterwards
+ * (the `repeatedAndIneffective` decision, computed from audit-chain EVENTS by
+ * `autofixRepeatIneffective`, never from log text).
+ *
+ * On demotion the result is forced to `unknown` so `runAudit` falls through to
+ * the Opus diagnostic agent instead of re-applying a patch that already didn't
+ * work. The original `pattern` is preserved (so the demotion is attributable in
+ * the audit event) and `repeatDemoted: true` is set. The `autofix` hint is
+ * dropped — an `unknown` result must never carry one, or the runner would try
+ * to apply it.
+ *
+ * No-op (returns the input unchanged) when the classification is not
+ * auto-fixable, or when the repeat check says this is a first/effective
+ * occurrence.
+ */
+export function demoteRepeatedAutofix(
+  classification: ClassifiedFailure,
+  repeatedAndIneffective: boolean,
+): ClassifiedFailure {
+  if (classification.kind !== 'auto-fixable' || !repeatedAndIneffective) {
+    return classification;
+  }
+  return {
+    kind: 'unknown',
+    ...(classification.pattern ? { pattern: classification.pattern } : {}),
+    repeatDemoted: true,
+  };
 }
 
 /** Test/introspection helper: list every pattern name and its kind. */

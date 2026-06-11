@@ -359,6 +359,7 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
       failureLog: result.failureLog,
       originalPrompt: buildPrompt(task),
       priorAuditPasses: attempt,
+      stage: result.stage,
     });
     if (auditOutcome.kind === 'autofix_applied') {
       audit('task.audit.autofix.succeeded', 'dispatcher', {
