@@ -84,8 +84,91 @@ describe('parseJudgeContent', () => {
   });
 });
 
+describe('parseJudgeContent — deliverable checklist (parts)', () => {
+  test('round-trips a parts array and derives the present/total counts', () => {
+    const j = parseJudgeContent(
+      FENCE(
+        JSON.stringify({
+          verdict: 'FAIL',
+          confidence: 88,
+          score: 55,
+          dimensions: [{ name: 'spec-conformance', score: 60 }],
+          parts: [
+            { name: 'parser round-trips parts', present: true },
+            { name: 'prompt contains checklist instruction', present: true },
+            { name: 'fraction math fixture', present: false },
+            { name: 'backward-compatible parse', present: false },
+            { name: 'CHANGELOG entry', present: true },
+          ],
+          rationale: 'two of five parts missing',
+        }),
+      ),
+    );
+    assert.ok(j);
+    assert.equal(j!.parts.length, 5);
+    assert.equal(j!.parts[0]!.name, 'parser round-trips parts');
+    assert.equal(j!.parts[0]!.present, true);
+    assert.equal(j!.partsPresent, 3);
+    assert.equal(j!.partsTotal, 5);
+  });
+
+  test('a verdict with NO parts field still parses (backward compatible)', () => {
+    const j = parseJudgeContent(
+      FENCE(
+        JSON.stringify({
+          verdict: 'PASS',
+          confidence: 90,
+          score: 88,
+          dimensions: [{ name: 'spec-conformance', score: 90 }],
+          rationale: 'pre-checklist verdict shape',
+        }),
+      ),
+    );
+    assert.ok(j);
+    assert.deepEqual(j!.parts, []);
+    assert.equal(j!.partsPresent, 0);
+    assert.equal(j!.partsTotal, 0);
+  });
+
+  test('coerces a non-array parts field to [] rather than crashing', () => {
+    const j = parseJudgeContent(
+      FENCE(JSON.stringify({ verdict: 'PASS', confidence: 70, parts: 'not-an-array' })),
+    );
+    assert.ok(j);
+    assert.deepEqual(j!.parts, []);
+    assert.equal(j!.partsTotal, 0);
+  });
+
+  test('a non-true present value counts as absent', () => {
+    const j = parseJudgeContent(
+      FENCE(
+        JSON.stringify({
+          verdict: 'FAIL',
+          confidence: 80,
+          parts: [
+            { name: 'a', present: true },
+            { name: 'b', present: 'yes' },
+            { name: 'c' },
+          ],
+        }),
+      ),
+    );
+    assert.ok(j);
+    assert.equal(j!.partsTotal, 3);
+    assert.equal(j!.partsPresent, 1);
+  });
+
+  test('fraction math: 3 of 5 present → present=3 total=5', () => {
+    const parts = [true, true, false, true, false].map((present, i) => ({ name: `p${i}`, present }));
+    const j = parseJudgeContent(FENCE(JSON.stringify({ verdict: 'FAIL', confidence: 80, parts })));
+    assert.ok(j);
+    assert.equal(j!.partsPresent, 3);
+    assert.equal(j!.partsTotal, 5);
+  });
+});
+
 describe('isJudgeConcern — threshold gate', () => {
-  const base = { score: 40, dimensions: [], analysis: '', rationale: '' };
+  const base = { score: 40, dimensions: [], parts: [], partsPresent: 0, partsTotal: 0, analysis: '', rationale: '' };
   test('a confident FAIL is a concern', () => {
     assert.equal(isJudgeConcern({ verdict: 'FAIL', confidence: 90, ...base }), true);
   });
@@ -122,6 +205,53 @@ describe('buildJudgePrompt — bias mitigations are structural', () => {
   });
 });
 
+describe('buildJudgePrompt — absence-aware checklist', () => {
+  test('instructs the judge to build the deliverables checklist before scoring', () => {
+    const prompt = buildJudgePrompt(mkTask());
+    assert.ok(/deliverables checklist/i.test(prompt), 'missing checklist instruction');
+    assert.ok(/present \(true\) or absent \(false\)/i.test(prompt), 'missing present/absent marking');
+    // The instruction must precede the dimension scoring block.
+    assert.ok(
+      prompt.indexOf('DELIVERABLES CHECKLIST') < prompt.indexOf('Score these four dimensions'),
+      'checklist instruction must come BEFORE dimension scoring',
+    );
+  });
+
+  test('ties spec-conformance to the fraction present with the 60-cap rule', () => {
+    const prompt = buildJudgePrompt(mkTask());
+    assert.ok(/fraction of deliverables/i.test(prompt));
+    assert.ok(/parts_present \/ parts_total/i.test(prompt));
+    assert.ok(/missing 2 of 5 parts cannot score above 60/i.test(prompt));
+  });
+
+  test('asks for a parts array in the output JSON schema', () => {
+    const prompt = buildJudgePrompt(mkTask());
+    assert.ok(/"parts":/.test(prompt));
+    assert.ok(/"present": true \| false/.test(prompt));
+  });
+
+  test('embeds the [expects:] paths when the task declares them', () => {
+    const prompt = buildJudgePrompt(
+      mkTask({ expects: ['migrations/0003_x.sql', 'src/admin/page.tsx'] }),
+    );
+    assert.ok(prompt.includes('migrations/0003_x.sql'));
+    assert.ok(prompt.includes('src/admin/page.tsx'));
+    assert.ok(/\[expects:\]/.test(prompt));
+  });
+
+  test('does not crash and omits the expects block when [expects:] is absent', () => {
+    const prompt = buildJudgePrompt(mkTask({ expects: undefined }));
+    assert.ok(!/Declared `\[expects:\]` artifacts/.test(prompt));
+    // Still derives parts from spec text — the checklist instruction is present regardless.
+    assert.ok(/DELIVERABLES CHECKLIST/.test(prompt));
+  });
+
+  test('omits the expects block for an empty [expects:] array', () => {
+    const prompt = buildJudgePrompt(mkTask({ expects: [] }));
+    assert.ok(!/Declared `\[expects:\]` artifacts/.test(prompt));
+  });
+});
+
 describe('summarizeJudgement', () => {
   test('surfaces verdict, confidence, and the weakest dimension', () => {
     const s = summarizeJudgement({
@@ -132,6 +262,9 @@ describe('summarizeJudgement', () => {
         { name: 'spec-conformance', score: 80 },
         { name: 'completeness', score: 30 },
       ],
+      parts: [],
+      partsPresent: 0,
+      partsTotal: 0,
       analysis: '',
       rationale: 'missing the limiter on the refresh path',
     });
@@ -139,5 +272,41 @@ describe('summarizeJudgement', () => {
     assert.ok(s.includes('conf=85'));
     assert.ok(s.includes('completeness:30'));
     assert.ok(s.includes('refresh path'));
+  });
+
+  test('surfaces the parts ratio when the checklist is present', () => {
+    const s = summarizeJudgement({
+      verdict: 'FAIL',
+      confidence: 88,
+      score: 55,
+      dimensions: [{ name: 'spec-conformance', score: 60 }],
+      parts: [
+        { name: 'a', present: true },
+        { name: 'b', present: true },
+        { name: 'c', present: true },
+        { name: 'd', present: false },
+        { name: 'e', present: false },
+      ],
+      partsPresent: 3,
+      partsTotal: 5,
+      analysis: '',
+      rationale: 'two parts absent',
+    });
+    assert.ok(s.includes('parts=3/5'));
+  });
+
+  test('omits the parts ratio when there is no checklist', () => {
+    const s = summarizeJudgement({
+      verdict: 'PASS',
+      confidence: 90,
+      score: 88,
+      dimensions: [{ name: 'spec-conformance', score: 90 }],
+      parts: [],
+      partsPresent: 0,
+      partsTotal: 0,
+      analysis: '',
+      rationale: 'all good',
+    });
+    assert.ok(!s.includes('parts='));
   });
 });

@@ -808,6 +808,9 @@ async function attemptTask(
           confidence: judgement.confidence,
           score: judgement.score,
           dimensions: judgement.dimensions,
+          parts: judgement.parts,
+          parts_present: judgement.partsPresent,
+          parts_total: judgement.partsTotal,
         });
         if (isJudgeConcern(judgement, config.contentJudgeConfidenceThreshold)) {
           const summary = summarizeJudgement(judgement);
