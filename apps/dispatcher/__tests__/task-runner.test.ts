@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test, afterEach } from 'node:test';
 
-import { permissionArgs, buildSpawnInvocation, buildAgentEnv, buildPrompt } from '../src/task-runner.js';
+import { permissionArgs, buildSpawnInvocation, buildAgentEnv, buildPrompt, CODE_HOST_DENYLIST } from '../src/task-runner.js';
 import { _resetCache } from '../src/mcp-discovery.js';
 import { REGISTRY } from '@nyx/assistant';
 import type { ParsedTask } from '../src/types.js';
@@ -77,9 +77,33 @@ describe('permissionArgs', () => {
     assert.match(list, /\bBash\b/);
   });
 
-  test('code has no --allowed-tools flag at all', () => {
+  test('code has no --allowed-tools flag (default tool set)', () => {
     const args = permissionArgs(task('code'));
     assert.equal(args.indexOf('--allowed-tools'), -1);
+  });
+
+  test('code gets --disallowed-tools with host-mutating Bash patterns', () => {
+    const args = permissionArgs(task('code'));
+    const idx = args.indexOf('--disallowed-tools');
+    assert.notEqual(idx, -1, 'code task must pass --disallowed-tools');
+    const list = args[idx + 1] ?? '';
+    // The concrete failure mode the denylist exists for: brew unlinking the
+    // running keg, and launchctl killing/restarting the daemon.
+    assert.match(list, /Bash\(brew:\*\)/);
+    assert.match(list, /Bash\(launchctl:\*\)/);
+    assert.match(list, /Bash\(sudo:\*\)/);
+    // Every CODE_HOST_DENYLIST entry must reach the flag — the list is the
+    // contract, not just the seed.
+    for (const pattern of CODE_HOST_DENYLIST) {
+      assert.ok(list.includes(pattern), `denylist must include ${pattern}`);
+    }
+  });
+
+  test('non-code task types do NOT pass --disallowed-tools (allowlist suffices)', () => {
+    for (const t of ['assistant', 'content', 'analysis'] as const) {
+      const args = permissionArgs(task(t));
+      assert.equal(args.indexOf('--disallowed-tools'), -1, `${t} should not deny — its allowlist already excludes host commands`);
+    }
   });
 
   test('every task type still passes --permission-mode', () => {

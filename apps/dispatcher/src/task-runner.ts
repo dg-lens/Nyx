@@ -242,7 +242,11 @@ export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): strin
  *       - assistant → READ_ONLY tools + all discovered MCPs (Gmail, Notion, Slack, …)
  *       - content   → READ_ONLY tools (NO MCPs — content tasks don't need email/calendar/etc.)
  *       - analysis  → READ_ONLY + Bash + all discovered MCPs (codebase scans need shells)
- *       - code      → no flag at all (default Claude tool set)
+ *       - code      → default Claude tool set MINUS the CODE_HOST_DENYLIST patterns
+ *         (`--disallowed-tools`). Code tasks need Bash to run the local gate
+ *         (pnpm/tsc/tests/git) so a tight allowlist isn't viable; instead the
+ *         known host-mutating commands (brew, sudo, launchctl, systemctl, apt,
+ *         pkill, …) are denied explicitly. See CODE_HOST_DENYLIST below.
  *
  *  2. **Working directory isolation**. Assistant cwd is an empty
  *     `outputs/<TASK-ID>/` dir — even with Write/Edit, there's nothing real to
@@ -251,8 +255,10 @@ export function buildPrompt(task: ParsedTask, opts: BuildPromptOpts = {}): strin
  *     worktree where mutations are the entire point.
  *
  * The "no shell access" guarantee for assistant/content is (1). The "mutations
- * can't escape" guarantee for assistant/content/analysis is (2). Code has
- * neither restriction by design.
+ * can't escape" guarantee for assistant/content/analysis is (2). Code lacks (2)
+ * by design (a worktree IS a real mutation target) but layer (1) is partially
+ * present as a host-command denylist so the agent can't mutate the host while
+ * mutating the worktree.
  */
 /**
  * Resolve the MCP servers that survive the resilience layer for this spawn.
@@ -304,6 +310,30 @@ export function resolveMcpAllowlist(task: ParsedTask): string[] {
   }
 }
 
+/**
+ * Bash patterns denied to code-task agents. Code tasks legitimately need Bash to
+ * run the local gate (pnpm install, tsc, tests, git) — so we can't allowlist as
+ * tightly as the other types do. Instead, we explicitly deny the commands that
+ * mutate the HOST itself: host package managers and service controllers. The
+ * concrete trigger was a code agent running `brew uninstall && brew install`
+ * against the live host while testing its change, unlinking the running keg
+ * (see nyx-task-agent-live-system-mutation). The list stays narrow on purpose —
+ * each pattern is a known foot-gun, not "anything that looks risky".
+ */
+export const CODE_HOST_DENYLIST: readonly string[] = [
+  'Bash(brew:*)',
+  'Bash(sudo:*)',
+  'Bash(launchctl:*)',
+  'Bash(systemctl:*)',
+  'Bash(apt:*)',
+  'Bash(apt-get:*)',
+  'Bash(yum:*)',
+  'Bash(dnf:*)',
+  'Bash(pacman:*)',
+  'Bash(pkill:*)',
+  'Bash(killall:*)',
+];
+
 export function permissionArgs(task: ParsedTask): string[] {
   const args: string[] = ['--permission-mode', config.claudePermissionMode];
   const READ_ONLY = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite', 'Write', 'Edit'];
@@ -313,8 +343,9 @@ export function permissionArgs(task: ParsedTask): string[] {
     args.push('--allowed-tools', READ_ONLY.join(' '));
   } else if (task.type === 'analysis') {
     args.push('--allowed-tools', [...READ_ONLY, 'Bash', ...resolveMcpAllowlist(task)].join(' '));
+  } else if (task.type === 'code') {
+    args.push('--disallowed-tools', CODE_HOST_DENYLIST.join(' '));
   }
-  // type === 'code' → no --allowed-tools, full default tool access
   return args;
 }
 
