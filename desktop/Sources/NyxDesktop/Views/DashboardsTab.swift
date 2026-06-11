@@ -34,7 +34,12 @@ struct DashboardsTab: View {
         .onAppear {
             if selection.isEmpty { selection = dash.starred?.id ?? "" }
             dash.reloadManifests()
+            dash.refreshStatusPayloads(store.state)
         }
+        // Status payloads refresh on the Store cadence (15s), NOT per render —
+        // the 1s countdown timer invalidates this tree every second and resolve
+        // does file IO.
+        .onReceive(store.$state) { dash.refreshStatusPayloads($0) }
         .sheet(isPresented: $showAddSheet) {
             AddDashboardSheet(
                 onPick: { layout in

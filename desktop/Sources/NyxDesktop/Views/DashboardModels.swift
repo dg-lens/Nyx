@@ -72,7 +72,7 @@ struct WidgetManifest: Codable, Identifiable, Hashable {
     let title: String
     let description: String?
     let defaultSize: WidgetSize
-    let viz: String              // "text" | "stat"
+    let viz: String              // "text" | "stat" | "status"
     let source: WidgetSource
 }
 

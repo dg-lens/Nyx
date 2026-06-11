@@ -1,14 +1,7 @@
 import SwiftUI
 
-struct MonitorView: View {
-    var body: some View {
-        MonitorPanels()
-    }
-}
-
-// The Queue + Task History panel pair. Extracted from MonitorView so the
-// Monitor tab can place them alongside the Gates section without duplicating
-// panel markup. MonitorView keeps rendering exactly these.
+// The Queue + Task History panel pair. The Monitor tab places them alongside
+// the Gates section.
 struct MonitorPanels: View {
     @EnvironmentObject var store: Store
 

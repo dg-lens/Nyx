@@ -77,6 +77,7 @@ struct DashboardCanvas: View {
             instance: w,
             manifest: store.manifest(w.manifestId),
             state: state,
+            statusPayload: store.statusPayloads[w.manifestId] ?? .preparing,
             customizing: customizing,
             onDelete: { deleteWidget(w.instanceId) },
             onEditText: { setText(w.instanceId, $0) })
@@ -103,7 +104,7 @@ struct DashboardCanvas: View {
                                       y: dropCenter.y - base.height / 2)
                 let target = grid.cellAt(CGPoint(x: topLeft.x + grid.cell / 2,
                                                  y: topLeft.y + grid.cell / 2))
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                withAnimation(Motion.resolve(Motion.nav, reduceMotion: reduceMotion)) {
                     layout.widgets = GridReflow.placeMoved(
                         layout.widgets, movedId: w.instanceId,
                         toCol: target.col, toRow: target.row, cols: grid.cols)
@@ -152,10 +153,14 @@ struct DashboardCanvas: View {
         store.updateDashboard(layout)
     }
 
+    // Keystroke path: mutate a copy and go through the store's debounced write
+    // directly. Mutating the `layout` binding here would fire the binding setter's
+    // immediate updateDashboard → save() and defeat the debounce.
     private func setText(_ id: String, _ text: String) {
         guard let idx = layout.widgets.firstIndex(where: { $0.instanceId == id }) else { return }
-        layout.widgets[idx].text = text
-        store.updateDashboard(layout)
+        var next = layout
+        next.widgets[idx].text = text
+        store.updateDashboardDebounced(next)
     }
 
     private func clampW(_ w: Int, _ cols: Int) -> Int { min(max(1, w), cols) }

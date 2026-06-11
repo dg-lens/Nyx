@@ -1,9 +1,0 @@
-{
-  "id": "note",
-  "pluginId": "core",
-  "title": "Note",
-  "description": "A free-text note you can edit inline.",
-  "defaultSize": { "w": 3, "h": 2 },
-  "viz": "text",
-  "source": { "kind": "static" }
-}

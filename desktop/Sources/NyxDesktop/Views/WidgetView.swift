@@ -9,6 +9,10 @@ struct WidgetView: View {
     let instance: WidgetInstance
     let manifest: WidgetManifest?
     let state: NyxState
+    // Pre-resolved payload for status-viz widgets, from DashboardStore's cache.
+    // Resolution does file IO and must never run inside body (the countdown
+    // timer invalidates ~1×/sec).
+    let statusPayload: StatusPayload
     let customizing: Bool
     let onDelete: () -> Void
     let onEditText: (String) -> Void
@@ -111,7 +115,7 @@ struct WidgetView: View {
     // the IrisLiveOps QuadrantCard pattern.
     @ViewBuilder
     private func statusBody(_ m: WidgetManifest) -> some View {
-        let payload = StatusResolver.resolve(m.source, state)
+        let payload = statusPayload
         VStack(alignment: .leading, spacing: 8) {
             statusHeader(m, payload)
             Divider()

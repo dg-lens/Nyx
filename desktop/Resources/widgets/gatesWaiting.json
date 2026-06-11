@@ -1,9 +1,0 @@
-{
-  "id": "gatesWaiting",
-  "pluginId": "core",
-  "title": "Gates Waiting",
-  "description": "Pipeline runs awaiting an operator gate decision.",
-  "defaultSize": { "w": 2, "h": 2 },
-  "viz": "stat",
-  "source": { "kind": "store", "key": "gatesWaiting" }
-}

@@ -12,8 +12,15 @@ final class DashboardStore: ObservableObject {
     @Published var dashboards: [DashboardLayout] = []
     @Published var starredId: String = ""
     @Published private(set) var manifests: [String: WidgetManifest] = [:]
+    // Resolved status-widget payloads, keyed by manifest id. Refreshed on the
+    // Store refresh cadence (not per render) — StatusResolver does file IO, and
+    // resolving inside a view body re-reads disk ~1×/sec under the countdown
+    // timer's invalidation. WidgetView only ever reads this cache.
+    @Published private(set) var statusPayloads: [String: StatusPayload] = [:]
 
     private var loadWasCorrupt = false
+    private var pendingSave: Task<Void, Never>?
+    private var statusGeneration = 0
 
     private static var docPath: URL { Layout.dataDir.appendingPathComponent("dashboards.json") }
 
@@ -25,6 +32,35 @@ final class DashboardStore: ObservableObject {
     // Re-scan the Data-dir for newly-dropped manifests (called on app refresh).
     func reloadManifests() {
         manifests = WidgetManifestLoader.loadAll()
+    }
+
+    // Resolve every status-viz manifest off the main actor and publish the
+    // results in one batch. Resolves ALL loaded status manifests (not just
+    // placed instances) so a freshly-added widget has data immediately; the
+    // set is a handful of small files, so the cost is trivial at this cadence.
+    func refreshStatusPayloads(_ state: NyxState) {
+        let sources = manifests.values
+            .filter { $0.viz == "status" }
+            .map { (id: $0.id, source: $0.source) }
+        guard !sources.isEmpty else { return }
+        // Generation guard: launch fires several refreshes near-simultaneously
+        // (onAppear with empty state, the subscription's immediate emit, the
+        // first real refresh). Detached resolves complete unordered, so only
+        // the newest request may publish — else an empty-state snapshot can
+        // overwrite real data until the next cadence tick.
+        statusGeneration += 1
+        let gen = statusGeneration
+        Task.detached(priority: .utility) {
+            var resolved: [String: StatusPayload] = [:]
+            for s in sources {
+                resolved[s.id] = StatusResolver.resolve(s.source, state)
+            }
+            let result = resolved
+            await MainActor.run { [weak self] in
+                guard let self, gen == self.statusGeneration else { return }
+                self.statusPayloads = result
+            }
+        }
     }
 
     var starred: DashboardLayout? {
@@ -77,6 +113,8 @@ final class DashboardStore: ObservableObject {
     // Atomic write: serialize to a tmp file, then rename over the target. A corrupt
     // prior load won't be overwritten unless this is reached via a user mutation.
     func save() {
+        pendingSave?.cancel()
+        pendingSave = nil
         loadWasCorrupt = false
         let doc = DashboardDoc(version: 1, starredId: starredId, dashboards: dashboards)
         let enc = JSONEncoder()
@@ -115,6 +153,28 @@ final class DashboardStore: ObservableObject {
         guard let idx = dashboards.firstIndex(where: { $0.id == layout.id }) else { return }
         dashboards[idx] = layout
         save()
+    }
+
+    // Keystroke-cadence mutations (the note widget's TextEditor): publish the
+    // in-memory change immediately, but coalesce the disk write — save() per
+    // keypress writes dashboards.json on every character. Any structural
+    // mutation's immediate save() supersedes a pending one (it persists the
+    // same up-to-date doc), so the pending task is simply cancelled there.
+    func updateDashboardDebounced(_ layout: DashboardLayout) {
+        guard let idx = dashboards.firstIndex(where: { $0.id == layout.id }) else { return }
+        dashboards[idx] = layout
+        pendingSave?.cancel()
+        // Strong self on purpose: this store is a @StateObject that deallocates
+        // when its tab leaves the hierarchy. A weak capture would drop the final
+        // flush on tab switch — and trailing-edge debounce means a continuous
+        // typing burst would never have saved at all. The task holds the store
+        // ≤800ms; no cycle survives past completion.
+        pendingSave = Task {
+            try? await Task.sleep(for: .milliseconds(800))
+            guard !Task.isCancelled else { return }
+            self.pendingSave = nil
+            self.save()
+        }
     }
 
     func removeDashboard(_ id: String) {
