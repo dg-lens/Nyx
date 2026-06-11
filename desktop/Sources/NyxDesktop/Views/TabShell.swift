@@ -14,11 +14,11 @@ struct SidebarPage: Identifiable, Hashable {
     }
 }
 
-// The three top-level tabs. RootView's top toolbar drives this; each tab's
-// content router (DashboardsTab / TasksTab / MonitorTab) reads the selected
-// SidebarPage and renders the matching page.
+// The four top-level tabs. RootView's top toolbar drives this; each tab's
+// content router (DashboardsTab / TasksTab / MonitorTab / AppsTab) reads the
+// selected SidebarPage and renders the matching page.
 enum ShellTab: String, CaseIterable, Identifiable {
-    case dashboards, tasks, monitor
+    case dashboards, tasks, monitor, apps
 
     var id: String { rawValue }
 
@@ -27,6 +27,7 @@ enum ShellTab: String, CaseIterable, Identifiable {
         case .dashboards: return "Dashboards"
         case .tasks:      return "Tasks"
         case .monitor:    return "Monitor"
+        case .apps:       return "Apps"
         }
     }
 
@@ -35,6 +36,7 @@ enum ShellTab: String, CaseIterable, Identifiable {
         case .dashboards: return "rectangle.3.group"
         case .tasks:      return "checklist"
         case .monitor:    return "waveform.path.ecg"
+        case .apps:       return "shippingbox"
         }
     }
 }

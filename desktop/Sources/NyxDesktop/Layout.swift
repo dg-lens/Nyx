@@ -24,6 +24,10 @@ enum Layout {
         if let e = env("NYX_PLUGINS_DIR") { return URL(fileURLWithPath: e) }
         return home.appendingPathComponent("Nyx/Plugins")
     }
+    static var appsDir: URL {
+        if let e = env("NYX_APPS_DIR") { return URL(fileURLWithPath: e) }
+        return home.appendingPathComponent("Nyx/Apps")
+    }
     static var stockPluginsDir: URL { repoRoot.appendingPathComponent("plugins") }
     static var envPath: URL { dataDir.appendingPathComponent(".env") }
     static var settingsPath: URL { dataDir.appendingPathComponent("settings.json") }
