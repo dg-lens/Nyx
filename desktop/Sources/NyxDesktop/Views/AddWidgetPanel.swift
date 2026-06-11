@@ -46,7 +46,20 @@ struct AddWidgetPanel: View {
             }
             .padding(.top, 4)
         } label: {
-            Text(plugin.capitalized).font(.caption.bold()).foregroundStyle(.secondary)
+            Text(pluginLabel(plugin)).font(.caption.bold()).foregroundStyle(.secondary)
+        }
+    }
+
+    // Human plugin label: hyphenated ids like "nyx-ops" read as "Nyx Ops".
+    private func pluginLabel(_ plugin: String) -> String {
+        plugin.split(separator: "-").map { $0.capitalized }.joined(separator: " ")
+    }
+
+    private func rowIcon(_ viz: String) -> String {
+        switch viz {
+        case "stat":   return "number.square"
+        case "status": return "circle.dashed"
+        default:       return "text.alignleft"
         }
     }
 
@@ -55,7 +68,7 @@ struct AddWidgetPanel: View {
             onAdd(m, gridCols)
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: m.viz == "stat" ? "number.square" : "text.alignleft")
+                Image(systemName: rowIcon(m.viz))
                     .foregroundStyle(.secondary).frame(width: 16)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(m.title).font(.callout)
