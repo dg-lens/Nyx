@@ -11,8 +11,11 @@ import { searchTool } from '../src/tools.js';
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
 // Fixture copies of two REAL vault nodes that memory_search failed to recall when
-// the engine required the whole query phrase as one contiguous substring. Keep
-// them verbatim — the point is recall against the corpus shape as authored.
+// the engine required the whole query phrase as one contiguous substring.
+// greenfield-target-mode.md is the COMMITTED vault shape (triggers end at
+// "target mode") — the live working-tree copy carries an uncommitted workaround
+// trigger ("pipeline target") that the old whole-phrase engine matches verbatim,
+// which would make test 1 pass against the bug. Do not re-copy from the live vault.
 function vault(): string {
   const root = mkdtempSync(join(tmpdir(), 'arachne-recall-'));
   const dir = join(root, 'memory');
