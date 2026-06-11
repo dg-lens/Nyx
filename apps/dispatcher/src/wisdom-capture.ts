@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { config } from './config.js';
-import { writeNode } from './memory/arachne.js';
+import { writeNode, isValidKind, type NodeKind } from './memory/arachne.js';
 
 export const WISDOM_FILE = 'NYX_WISDOM.md';
 
@@ -158,7 +158,20 @@ export function routeWisdomCapture(
   return { fileModified: null };
 }
 
-const GRAPH_KINDS = ['lesson', 'invariant', 'decision', 'procedure', 'aesthetic'];
+// Advisory kinds the wisdom model may emit, mapped onto the engine's CLOSED
+// NodeKind vocabulary. The model speaks a looser dialect (`procedure`/`aesthetic`);
+// the engine only stores closed kinds, so normalize before writeNode (which now
+// rejects out-of-vocabulary kinds). Anything unrecognized falls back to `lesson`.
+const WISDOM_KIND_ALIAS: Record<string, NodeKind> = {
+  procedure: 'playbook',
+  aesthetic: 'invariant',
+};
+
+function resolveGraphKind(raw: string | null | undefined): NodeKind {
+  if (!raw) return 'lesson';
+  if (isValidKind(raw)) return raw;
+  return WISDOM_KIND_ALIAS[raw] ?? 'lesson';
+}
 
 // Legacy `scope` tokens → canonical `loc` spine. The engine indexes on `loc`
 // (stack ⊃ stack.nyx ⊃ stack.nyx.{pipeline,…}; stack.employee-portal[.…]), so a
@@ -221,7 +234,7 @@ function routeToGraph(wisdom: WisdomCapture, taskId: string): { fileModified: st
       return { fileModified: filePath };
     }
 
-    const kind = wisdom.kind && GRAPH_KINDS.includes(wisdom.kind) ? wisdom.kind : 'lesson';
+    const kind = resolveGraphKind(wisdom.kind);
     const loc = wisdomLoc(wisdom);
     const summary = wisdom.summary ?? wisdom.paragraph.slice(0, 100).replace(/\s+/g, ' ').trim();
     const title = wisdom.title ?? wisdom.id.replace(/-/g, ' ');

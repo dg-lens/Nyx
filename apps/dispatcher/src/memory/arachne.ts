@@ -11,9 +11,42 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 export type Role = 'dispatcher' | 'planner' | 'coder' | 'reviewer' | 'operator' | 'all';
 
+// CLOSED node-kind vocabulary. Mirrors the `kind` enum in the ARACHNE.md spec.
+// `ruleset` is a first-class kind (codified rule sets, peer to `invariant`). The
+// set is closed on purpose: parseNode drops and writeNode rejects any kind outside
+// it, so the corpus can't accrete ad-hoc kinds that downstream kind-keyed logic
+// (search filters, MOC routing) would silently mis-handle. To add a kind, extend
+// this union — never loosen the check to arbitrary strings.
+export type NodeKind =
+  | 'invariant'
+  | 'lesson'
+  | 'decision'
+  | 'playbook'
+  | 'proposal'
+  | 'overview'
+  | 'reference'
+  | 'ruleset'
+  | 'moc';
+
+export const VALID_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
+  'invariant',
+  'lesson',
+  'decision',
+  'playbook',
+  'proposal',
+  'overview',
+  'reference',
+  'ruleset',
+  'moc',
+]);
+
+export function isValidKind(k: unknown): k is NodeKind {
+  return typeof k === 'string' && VALID_KINDS.has(k as NodeKind);
+}
+
 export interface NodeMeta {
   id: string;
-  kind: string;
+  kind: NodeKind;
   title: string;
   summary: string;
   loc: string[];
@@ -81,10 +114,15 @@ function parseNode(file: string): NodeMeta | null {
   const fm = parseYaml(text.slice(3, end)) as Record<string, unknown>;
   const body = text.slice(end + 4).trim();
   if (!fm || !fm['id']) return null;
+  // CLOSED kind gate: a node whose kind is outside VALID_KINDS is dropped from the
+  // index (buildIndex treats null as a skipped/malformed node). An absent kind
+  // still defaults to the valid `reference`, preserving the prior lenient default.
+  const kind = fm['kind'] == null ? 'reference' : fm['kind'];
+  if (!isValidKind(kind)) return null;
   const provenance = String(fm['provenance'] ?? 'unknown');
   return {
     id: String(fm['id']),
-    kind: String(fm['kind'] ?? 'reference'),
+    kind,
     title: String(fm['title'] ?? ''),
     summary: String(fm['summary'] ?? ''),
     loc: arr(fm['loc']),
@@ -290,7 +328,7 @@ export function renderPack(pack: PackResult): string {
 export interface SearchQuery {
   text?: string;
   loc?: string;
-  kind?: string;
+  kind?: NodeKind;
   limit?: number;
 }
 
@@ -312,7 +350,7 @@ export function search(index: NodeMeta[], q: SearchQuery): NodeMeta[] {
 
 export interface WriteInput {
   id: string;
-  kind: string;
+  kind: NodeKind;
   title: string;
   summary: string;
   loc?: string[];
@@ -358,6 +396,11 @@ const fmLine = ([k, v]: [string, unknown]): string =>
 
 /** Inbound write: append a leaf as agent-provenance, pending review. Returns the file path. */
 export function writeNode(dir: string, n: WriteInput): string {
+  // CLOSED kind gate at the write boundary: reject an out-of-vocabulary kind before
+  // it ever touches disk, so the corpus stays enumerable (mirrors parseNode's drop).
+  if (!isValidKind(n.kind)) {
+    throw new Error(`writeNode: invalid kind '${String(n.kind)}' (allowed: ${[...VALID_KINDS].join(', ')})`);
+  }
   const nodesDir = join(dir, 'nodes');
   mkdirSync(nodesDir, { recursive: true });
   const safeId = n.id.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
