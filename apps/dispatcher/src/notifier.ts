@@ -180,7 +180,21 @@ async function sendNow(category: NotificationCategory, text: string): Promise<bo
   let reached = false;
   if (config.settings.notifications.channels.slack && (await slackSink(text))) reached = true;
   if (pushoverEnabled() && (await pushoverSink(category, text))) reached = true;
-  if (!reached) console.log(`[notifier:undelivered] ${text}`);
+  if (!reached) {
+    console.log(`[notifier:undelivered] ${text}`);
+    // Surface the miss in the audit chain (once per sendNow, never per sink, and
+    // only on a total miss — a working sink returns early above). Excerpt is
+    // redacted + truncated so the chain never carries full message text or a
+    // leaked secret. Wrapped so an audit-write failure can't throw out of deliver().
+    try {
+      audit('notification.undelivered', 'notifier', {
+        category,
+        text_excerpt: redactSecrets(text).slice(0, 200),
+      });
+    } catch (err) {
+      console.error('[notifier] audit notification.undelivered failed:', err);
+    }
+  }
   return reached;
 }
 
