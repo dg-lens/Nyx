@@ -1,5 +1,5 @@
 import { execSync, execFileSync } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
 import { config } from './config.js';
@@ -221,7 +221,41 @@ export function branchName(taskId: string): string {
   return `nyx/${taskId.toLowerCase()}`;
 }
 
+/**
+ * Refuse to build self-task worktrees off a repo root that is not a real,
+ * stable checkout. Two known-bad shapes (see memory node
+ * self-task-keg-repo-root-conflict): a Homebrew keg libexec — the old code
+ * `git init`ed INSIDE the Cellar and every `brew` reinstall orphaned the
+ * worktrees (`fatal: not a git repository` on the next tick) — and a rootless
+ * dir nested inside some parent repo, where the init would silently shadow it.
+ */
+export function assertSaneSelfTaskRoot(root: string = config.root): void {
+  let real = root;
+  try {
+    real = realpathSync(root);
+  } catch { /* missing dir fails later with the normal git error */ }
+  if (/\/Cellar\//.test(real)) {
+    throw new Error(
+      `self-task repo root ${root} resolves into a Homebrew Cellar (${real}). ` +
+        `The keg is replaced on every update, orphaning task worktrees. ` +
+        `Set NYX_REPO_ROOT to a stable checkout (e.g. ~/Nyx/Core) in the launchd plist and .env.`,
+    );
+  }
+  if (!existsSync(resolve(root, '.git'))) {
+    const parentTop = tryRun('git rev-parse --show-toplevel', root)
+      ? run('git rev-parse --show-toplevel', root)
+      : null;
+    if (parentTop && resolve(parentTop) !== resolve(root)) {
+      throw new Error(
+        `self-task repo root ${root} has no .git but sits inside the repo at ${parentTop} — ` +
+          `refusing to git-init a nested repo. Set NYX_REPO_ROOT to the intended checkout.`,
+      );
+    }
+  }
+}
+
 export function createLocalWorktree(taskId: string): WorkingDir {
+  assertSaneSelfTaskRoot();
   if (!existsSync(resolve(config.root, '.git'))) {
     run('git init', config.root);
     configureGitIdentity(config.root);

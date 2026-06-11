@@ -29,7 +29,7 @@ NAME="${NAME:-Nyx}"
 echo "Building $NAME.app from $DESKTOP_DIR ..."
 NYX_DATA_DIR="$NYX_DATA_DIR" bash "$DESKTOP_DIR/build.sh"
 
-APP="$DESKTOP_DIR/$NAME.app"
+APP="$DESKTOP_DIR/.build/$NAME.app"
 if [[ ! -d "$APP" ]]; then
   echo "nyx app: build did not produce $APP" >&2
   exit 1

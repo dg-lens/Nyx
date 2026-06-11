@@ -3,10 +3,33 @@ source "$(dirname "$0")/_layout.sh"
 set -euo pipefail
 
 WANT_APP=0
+FORCE=0
 for a in "$@"; do
   [ "$a" = "--app" ] && WANT_APP=1
+  [ "$a" = "--force" ] && FORCE=1
   [ "$a" = "--check" ] && exec bash "$(dirname "$0")/nyx-update-check.sh"
 done
+
+INFLIGHT=""
+if pgrep -f "apps/dispatcher/dist/cli/run-once.js" >/dev/null 2>&1; then
+  INFLIGHT="a dispatch tick is running"
+fi
+if [ -z "$INFLIGHT" ] && git -C "$NYX_REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  while IFS= read -r WT; do
+    S="$WT/.nyx-task.pid"
+    if [ -f "$S" ]; then
+      WPID=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$S" 2>/dev/null)
+      if [ -n "$WPID" ] && kill -0 "$WPID" 2>/dev/null; then
+        INFLIGHT="task worktree live: $WT"
+        break
+      fi
+    fi
+  done < <(git -C "$NYX_REPO_ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | tail -n +2)
+fi
+if [ -n "$INFLIGHT" ] && [ "$FORCE" = "0" ]; then
+  echo "nyx update: deferred — $INFLIGHT. Re-run when the dispatcher is idle, or: nyx update --force" >&2
+  exit 2
+fi
 
 IS_SOURCE_CHECKOUT=0
 if [ -d "$NYX_REPO_ROOT/.git" ] && git -C "$NYX_REPO_ROOT" remote get-url origin >/dev/null 2>&1; then

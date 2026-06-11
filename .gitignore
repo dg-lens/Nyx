@@ -44,3 +44,4 @@ config/memory/memory-mcp/
 # Deferred remote plugin (Supabase mirror, remote-action control, web dashboard).
 # Retained on disk for a future plugin; NOT part of the local-only v1.0 download.
 _deferred/
+desktop/.build/
