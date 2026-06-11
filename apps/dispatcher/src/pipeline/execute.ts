@@ -30,7 +30,7 @@ import { pipelineRunEnv, loadRunDecisions } from './run-secrets.js';
 import { parsePlanJson, renderCoderSpec, type FlightPlanContract, type PlanningResult } from './flight-plan.js';
 import type { PlanTarget } from './planning.js';
 import { updateRun } from './db.js';
-import { invalidRepoReason, targetMode } from './target.js';
+import { appDestination, invalidRepoReason, targetMode } from './target.js';
 import type { PipelineRun } from './types.js';
 
 const CODER_TIMEOUT_MS = 30 * 60_000;
@@ -162,6 +162,24 @@ export function setupIntegrationBase(run: PipelineRun, target: PlanTarget): {
     // so cleanup must NOT delete it (no-op cleanup; delivery keeps the base).
     const projectPath = resolve(config.projectsDir, sanitize(run.task_id));
     base = { ...git.createGreenfieldDir(projectPath), cleanup: () => {} };
+  } else if (mode === 'app') {
+    // Greenfield variant landing at the durable appsDir/<slug> (slug verbatim —
+    // never sanitize(task_id) here, or the path stops matching the operator's
+    // tag). Same cleanup policy as greenfield: the base IS the deliverable.
+    // Re-check the collision here even though planning already refused: the
+    // preview gate sits between the two (TOCTOU across ticks), and an existing
+    // dir reaching createGreenfieldDir is a standalone repo with no remote —
+    // unrecoverable. This branch only runs when the run has no recorded base
+    // (runExecuting reuses run.worktree_base otherwise), so an existing dir
+    // here is ALWAYS a foreign collision, never the run's own resume.
+    const dest = appDestination(target.repo);
+    if (existsSync(dest)) {
+      throw new ExecuteError(
+        `app destination ${dest} already exists — refusing to overwrite it. ` +
+          `Pick a different app:<slug> or move the existing directory aside.`,
+      );
+    }
+    base = { ...git.createGreenfieldDir(dest), cleanup: () => {} };
   } else if (mode === 'invalid') {
     throw new ExecuteError(invalidRepoReason(target.repo));
   } else {

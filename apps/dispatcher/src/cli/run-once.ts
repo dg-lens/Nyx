@@ -468,6 +468,17 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
 
 /** Create the working dir appropriate for this task type. Pure helper. */
 function createWorkingDir(task: ParsedTask, opts: { reuseExisting?: boolean }): git.WorkingDir {
+  // Defense in depth behind the task-reader/queue_task validators: app:<slug>
+  // is a pipeline-only target, and pipeline tasks never reach this helper (they
+  // are redirected into the orchestrator). If one slips through anyway, fail
+  // loudly here rather than letting the truthy `task.repo` branch below route
+  // it into `git clone https://github.com/app:foo.git` — a guaranteed 404.
+  if (targetMode(task.repo) === 'app') {
+    throw new Error(
+      `[repo: ${task.repo}] is a pipeline-only app:<slug> target — it is not cloneable. ` +
+        `Use [type: pipeline] to scaffold an app.`,
+    );
+  }
   // v0.8.x: pull baseBranch from gitTargets when it's set for this repo, so
   // clones come from the same branch the task will eventually push to. Tasks
   // that target a non-default branch (e.g. a custom integration branch) need their
@@ -1612,11 +1623,14 @@ async function main(): Promise<void> {
             // that isn't an `owner/name` repo or greenfield keyword here, at the
             // control-plane boundary, rather than relying solely on the task-reader
             // backstop — a malicious/relayed producer must not reach the clone.
+            // `app:<slug>` is pipeline-only: on any other type it would clone a
+            // guaranteed-404 GitHub URL, so it's rejected per-type like task-reader.
             const repo = String(p.repo);
-            if (!isValidRepoTag(repo)) {
+            if (!isValidRepoTag(repo, type)) {
               throw new Error(
-                `queue_task: invalid [repo:] value ${JSON.stringify(repo)} — ` +
-                  `must be "owner/name" or a greenfield keyword (local|new|greenfield|scratch)`,
+                `queue_task: invalid [repo:] value ${JSON.stringify(repo)} for [type: ${type}] — ` +
+                  `must be "owner/name" or a greenfield keyword (local|new|greenfield|scratch); ` +
+                  `"app:<slug>" (slug: [a-z0-9-]+) is valid only with [type: pipeline]`,
               );
             }
             tags.push(`[repo: ${repo}]`);

@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
-import { _setWorktreesDir, inFlight, repoUrl, writeLivenessSentinel } from '../src/git-ops.js';
+import { _setWorktreesDir, createGreenfieldDir, inFlight, repoUrl, writeLivenessSentinel } from '../src/git-ops.js';
 import { config } from '../src/config.js';
+import { withAppsDir } from './helpers.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -148,5 +149,30 @@ describe('repoUrl (H2 token-in-.git/config guard)', () => {
     if (config.githubToken) {
       assert.ok(!url.includes(config.githubToken), 'token must never appear in the persisted URL');
     }
+  });
+});
+
+// ─── createGreenfieldDir durable guard ───────────────────────────────────────
+
+describe('createGreenfieldDir (durable-dir rm-rf guard)', () => {
+  test('refuses to wipe a non-empty dir under config.appsDir — a delivered app has no remote', () => {
+    withAppsDir((appsDir) => {
+      const dest = resolve(appsDir, 'noted');
+      mkdirSync(dest, { recursive: true });
+      writeFileSync(resolve(dest, 'app.ts'), 'delivered\n');
+      assert.throws(() => createGreenfieldDir(dest), /refusing to wipe existing non-empty deliverable dir/);
+      assert.equal(readFileSync(resolve(dest, 'app.ts'), 'utf8'), 'delivered\n', 'app contents survive');
+    });
+  });
+
+  test('still scaffolds a fresh repo at a non-existent appsDir path', () => {
+    withAppsDir((appsDir) => {
+      const dest = resolve(appsDir, 'fresh');
+      const wd = createGreenfieldDir(dest);
+      assert.equal(wd.path, dest);
+      const head = readFileSync(resolve(dest, '.git', 'HEAD'), 'utf8');
+      assert.match(head, /refs\/heads\/main/);
+      rmSync(dest, { recursive: true, force: true });
+    });
   });
 });

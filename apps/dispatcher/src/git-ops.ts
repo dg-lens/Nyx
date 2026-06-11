@@ -268,20 +268,25 @@ export function createLocalWorktree(taskId: string): WorkingDir {
  */
 export function createGreenfieldDir(path: string): WorkingDir {
   if (existsSync(path)) {
-    // Durable deliverable dirs live under config.projectsDir and are NOT
-    // throwaway. Distinct task_ids can sanitize to the same path (e.g. "My/Proj"
-    // and "My_Proj" both -> "my_proj"), so a second greenfield run could wipe a
-    // prior delivered project — a standalone repo with no remote, unrecoverable.
-    // Refuse to clobber a non-empty durable project dir; the throwaway planning
-    // dir (under cloneRootPrefix) still gets wiped for a clean slate on retry.
+    // Durable deliverable dirs live under config.projectsDir (greenfield) or
+    // config.appsDir (app:<slug>) and are NOT throwaway. Distinct task_ids can
+    // sanitize to the same project path (e.g. "My/Proj" and "My_Proj" both ->
+    // "my_proj"), and a second app run can name an already-delivered slug — so
+    // a collision here could wipe a prior delivered project: a standalone repo
+    // with no remote, unrecoverable. Refuse to clobber a non-empty durable dir
+    // (defense in depth behind the pipeline's planning/integration-base
+    // refusals); the throwaway planning dir (under cloneRootPrefix) still gets
+    // wiped for a clean slate on retry.
     const resolvedPath = resolve(path);
-    const isDurable = resolvedPath === resolve(config.projectsDir) ||
-      resolvedPath.startsWith(resolve(config.projectsDir) + '/');
+    const isDurable = [config.projectsDir, config.appsDir].some((root) => {
+      const r = resolve(root);
+      return resolvedPath === r || resolvedPath.startsWith(r + '/');
+    });
     if (isDurable && readdirSync(path).length > 0) {
       throw new Error(
-        `createGreenfieldDir refusing to wipe existing non-empty project dir ${resolvedPath}: ` +
-          `another greenfield run's task_id sanitizes to this path. ` +
-          `Use a distinct task_id or remove the prior deliverable manually.`,
+        `createGreenfieldDir refusing to wipe existing non-empty deliverable dir ${resolvedPath}: ` +
+          `a prior run already delivered here (colliding task_id or app:<slug>). ` +
+          `Use a distinct task_id/slug or remove the prior deliverable manually.`,
       );
     }
     rmSync(path, { recursive: true, force: true });

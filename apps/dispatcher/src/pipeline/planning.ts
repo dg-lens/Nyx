@@ -35,7 +35,7 @@ import {
   type PlanningResult,
   type TaskDag,
 } from './flight-plan.js';
-import { invalidRepoReason, targetMode } from './target.js';
+import { appDestination, invalidRepoReason, targetMode } from './target.js';
 import type { PipelineRun } from './types.js';
 
 const PLAN_TIMEOUT_MS = 5 * 60_000;
@@ -143,6 +143,27 @@ export function setupPlanningDir(run: PipelineRun, target: PlanTarget): git.Work
   if (mode === 'greenfield') {
     // Throwaway empty git dir under the /tmp clone prefix so cleanup's sweep
     // reclaims it; the real project is scaffolded fresh at integration-base time.
+    return git.createGreenfieldDir(`${config.cloneRootPrefix}${run.id}-plan`);
+  }
+  if (mode === 'app') {
+    // Collision refusal FIRST, before any filesystem mutation: an existing
+    // appsDir/<slug> is a delivered standalone repo with no remote —
+    // unrecoverable if clobbered. Throwing here (before even the throwaway
+    // planning dir exists) propagates runPlanning → stagePlanning →
+    // failPipelineRun: terminal `failed`, destination untouched. The one
+    // legitimate pre-existing dir is the run's OWN base — replan/rollback
+    // re-enter planning with worktree_base already pointing at the app — so
+    // that exact path is exempt.
+    const dest = appDestination(target.repo);
+    const ownBase = run.worktree_base != null && resolve(run.worktree_base) === dest;
+    if (existsSync(dest) && !ownBase) {
+      throw new Error(
+        `app destination ${dest} already exists — refusing to overwrite it. ` +
+          `Pick a different app:<slug> or move the existing directory aside, then re-queue.`,
+      );
+    }
+    // Like greenfield: plan in a throwaway /tmp dir; the real app is scaffolded
+    // at integration-base time (execute.setupIntegrationBase).
     return git.createGreenfieldDir(`${config.cloneRootPrefix}${run.id}-plan`);
   }
   if (mode === 'invalid') {

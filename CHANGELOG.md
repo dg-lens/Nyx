@@ -2,7 +2,7 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
-## v1.6.0 — 2026-06-11
+## v1.7.0 — 2026-06-11
 
 ### Desktop create-flow + personal templates
 - The desktop's + overlay becomes a progressive branching add-flow (task/workflow chooser → pick existing saved-template/recent | create new from template/scratch) backed by a personal template library — Manage/Create Templates pages, folder grouping, promote-a-recent-task — persisted to `$NYX_DATA_DIR/templates.json` (schema v1).
@@ -10,6 +10,15 @@
 - New audit events: `control.compose_template.applied` — payload `{ id, source, templateId }` — and `control.compose_template.failed` — payload `{ id, source, error }`.
 - **Caveat — `templates.json` is a two-writer file.** The engine APPENDS `source:"ai"` entries between ticks; the desktop `TemplatesStore` MERGES-ON-SAVE (re-reads the disk doc, keeps the in-memory version for ids it knows, adopts disk-only entries unless deleted this session, then writes the union atomically). Any new writer must follow the same contract — a blind snapshot write silently erases concurrent appends.
 - Touched: `desktop/Sources/NyxDesktop/Views/{AddFlow,TasksWorkspace,TasksTab,DispatchView,TemplatesStore,ManageTemplatesView,CreateTemplatesView}.swift`, `desktop/Sources/NyxDesktop/{RecentTasks,Store}.swift`, `apps/dispatcher/src/template-composer.ts`, `apps/dispatcher/src/control/{db,actions}.ts`, `apps/dispatcher/src/cli/run-once.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/__tests__/{template-composer,control}.test.ts`.
+
+## v1.6.0 — 2026-06-11
+
+### `app:<slug>` pipeline target mode
+- `[repo: app:<slug>]` on a `[type: pipeline]` task scaffolds a greenfield run landing at `$NYX_APPS_DIR` (default `~/Nyx/Apps`)/`<slug>` instead of `Data/projects/<task_id>` — the home for standalone agent-driven apps on the Nyx substrate (desktop Apps tab renders them).
+- Grammar: slug is strictly `[a-z0-9-]+`; `app:`, `app:UPPER`, `app:a/b` are invalid (fail fast at planning). Existing external/self/greenfield/invalid behavior is byte-identical.
+- Refusal-before-mutation, three layers: planning existence check (replan/rollback re-entry on the run's own base exempt) → integration-base re-check closing the preview-gate TOCTOU → `createGreenfieldDir` now refuses to rm-rf non-empty dirs under `appsDir` as well as `projectsDir`.
+- Delivery skips push/PR; the brief points at the app path; cleanup keeps the base.
+- Touched: `pipeline/target.ts`, `pipeline/planning.ts`, `pipeline/execute.ts`, `pipeline/delivery.ts`, `git-ops.ts`, `config.ts` (`appsDir`), `cli/run-once.ts` (boundary error text), tests across six files.
 
 ## v1.5.0 — 2026-06-10
 
