@@ -180,11 +180,27 @@ private enum TemplateCatalog {
     }
 }
 
+// Initial field values for DispatchView when a host opens it pre-filled (the
+// add-flow's "Edit first" / "Use template" terminals). Plain strings mirroring
+// Store.dispatch's params; `schedule` uses the emitted string forms ("",
+// "slot:N", "every:K") and is mapped back onto the schedule controls at init.
+struct DispatchPrefill: Hashable {
+    var text = ""
+    var type = "code"
+    var model = "auto"
+    var priority = "normal"
+    var repo = ""
+    var schedule = ""
+}
+
 struct DispatchView: View {
     // Optional hook fired AFTER a successful submit (store.dispatch + field reset).
     // Lets a host (the create overlay) animate its dismissal around submit WITHOUT
     // changing what submit does. Defaults to no-op so standalone use is unaffected.
-    var onSubmitted: () -> Void = {}
+    let onSubmitted: () -> Void
+    // True when the host fixes the type (the workflow editor presets+locks
+    // "pipeline"); the Type picker renders disabled so the preset can't drift.
+    private let typeLocked: Bool
     @EnvironmentObject var store: Store
     @State private var text = ""
     @State private var type = "code"
@@ -202,6 +218,30 @@ struct DispatchView: View {
 
     private let types = ["code", "analysis", "assistant", "content", "pipeline"]
     private let priorities = ["high", "normal", "low"]
+
+    // Prefill maps onto @State initial values only — after init the view owns
+    // its fields exactly as before, so standalone use (no prefill) is unchanged.
+    init(onSubmitted: @escaping () -> Void = {}, prefill: DispatchPrefill? = nil, lockType: Bool = false) {
+        self.onSubmitted = onSubmitted
+        self.typeLocked = lockType
+        guard let p = prefill else { return }
+        _text = State(initialValue: p.text)
+        _type = State(initialValue: types.contains(p.type) ? p.type : "code")
+        _model = State(initialValue: p.model)
+        _priority = State(initialValue: priorities.contains(p.priority) ? p.priority : "normal")
+        _repo = State(initialValue: p.repo)
+        if p.schedule.hasPrefix("slot:"), let slot = Int(p.schedule.dropFirst(5)),
+           slot >= 0, slot < Schedule.slotsPerDay {
+            _schedule = State(initialValue: "atTime")
+            let hm = Schedule.hourMinute(slot)
+            _atTime = State(initialValue: Calendar.current.date(
+                bySettingHour: hm.hour, minute: hm.minute, second: 0, of: Date()) ?? Date())
+        } else if p.schedule.hasPrefix("every:") {
+            let k = String(p.schedule.dropFirst(6))
+            _schedule = State(initialValue: "recurring")
+            _recurEvery = State(initialValue: ["3h", "6h", "12h", "24h", "7d"].contains(k) ? k : "6h")
+        }
+    }
 
     private var templateIds: [String] { TemplateCatalog.ids(for: type) }
     private var typeHasTemplates: Bool { !templateIds.isEmpty }
@@ -262,6 +302,7 @@ struct DispatchView: View {
                 labeled("Type") {
                     Picker("", selection: $type) { ForEach(types, id: \.self) { Text($0) } }
                         .labelsHidden().fixedSize()
+                        .disabled(typeLocked)
                         .onChange(of: type) { _ in
                             // Switching to a type that doesn't offer the current
                             // selection resets it to Auto, so a stale [template:]

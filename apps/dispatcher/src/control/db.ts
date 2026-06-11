@@ -11,7 +11,13 @@ import { dirname } from 'node:path';
 import { config } from '../config.js';
 import { openDb } from '../db.js';
 
-export type ActionKind = 'queue_task' | 'resume_task' | 'pipeline_decision' | 'force_tick' | 'decompose_task';
+export type ActionKind =
+  | 'queue_task'
+  | 'resume_task'
+  | 'pipeline_decision'
+  | 'force_tick'
+  | 'decompose_task'
+  | 'compose_template';
 export type ActionStatus = 'pending' | 'applied' | 'failed';
 
 export interface PendingAction {
