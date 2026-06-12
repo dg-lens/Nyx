@@ -85,13 +85,23 @@ export interface GateResult {
   }>;
   failureLog: string;
   /**
-   * P7 flaky-test quarantine. Set when the tests stage produced DIFFERENT
-   * verdicts on two same-tree runs — the gate is non-deterministic. The
-   * dispatcher quarantines (halts) rather than retrying to green. `passed` stays
-   * false in this case: a flaky green is not an accepted green.
+   * P7 flaky-test rerun. Set when the tests stage FAILED then PASSED on the
+   * identical tree. The rerun-pass is ACCEPTED (`passed` is true) — under
+   * machine load a single tests failure is contention more often than a real
+   * break (memory: nyx-timing-tests-flake-under-load) — and the flake is kept
+   * visible in the audit chain via `task.gate.flaky` instead of halting work.
    */
   flaky?: boolean;
-  flakyDetail?: { firstPassed: boolean; secondPassed: boolean };
+  flakyDetail?: { firstPassed: boolean; secondPassed: boolean; firstRunMs: number; rerunMs: number };
+  /**
+   * The machine-wide heavy-gate lock's wait budget elapsed with a live owner
+   * still holding it; the heavy stages ran WITHOUT the lock (advisory — never
+   * deadlock a tick). Surfaced as `task.gate.lock_timeout` in the audit chain.
+   */
+  lockTimedOut?: boolean;
+  lockWaitedMs?: number;
+  /** On lock timeout: the pid recorded in the foreign lock — diagnosis handle for the operator. */
+  lockOwnerPid?: number;
 }
 
 export interface RunOutcome {
