@@ -8,13 +8,18 @@ import { config } from './config.js';
 import { isValidRepoTag } from './pipeline/target.js';
 
 // Matches only the OPENER of a tag: `[name:` plus any leading whitespace.
-// The value is then scanned manually with bracket-depth tracking so a path
-// containing a Next.js dynamic-route segment (`[slug]`, `[[...catchall]]`)
-// is captured whole instead of being truncated at the first inner `]`.
-const TAG_OPEN_RE = /\[([a-z]+):\s*/g;
+// Names are lowercase words, optionally hyphenated (`slack-reply`). The value
+// is then scanned manually with bracket-depth tracking so a path containing a
+// Next.js dynamic-route segment (`[slug]`, `[[...catchall]]`) is captured
+// whole instead of being truncated at the first inner `]`.
+const TAG_OPEN_RE = /\[([a-z]+(?:-[a-z]+)*):\s*/g;
 const HEADER_ACTIVE = /^##\s+Active Tasks\s*$/i;
 const HEADER_COMPLETED = /^##\s+Completed\s*$/i;
 const TASK_LINE_RE = /^- \[( |x|X)\]\s+([A-Z][A-Z0-9-]+)\s+[—-]\s+(.+?)\s*$/;
+// Contact surface: `[slack-reply: <channelId>:<threadTs>]` value shape. Same
+// channel/ts shapes the respond_message executor validated before emitting
+// the tag — re-checked here so a hand-mangled value is a loud invalidTag.
+const SLACK_REPLY_TAG_RE = /^([A-Z][A-Z0-9]+):(\d+\.\d+)$/i;
 
 const VALID_TYPES: TaskType[] = ['code', 'content', 'analysis', 'assistant', 'pipeline'];
 const VALID_MODELS: Model[] = ['opus', 'sonnet', 'haiku'];
@@ -356,6 +361,18 @@ export function readQueue(path: string): QueueFile {
       invalidTags.push({ tag: 'repo', raw: tags['repo'] });
     }
 
+    // Contact surface: `[slack-reply: <channelId>:<threadTs>]` — delivery
+    // routing for a composed member reply (emitted by the respond_message
+    // executor). finalizeAssistant posts ./SLACK_REPLY.md in-thread via the
+    // notifier's bot-token client. A malformed value blocks the task here
+    // rather than silently dropping the member's reply at finalize.
+    let slackReply: ParsedTask['slackReply'];
+    if (tags['slack-reply'] != null) {
+      const sr = tags['slack-reply'].match(SLACK_REPLY_TAG_RE);
+      if (sr?.[1] && sr[2]) slackReply = { channelId: sr[1], threadTs: sr[2] };
+      else invalidTags.push({ tag: 'slack-reply', raw: tags['slack-reply'] });
+    }
+
     const task: ParsedTask = {
       id,
       description,
@@ -398,6 +415,7 @@ export function readQueue(path: string): QueueFile {
       // Explicit template family. Only stored when the tag was present AND valid;
       // an invalid value is recorded in invalidTags above (and blocks the task).
       ...(tpl.valid && tpl.value ? { template: tpl.value } : {}),
+      ...(slackReply ? { slackReply } : {}),
       ...(slot != null ? { slot } : {}),
       ...(everyStepSlots != null ? { everyStepSlots } : {}),
     };

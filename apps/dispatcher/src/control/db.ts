@@ -17,7 +17,8 @@ export type ActionKind =
   | 'pipeline_decision'
   | 'force_tick'
   | 'decompose_task'
-  | 'compose_template';
+  | 'compose_template'
+  | 'respond_message';
 export type ActionStatus = 'pending' | 'applied' | 'failed';
 
 export interface PendingAction {
@@ -106,4 +107,34 @@ export function markFailed(id: number, result: string, now: number): void {
 export function getAction(id: number): PendingAction | null {
   const r = open().prepare(`SELECT * FROM pending_actions WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
   return r ? rowToAction(r) : null;
+}
+
+/**
+ * Contact-surface rate guard: count how many `respond_message` actions naming this
+ * member Nyx has ALREADY accepted (status='applied' — i.e. queued a NYX-RESPOND
+ * task) within the sliding window `[since, +∞)`. A hostile or malfunctioning member
+ * flooding DMs would otherwise fan out unbounded pending_actions → unbounded queued
+ * tasks → unbounded paid spawns; respondMessage drops anything over the cap.
+ *
+ * We count APPLIED rows (not pending) because the drain loop marks each row applied
+ * as it processes it: when row N is being handled, the earlier same-member rows in
+ * this same drain are already applied. A row that was itself rate-limited is marked
+ * applied too but did NOT queue a task — its result starts `rate-limited` — so it is
+ * excluded here; the cap counts ACCEPTED responds, not attempts. JSON-extracting
+ * `member` from params keeps this a single scan with no schema change. The window is
+ * keyed on created_at (when the inbound message arrived), so the cap is "N accepted
+ * in the last window" and survives across ticks.
+ */
+export function countRecentRespondsForMember(member: string, since: number): number {
+  const row = open()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM pending_actions
+         WHERE action = 'respond_message'
+           AND status = 'applied'
+           AND created_at >= ?
+           AND json_extract(params, '$.member') = ?
+           AND (result IS NULL OR result NOT LIKE 'rate-limited%')`,
+    )
+    .get(since, member) as { n: number } | undefined;
+  return row ? Number(row.n) : 0;
 }

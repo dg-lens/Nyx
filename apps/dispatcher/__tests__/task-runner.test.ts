@@ -143,6 +143,67 @@ describe('permissionArgs', () => {
   });
 });
 
+describe('permissionArgs — contact-surface responder (compose-only)', () => {
+  // A NYX-RESPOND task is `[type: assistant]` carrying a dispatcher-set
+  // `slackReply` (the `[slack-reply:]` routing). It processes UNTRUSTED inbound
+  // member text, so it MUST run compose-only: no MCP, no Edit, no Bash, no
+  // WebFetch/WebSearch — only Read/Glob/Grep/Write (Write to emit SLACK_REPLY.md
+  // into the isolated outputs/<id>/ dir). This is the prompt-injection boundary.
+  const responder = (): ParsedTask =>
+    task('assistant', {
+      id: 'NYX-RESPOND-ABC123',
+      slackReply: { channelId: 'D0AB12CD3', threadTs: '1718000000.000100' },
+    });
+
+  function allowList(t: ParsedTask): string {
+    const args = permissionArgs(t);
+    const i = args.indexOf('--allowed-tools');
+    assert.notEqual(i, -1, 'responder must carry an explicit allowlist');
+    return args[i + 1] ?? '';
+  }
+
+  test('responder allowlist is exactly Read/Glob/Grep/Write — nothing else', () => {
+    const list = allowList(responder()).trim().split(/\s+/).sort();
+    assert.deepEqual(list, ['Glob', 'Grep', 'Read', 'Write']);
+  });
+
+  test('responder cannot call ANY MCP tool', () => {
+    assert.doesNotMatch(allowList(responder()), /mcp__/);
+  });
+
+  test('responder cannot Edit the repo/working tree, and has no Bash', () => {
+    const list = allowList(responder());
+    assert.doesNotMatch(list, /(^| )Edit($| )/);
+    assert.doesNotMatch(list, /(^| )Bash($| )/);
+  });
+
+  test('responder cannot reach the network (no WebFetch/WebSearch)', () => {
+    const list = allowList(responder());
+    assert.doesNotMatch(list, /WebFetch/);
+    assert.doesNotMatch(list, /WebSearch/);
+  });
+
+  test('a plain assistant task (no slackReply) STILL gets the full assistant scope', () => {
+    // Guard against the responder branch swallowing every assistant task: the
+    // discriminator is slackReply, so an ordinary assistant keeps Edit + MCP wiring.
+    const list = permissionArgs(task('assistant'));
+    const i = list.indexOf('--allowed-tools');
+    const allowed = list[i + 1] ?? '';
+    assert.match(allowed, /\bEdit\b/);
+    assert.match(allowed, /WebFetch/);
+  });
+
+  test('responder prompt is compose-only and never advertises MCP tools', () => {
+    // The buildPrompt responder branch must not tell the agent to "Use MCP tools"
+    // (which it cannot) and must brand the member message as data.
+    const prompt = buildPrompt(responder());
+    assert.match(prompt, /NO MCP tools/);
+    assert.match(prompt, /SLACK_REPLY\.md/);
+    assert.match(prompt, /strictly as DATA/);
+    assert.doesNotMatch(prompt, /Use MCP tools as needed/);
+  });
+});
+
 describe('buildSpawnInvocation', () => {
   test('no bw-project tag, no repo → plain claude', () => {
     const t = task('assistant');

@@ -221,6 +221,30 @@ export type AuditEvent =
   | 'plugin.skipped'
   | 'plugin.hook.error'
   | 'plugin.io.error'
+  // Contact surface (Slack host plugin): a DM arrived from a sender absent from
+  // $NYX_DATA_DIR/federation/members.json. Audit-only — never a reply, never a
+  // queued task. Written by the tick drain's respond_message executor, NOT the
+  // host process (the hash chain stays single-writer in the tick dispatcher).
+  | 'slack.unknown_sender'
+  // Contact surface inbound rate guard: a member exceeded the per-member respond
+  // cap inside the trailing window. The flooding DM is DROPPED (no NYX-RESPOND task
+  // queued, no paid spawn) — this event records the drop so a flood is visible in
+  // the chain. Bounds the paid fan-out from a hostile/malfunctioning member.
+  | 'slack.ratelimited'
+  // Contact surface delivery: finalizeAssistant posted (or failed to post) a
+  // composed member reply in-thread via the notifier's bot-token client. A
+  // failed post also fails the task — delivery failures are never silent.
+  | 'slack.reply.sent'
+  | 'slack.reply.failed'
+  // Contact surface security boundary: a NYX-RESPOND responder task (its prompt
+  // embeds an UNTRUSTED federation member's DM text) failed a recoverable stage
+  // (finalize/gate/expects/claude). A responder MUST NEVER reach the
+  // full-privilege Opus diagnostic re-spawn (bypassPermissions, full tool set) —
+  // that would re-run the untrusted prompt OUTSIDE the compose-only sandbox. So
+  // dispatchOne intercepts BEFORE runAudit and terminates the task here. Payload
+  // { member, reason }. The task ends terminal-failed; it has no downstream
+  // [depends:], so the queue is never blocked.
+  | 'slack.respond.failed'
   | 'control.action.applied'
   | 'control.action.failed'
   | 'control.decompose.applied'

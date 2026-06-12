@@ -113,6 +113,24 @@ async function postToSlack(text: string): Promise<boolean> {
 }
 
 /**
+ * Post one threaded reply into a specific channel via the bot WebClient — the
+ * contact-surface outbound. Member replies land in the member↔bot DM, where the
+ * bot identity is the only Nyx-side participant; no webhook fallback (a webhook
+ * posts to its one fixed channel, never the member's DM).
+ */
+async function postToSlackThread(channelId: string, threadTs: string, text: string): Promise<boolean> {
+  const c = client();
+  if (!c) return false;
+  try {
+    await c.chat.postMessage({ channel: channelId, thread_ts: threadTs, text });
+    return true;
+  } catch (err) {
+    console.error('[notifier] slack thread reply failed:', redactSecrets(String(err)));
+    return false;
+  }
+}
+
+/**
  * Whether Pushover is usable: enabled in settings AND both creds present. Empty
  * creds disable the channel regardless of the settings flag (plan decision #4),
  * so a half-configured install silently no-ops Pushover instead of erroring.
@@ -156,15 +174,44 @@ async function postToPushover(category: NotificationCategory, text: string): Pro
  */
 type SlackSink = (text: string) => Promise<boolean>;
 type PushoverSink = (category: NotificationCategory, text: string) => Promise<boolean>;
+type ThreadReplySink = (channelId: string, threadTs: string, text: string) => Promise<boolean>;
 let slackSink: SlackSink = postToSlack;
 let pushoverSink: PushoverSink = postToPushover;
-export function _setSinksForTest(sinks: { slack?: SlackSink; pushover?: PushoverSink }): void {
+let threadReplySink: ThreadReplySink = postToSlackThread;
+export function _setSinksForTest(sinks: {
+  slack?: SlackSink;
+  pushover?: PushoverSink;
+  threadReply?: ThreadReplySink;
+}): void {
   if (sinks.slack) slackSink = sinks.slack;
   if (sinks.pushover) pushoverSink = sinks.pushover;
+  if (sinks.threadReply) threadReplySink = sinks.threadReply;
 }
 export function _resetSinksForTest(): void {
   slackSink = postToSlack;
   pushoverSink = postToPushover;
+  threadReplySink = postToSlackThread;
+}
+
+/**
+ * Contact surface: deliver a composed member reply in-thread over the SAME
+ * bot-token Slack path every operator notification uses. The Slack MCP runs as
+ * the operator's own user identity, which is NOT a participant in a member↔bot
+ * DM — chat.postMessage from a non-participant fails (not_in_channel) — so
+ * member replies MUST go through this bot client. Returns true only if the
+ * message reached Slack; callers treat false as a delivery failure, never as
+ * sent.
+ */
+export async function postSlackThreadReply(
+  channelId: string,
+  threadTs: string,
+  text: string,
+): Promise<boolean> {
+  if (!notificationsEnabled) {
+    console.log(`[notifier:disabled] thread reply → ${channelId}`);
+    return false;
+  }
+  return threadReplySink(channelId, threadTs, redactSecrets(text));
 }
 
 /**

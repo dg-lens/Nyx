@@ -2,5 +2,11 @@
   "name": "nyx-plugin-slack",
   "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "test": "node --test __tests__/*.test.js"
+  },
+  "dependencies": {
+    "@slack/socket-mode": "^2.0.3"
+  }
 }

@@ -33,7 +33,7 @@ import { config } from './config.js';
 import { detectMainBranch } from './git-ops.js';
 import { redactCredentialPatterns, redactValues } from './redaction.js';
 import { spawnWithTimeout } from './spawn-helpers.js';
-import { buildSpawnInvocation } from './task-runner.js';
+import { buildSpawnInvocation, isResponderTask } from './task-runner.js';
 import type { ParsedTask } from './types.js';
 
 const MAX_AUDIT_PASSES = 2;
@@ -146,6 +146,33 @@ export interface AuditContext {
 
 /** Top-level entry. */
 export async function runAudit(ctx: AuditContext): Promise<AuditOutcome> {
+  // SECURITY BOUNDARY — defense in depth. A contact-surface responder
+  // (NYX-RESPOND, slackReply != null) carries an UNTRUSTED federation member's
+  // DM text in its prompt; the primary spawn is sandboxed to compose-only tools.
+  // The diagnostic agent below (runDiagnosticAgent) re-spawns with
+  // `--permission-mode bypassPermissions` and the FULL tool set (Bash + every
+  // MCP), embedding that untrusted prompt verbatim — a full sandbox escape. The
+  // dispatchOne attempt loop already intercepts responder failures BEFORE
+  // calling runAudit (see terminateResponder in cli/run-once.ts), so a responder
+  // should never reach this function. This guard makes the boundary hold even if
+  // that call site is ever refactored: a responder is refused here, terminally,
+  // WITHOUT classification, autofix, or the privileged diagnostic spawn.
+  if (isResponderTask(ctx.task)) {
+    audit('slack.respond.failed', 'audit-runner', {
+      taskId: ctx.task.id,
+      reason: 'responder reached runAudit — refused before privileged diagnostic re-spawn (defense in depth)',
+    });
+    return {
+      kind: 'escalated_to_halt',
+      pattern: 'responder-no-audit',
+      operatorReport:
+        'A contact-surface responder task failed and was refused entry to the audit ' +
+        'pipeline: its prompt embeds untrusted member input, so it must never be ' +
+        're-spawned with the full-privilege diagnostic agent. No privileged re-run ' +
+        'was performed.',
+    };
+  }
+
   if (ctx.priorAuditPasses >= MAX_AUDIT_PASSES) {
     audit('task.audit.escalated', 'audit-runner', {
       taskId: ctx.task.id,
@@ -691,12 +718,22 @@ export function scrubDiagnosticResult<
   return { ...result, stdout: scrub(result.stdout), stderr: scrub(result.stderr) };
 }
 
-function spawnDiagnostic(
+/**
+ * The privileged diagnostic spawn — `claude -p` on Opus with
+ * `--permission-mode bypassPermissions` and the FULL tool set. This is the exact
+ * site a contact-surface responder must never reach (its prompt embeds untrusted
+ * member input). It is invoked through the mutable `spawnDiagnostic` binding
+ * below so a test can install a spy and assert this function is NEVER called for
+ * a responder task.
+ */
+type DiagnosticSpawnFn = (
   command: string,
   args: string[],
   cwd: string,
   extraEnv: Record<string, string>,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+
+const spawnDiagnosticImpl: DiagnosticSpawnFn = (command, args, cwd, extraEnv) => {
   // Auth pass-through: if ANTHROPIC_API_KEY is set the diagnostic `claude -p`
   // uses API billing; if absent it falls back to the host's ~/.claude OAuth.
   // See task-runner.ts::invokeClaude for the model.
@@ -711,6 +748,17 @@ function spawnDiagnostic(
     captureStdout: true,
     label: 'audit',
   }, AUDIT_TIMEOUT_MS);
+};
+
+let spawnDiagnostic: DiagnosticSpawnFn = spawnDiagnosticImpl;
+
+/**
+ * Test seam: override the privileged diagnostic spawn. Pass a spy to assert it is
+ * (or is NOT) invoked, or `null` to restore the real implementation. Mirrors the
+ * `_setAuditDb` / `_setSecretsDb` test-injection pattern used elsewhere.
+ */
+export function _setDiagnosticSpawnForTest(fn: DiagnosticSpawnFn | null): void {
+  spawnDiagnostic = fn ?? spawnDiagnosticImpl;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -416,6 +416,40 @@ export async function finalizeAssistant(ctx: FinalizeContext): Promise<RunOutcom
     };
   }
   const body = readFileSync(outFile, 'utf8');
+
+  // Contact surface: a `[slack-reply:]` task composed a member reply into
+  // ./SLACK_REPLY.md; deliver it in-thread HERE, over the notifier's bot-token
+  // client — the bot is the only Nyx-side participant in the member↔bot DM, so
+  // this is the one path that actually lands. A missing/empty reply or a
+  // failed post is a task FAILURE (dir preserved, audit pipeline takes over) —
+  // never a silent completion that drops the member's answer.
+  if (task.slackReply) {
+    const { channelId, threadTs } = task.slackReply;
+    const replyFile = resolve(workingDir.path, 'SLACK_REPLY.md');
+    const reply = existsSync(replyFile) ? readFileSync(replyFile, 'utf8').trim() : '';
+    if (!reply) {
+      return {
+        taskId: task.id,
+        status: 'failed',
+        durationMs,
+        failureLog: 'respond task produced no usable SLACK_REPLY.md (missing or empty) — member reply not deliverable',
+      };
+    }
+    const sent = await notify.postSlackThreadReply(channelId, threadTs, reply.slice(0, 4000));
+    if (!sent) {
+      audit('slack.reply.failed', 'dispatcher', { taskId: task.id, channelId, threadTs });
+      return {
+        taskId: task.id,
+        status: 'failed',
+        durationMs,
+        failureLog:
+          `member reply composed but Slack delivery failed (notifier bot path did not reach channel ${channelId}, ` +
+          `thread ${threadTs}) — reply preserved in SLACK_REPLY.md`,
+      };
+    }
+    audit('slack.reply.sent', 'dispatcher', { taskId: task.id, channelId, threadTs, bytes: reply.length });
+  }
+
   await notify.dm(`📋 ${task.id}\n${body.slice(0, 3500)}`);
   audit('assistant.reminder', 'dispatcher', { taskId: task.id, bytes: body.length });
   workingDir.cleanup();
