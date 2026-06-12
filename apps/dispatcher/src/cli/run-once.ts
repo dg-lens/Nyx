@@ -76,7 +76,6 @@ import { changedFilesWorkingTree } from '../deploy-detector.js';
 import { assessGateTrust } from '../gate-trust.js';
 import { runLintGate } from '../lint-gate.js';
 import { assessRottenGreen } from '../rotten-green.js';
-import { buildFlakyReport, classifyRerun } from '../flaky-detect.js';
 import {
   JUDGE_FILE,
   isJudgeConcern,
@@ -343,15 +342,6 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
         pattern: 'normalizer-reject',
       });
     }
-    if (result.status === 'flaky-quarantined') {
-      // A non-deterministic tests stage is NOT something an audit pass can fix by
-      // re-running — re-running is the very thing that would launder the flake
-      // into a green. Quarantine straight to operator review.
-      return haltTask(task, workingDir, startedAt, {
-        operatorReport: result.report,
-        pattern: 'flaky-test',
-      });
-    }
     // result.status === 'failed-recoverable' — try to audit + auto-fix.
     if (attempt >= MAX_AUDIT_PASSES) {
       return haltTask(task, workingDir, startedAt, {
@@ -510,7 +500,6 @@ type AttemptResult =
   | { status: 'failed-final'; outcome: RunOutcome }
   | { status: 'failed-recoverable'; failureLog: string; stage: AttemptStage }
   | { status: 'ambiguity-escalated'; report: string }
-  | { status: 'flaky-quarantined'; report: string }
   | {
       status: 'normalizer-rejected';
       report: string;
@@ -818,7 +807,7 @@ async function attemptTask(
     }
   }
 
-  // Flaky quarantine (P7): only the gate's `tests` stage is non-deterministic by
+  // Flaky rerun (P7): only the gate's `tests` stage is non-deterministic by
   // nature, so the rerun-on-same-tree check is armed for code tasks that gate on
   // tests. typecheck/lint are deterministic and need no rerun.
   const rerunFlakyTests =
@@ -827,25 +816,34 @@ async function attemptTask(
     task.gates !== 'none' &&
     task.gates.includes('tests');
   const gate = runGate(task, workingDir.path, { rerunFlakyTests });
+  if (gate.lockTimedOut) {
+    // The machine-wide heavy-gate lock's wait budget elapsed with a live owner
+    // still holding it; the heavy stages ran unlocked. Observational only —
+    // never deadlock a tick on a stuck external process.
+    audit('task.gate.lock_timeout', 'dispatcher', {
+      taskId: task.id,
+      waitedMs: gate.lockWaitedMs ?? 0,
+      ownerPid: gate.lockOwnerPid ?? null,
+    });
+  }
   audit('task.gate.completed', 'dispatcher', {
     taskId: task.id,
     passed: gate.passed,
     stages: gate.stages.map(s => ({ name: s.name, passed: s.passed, durationMs: s.durationMs })),
   });
   if (gate.flaky) {
-    // The tests stage flipped verdict on the identical tree. Do NOT take the
-    // flipped green and do NOT route to the audit pipeline (its retry IS the
-    // retry-to-green this guards against). Quarantine straight to the operator.
-    const detail = gate.flakyDetail ?? { firstPassed: false, secondPassed: true };
-    const cls = classifyRerun(detail.firstPassed, detail.secondPassed);
-    audit('task.gate.flaky_quarantined', 'dispatcher', {
+    // Rerun-pass = flaky-pass: the tests stage failed, then passed on the
+    // IDENTICAL tree. Proceed (gate.passed is true) — under machine load a
+    // single tests failure is contention more often than a real break (memory:
+    // nyx-timing-tests-flake-under-load). The flake stays visible in the chain
+    // instead of halting good work.
+    const detail = gate.flakyDetail;
+    audit('task.gate.flaky', 'dispatcher', {
       taskId: task.id,
-      firstPassed: detail.firstPassed,
-      secondPassed: detail.secondPassed,
+      stage: 'tests',
+      firstRunMs: detail?.firstRunMs ?? 0,
+      rerunMs: detail?.rerunMs ?? 0,
     });
-    const report = buildFlakyReport(task.id, cls);
-    await notify.taskFailed(task.id, 'tests-flaky', report);
-    return { status: 'flaky-quarantined', report };
   }
   if (!gate.passed) {
     audit('task.failed', 'dispatcher', { taskId: task.id, stage: 'gate', failure_log: gate.failureLog });

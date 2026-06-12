@@ -2,6 +2,13 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.7.1 — 2026-06-11
+
+### Gate-contention hardening (machine-wide heavy-gate lock + flaky-pass)
+- **Machine-wide heavy-gate lock.** The gate runner's heavy stages (install probe, typecheck, tests, tests-rerun) now serialize ACROSS PROCESSES via an advisory mkdir-spinlock at `$NYX_DATA_DIR/run/heavy-gate.lock` (pid file + stale-owner liveness recovery — the `nyx-dispatch.sh` tick-lock pattern). Gate verdicts are load-sensitive: a tree failed its tests twice under concurrent heavy work, then passed 1026/1026 once contention dropped. The lock waits up to 10 minutes polling every 5s; on timeout it PROCEEDS unlocked and emits the new `task.gate.lock_timeout` audit event — payload `{ taskId, waitedMs }` — never deadlocking a tick on a stuck external process. The acquire/release helper (`acquireHeavyGateLock`) is exported standalone so workflows/scripts can take the same lock later.
+- **Rerun-pass = flaky-pass.** A `tests` failure followed by a same-tree `tests-rerun` PASS now passes the gate (previously it was quarantined as a halt — observed: stages `tests:false, tests-rerun:true`, gate `passed:false`). The flake stays visible in the chain via the new `task.gate.flaky` audit event — payload `{ taskId, stage: 'tests', firstRunMs, rerunMs }` — without halting work. A rerun that fails again is a deterministic fail, unchanged. The quarantine machinery (`flaky-detect.ts`, halt pattern `flaky-test`, `task.gate.flaky_quarantined` emission) is removed; the legacy event name stays in the closed `AuditEvent` union so historical chain rows still map.
+- Touched: `apps/dispatcher/src/heavy-gate-lock.ts` (new), `apps/dispatcher/src/test-gate.ts`, `apps/dispatcher/src/types.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/src/lockfile.ts` (`processAlive` exported), `apps/dispatcher/src/cli/run-once.ts`, `apps/dispatcher/src/rotten-green.ts` (comment), `apps/dispatcher/src/flaky-detect.ts` (deleted), `apps/dispatcher/__tests__/{heavy-gate-lock,gate-flaky}.test.ts`, `apps/dispatcher/__tests__/flaky-detect.test.ts` (deleted).
+
 ## v1.7.0 — 2026-06-11
 
 ### Desktop create-flow + personal templates

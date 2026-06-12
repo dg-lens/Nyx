@@ -38,6 +38,13 @@ export type AuditEvent =
   // routes it to the operator-action path. See mcp-auth-healer.recordAuthFailure.
   | 'task.mcp.auth_failure'
   | 'task.gate.completed'
+  // Heavy-gate lock (heavy-gate-lock.ts): the machine-wide advisory lock at
+  // $NYX_DATA_DIR/run/heavy-gate.lock was NOT acquired within the wait budget
+  // (a live owner held it the whole time). The gate PROCEEDED unlocked —
+  // observational, never blocks. Payload { taskId, waitedMs, ownerPid } —
+  // ownerPid is the pid recorded in the foreign lock (null when unreadable),
+  // the operator's diagnosis handle for a stuck holder.
+  | 'task.gate.lock_timeout'
   | 'task.committed'
   | 'task.merged'
   | 'task.output.written'
@@ -130,8 +137,14 @@ export type AuditEvent =
   | 'task.lint.passed'
   | 'task.lint.failed'
   | 'task.lint.skipped'
-  // Flaky-test quarantine: the tests stage flipped verdict on the identical tree.
-  // The dispatcher halts (quarantine) rather than retrying to green.
+  // Flaky-test rerun: the tests stage failed then PASSED on the identical tree.
+  // The rerun-pass is accepted (gate passes) — this event keeps the flake
+  // visible in the chain without halting work. Payload { taskId, stage,
+  // firstRunMs, rerunMs }.
+  | 'task.gate.flaky'
+  // LEGACY (no longer emitted): the pre-flaky-pass semantics quarantined a
+  // verdict flip as a halt. Superseded by task.gate.flaky; kept so historical
+  // chain rows still map into the closed union.
   | 'task.gate.flaky_quarantined'
   // Rotten-green: a changed test file asserts nothing / is skip-only / discards
   // its result into a blank-identifier sink. Flag-for-review only (advisory).
