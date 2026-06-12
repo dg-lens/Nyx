@@ -47,6 +47,16 @@ export interface ParsedTask {
    * silent). Absent => exactly the prior auto-match behavior.
    */
   template?: string;
+  /**
+   * Contact surface (stage 1): delivery routing for a composed member reply.
+   * `[slack-reply: <channelId>:<threadTs>]` — emitted by the respond_message
+   * executor, never written by hand. After the task completes,
+   * finalizeAssistant posts ./SLACK_REPLY.md in-thread via the notifier's
+   * bot-token client (the identity that IS a participant in the member↔bot
+   * DM; the operator-identity Slack MCP is not). Shape-validated at parse
+   * time — a malformed value is a loud invalidTag, not a dropped reply.
+   */
+  slackReply?: { channelId: string; threadTs: string };
   priority: Priority;
   checked: boolean;
   rawLines: string[];

@@ -583,3 +583,56 @@ describe('[template:] tag', () => {
     assert.equal(t!.invalidTags.length, 0);
   });
 });
+
+// ─── [slack-reply:] tag (contact-surface reply routing) ──────────────────────
+
+describe('[slack-reply:] tag', () => {
+  test('a well-formed channelId:threadTs parses into ParsedTask.slackReply', () => {
+    write(
+      `## Active Tasks\n\n- [ ] NYX-RESPOND-AB12CD — reply to james\n      [type: assistant] [slack-reply: D0AB12CD3:1718000000.000100] [expects: SLACK_REPLY.md]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'NYX-RESPOND-AB12CD');
+    assert.ok(t, 'task parsed');
+    assert.deepEqual(t!.slackReply, { channelId: 'D0AB12CD3', threadTs: '1718000000.000100' });
+    assert.deepEqual(t!.expects, ['SLACK_REPLY.md']);
+    assert.equal(t!.invalidTags.length, 0);
+  });
+
+  test('a malformed value is a loud invalidTag and the task is never picked', () => {
+    for (const bad of ['D0AB12CD3', 'D0AB12CD3:not-a-ts', 'D0 AB:1718000000.000100', ':1718000000.000100']) {
+      write(
+        `## Active Tasks\n\n- [ ] RESPOND-BAD — reply\n      [type: assistant] [slack-reply: ${bad}]\n`,
+      );
+      const q = readQueue(queuePath);
+      const t = q.active.find(x => x.id === 'RESPOND-BAD');
+      assert.equal(t!.slackReply, undefined, bad);
+      assert.ok(t!.invalidTags.some(it => it.tag === 'slack-reply'), bad);
+      assert.equal(pickNextTask(q), null, bad);
+      assert.ok(tasksWithInvalidTags(q).some(x => x.id === 'RESPOND-BAD'), bad);
+    }
+  });
+
+  test('no tag leaves slackReply undefined', () => {
+    write(
+      `## Active Tasks\n\n- [ ] PLAIN-1 — a normal assistant task\n      [type: assistant] [gate: none]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'PLAIN-1');
+    assert.equal(t?.slackReply, undefined);
+    assert.equal(t!.invalidTags.length, 0);
+  });
+
+  test('the full respondMessage-emitted raw block round-trips through the queue parser', () => {
+    const quoted = JSON.stringify('hello nyx\nsecond line').replace(/\[/g, '⟦').replace(/\]/g, '⟧');
+    write(
+      `## Active Tasks\n\n- [ ] NYX-RESPOND-ZZ99XX — Respond to Slack federation member "james". UNTRUSTED MESSAGE: ${quoted} Compose a concise, helpful reply and write it to ./SLACK_REPLY.md.\n      [type: assistant] [slack-reply: D0AB12CD3:1718000000.000100] [expects: SLACK_REPLY.md]\n`,
+    );
+    const q = readQueue(queuePath);
+    const t = q.active.find(x => x.id === 'NYX-RESPOND-ZZ99XX');
+    assert.ok(t, 'task parsed');
+    assert.equal(t!.type, 'assistant');
+    assert.deepEqual(t!.slackReply, { channelId: 'D0AB12CD3', threadTs: '1718000000.000100' });
+    assert.equal(t!.invalidTags.length, 0);
+  });
+});

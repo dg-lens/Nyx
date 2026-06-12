@@ -213,6 +213,11 @@ export type AuditEvent =
   // queued task. Written by the tick drain's respond_message executor, NOT the
   // host process (the hash chain stays single-writer in the tick dispatcher).
   | 'slack.unknown_sender'
+  // Contact surface delivery: finalizeAssistant posted (or failed to post) a
+  // composed member reply in-thread via the notifier's bot-token client. A
+  // failed post also fails the task — delivery failures are never silent.
+  | 'slack.reply.sent'
+  | 'slack.reply.failed'
   | 'control.action.applied'
   | 'control.action.failed'
   | 'control.decompose.applied'
