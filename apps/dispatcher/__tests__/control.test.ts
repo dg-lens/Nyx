@@ -108,7 +108,7 @@ describe('respondMessage', () => {
 
   test('known member queues an assistant NYX-RESPOND task carrying member, routing tag, and quoted text', () => {
     const raw = queuedRaw(KNOWN);
-    assert.match(raw, /^- \[ \] NYX-RESPOND-[A-Z0-9]+ — /);
+    assert.match(raw, /^- \[ \] NYX-RESPOND-[A-Z0-9-]+ — /);
     assert.match(raw, /\[type: assistant\]/);
     assert.match(raw, /member "james"/);
     assert.match(raw, /\[slack-reply: D0AB12CD3:1718000000\.000100\]/);
@@ -265,5 +265,133 @@ describe('drainPendingActions', () => {
     assert.equal(getAction(2)?.result, null);
     assert.equal(getAction(3)?.status, 'applied');
     assert.deepEqual(listPending().map((a) => a.action), ['decompose_task', 'compose_template']);
+  });
+});
+
+describe('respond_message — per-member rate cap (issue #2)', () => {
+  function auditEvents(): Array<{ event: string; payload: Record<string, unknown> }> {
+    const rows = db.prepare(`SELECT event, payload FROM system_audit ORDER BY id ASC`).all() as Array<{ event: string; payload: string }>;
+    return rows.map((r) => ({ event: r.event, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+  }
+
+  function floodMember(member: string, n: number, baseTs: number): void {
+    for (let i = 0; i < n; i++) {
+      enqueueAction(
+        'respond_message',
+        { member, channelId: 'D0AB12CD3', threadTs: `1718000000.0001${String(i).padStart(2, '0')}`, text: `msg ${i}` },
+        'slack',
+        baseTs + i, // same-window arrivals
+      );
+    }
+  }
+
+  test('caps accepted responds per member to the configured default (5), drops the excess', () => {
+    const queued: string[] = [];
+    const deps: ActionDeps = {
+      queueTask: (p) => { queued.push(String(p.raw)); return 'queued'; },
+      resumeTask: () => 'r',
+      pipelineDecision: () => 'p',
+    };
+    floodMember('james', 9, 1_000_000);
+    drainPendingActions(deps, () => 2_000_000);
+
+    // Exactly the cap (5) queued real NYX-RESPOND tasks; the other 4 were dropped.
+    assert.equal(queued.length, 5, 'cap is 5 accepted responds');
+
+    const dropped = auditEvents().filter((e) => e.event === 'slack.ratelimited');
+    assert.equal(dropped.length, 4, 'the 4 over-cap responds each emit slack.ratelimited');
+    assert.equal(dropped[0]?.payload.member, 'james');
+    assert.equal(dropped[0]?.payload.cap, 5);
+    assert.equal(dropped[0]?.payload.recent, 5);
+
+    // Every flooded row is still marked applied (a drop is not a failure).
+    for (let id = 1; id <= 9; id++) assert.equal(getAction(id)?.status, 'applied');
+    // The 5 accepted rows did NOT get a rate-limited result; the 4 dropped did.
+    const drops = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((id) => getAction(id)?.result ?? '').filter((r) => /^rate-limited/.test(r));
+    assert.equal(drops.length, 4);
+  });
+
+  test('the cap is per-member — a second member is unaffected by the first member flooding', () => {
+    const queued: string[] = [];
+    const deps: ActionDeps = {
+      queueTask: (p) => { queued.push(String(p.raw)); return 'queued'; },
+      resumeTask: () => 'r',
+      pipelineDecision: () => 'p',
+    };
+    floodMember('james', 7, 1_000_000); // over cap
+    floodMember('vessa', 2, 1_000_100); // under cap
+    drainPendingActions(deps, () => 2_000_000);
+
+    const jamesTasks = queued.filter((r) => /member "james"/.test(r)).length;
+    const vessaTasks = queued.filter((r) => /member "vessa"/.test(r)).length;
+    assert.equal(jamesTasks, 5, 'james capped at 5');
+    assert.equal(vessaTasks, 2, 'vessa unaffected — both accepted');
+  });
+
+  test('responds outside the window do not count against the cap', () => {
+    const queued: string[] = [];
+    const deps: ActionDeps = {
+      queueTask: (p) => { queued.push(String(p.raw)); return 'queued'; },
+      resumeTask: () => 'r',
+      pipelineDecision: () => 'p',
+    };
+    // 5 OLD responds well before the window, then 1 fresh one. The old rows are
+    // outside `created_at >= row.created_at - windowMs`, so the fresh respond is
+    // accepted despite 5 prior accepts.
+    floodMember('james', 5, 1_000); // far in the past
+    drainPendingActions(deps, () => 2_000);
+    assert.equal(queued.length, 5);
+
+    queued.length = 0;
+    enqueueAction(
+      'respond_message',
+      { member: 'james', channelId: 'D0AB12CD3', threadTs: '1718000000.000999', text: 'fresh' },
+      'slack',
+      999_000_000, // far future → old responds fall outside the trailing window
+    );
+    drainPendingActions(deps, () => 999_000_001);
+    assert.equal(queued.length, 1, 'fresh respond accepted — old ones aged out of the window');
+  });
+});
+
+describe('respond_message — unique task ids under same-ms drain (issue #3)', () => {
+  test('two responds drained in the same millisecond get distinct task ids', () => {
+    const ids: string[] = [];
+    const deps: ActionDeps = {
+      queueTask: (p) => {
+        const m = String(p.raw).match(/NYX-RESPOND-[A-Z0-9-]+/);
+        if (m) ids.push(m[0]);
+        return 'queued';
+      },
+      resumeTask: () => 'r',
+      pipelineDecision: () => 'p',
+    };
+    enqueueAction('respond_message', { member: 'james', channelId: 'D0AB12CD3', threadTs: '1718000000.000100', text: 'a' }, 'slack', 1000);
+    enqueueAction('respond_message', { member: 'james', channelId: 'D0AB12CD3', threadTs: '1718000000.000200', text: 'b' }, 'slack', 1000);
+    // Both drained with the SAME now() — the Date.now() millisecond component is
+    // identical; only the pending_actions row id distinguishes them.
+    const fixedNow = 5_000;
+    drainPendingActions(deps, () => fixedNow);
+    assert.equal(ids.length, 2);
+    assert.notEqual(ids[0], ids[1], 'row-id suffix makes same-ms drains unique');
+    // Both still match the valid task-id shape the reader accepts.
+    for (const id of ids) assert.match(id, /^NYX-RESPOND-[A-Z0-9]+-[A-Z0-9]+$/);
+  });
+
+  test('the row-id suffix is the AUTOINCREMENT pending_actions id (deterministic, not random)', () => {
+    const ids: string[] = [];
+    const deps: ActionDeps = {
+      queueTask: (p) => {
+        const m = String(p.raw).match(/NYX-RESPOND-[A-Z0-9-]+/);
+        if (m) ids.push(m[0]);
+        return 'queued';
+      },
+      resumeTask: () => 'r',
+      pipelineDecision: () => 'p',
+    };
+    const rowId = enqueueAction('respond_message', { member: 'james', channelId: 'D0AB12CD3', threadTs: '1718000000.000100', text: 'a' }, 'slack', 1000);
+    drainPendingActions(deps, () => 5_000);
+    assert.equal(ids.length, 1);
+    assert.ok((ids[0] ?? '').endsWith(`-${rowId.toString(36).toUpperCase()}`), `id should end with row id ${rowId}`);
   });
 });

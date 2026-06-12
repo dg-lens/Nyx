@@ -88,6 +88,15 @@ export const config = {
   slackWebhookUrl: process.env.SLACK_WEBHOOK_URL ?? '',
   operatorName: process.env.OPERATOR_NAME ?? 'Operator',
 
+  // ── Contact-surface inbound rate guard ──
+  // A hostile/malfunctioning federation member flooding DMs would otherwise fan
+  // out unbounded NYX-RESPOND tasks → unbounded paid spawns. respondMessage caps
+  // accepted responds per member to `respondCapPerMember` within the trailing
+  // `respondCapWindowMs`; excess is dropped with a `slack.ratelimited` audit event.
+  // Coarse by design — a sane default that an operator can raise/lower via env.
+  respondCapPerMember: Number(process.env.NYX_RESPOND_CAP_PER_MEMBER ?? 5),
+  respondCapWindowMs: Number(process.env.NYX_RESPOND_CAP_WINDOW_MS ?? 3_600_000),
+
   // ── Pushover (optional second notification channel) ──
   // Bitwarden/env-backed, read like the Slack creds. Both empty → Pushover is
   // disabled regardless of the settings.notifications.channels.pushover flag.

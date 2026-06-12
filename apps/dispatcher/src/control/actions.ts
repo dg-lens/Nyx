@@ -4,7 +4,14 @@
  * pure logic is testable). See docs/plugin-architecture.md.
  */
 import { audit } from '../audit.js';
-import { listPending, markApplied, markFailed, type PendingAction } from './db.js';
+import { config } from '../config.js';
+import {
+  countRecentRespondsForMember,
+  listPending,
+  markApplied,
+  markFailed,
+  type PendingAction,
+} from './db.js';
 
 export interface ActionDeps {
   queueTask: (params: Record<string, unknown>) => string;
@@ -64,7 +71,7 @@ const SLACK_TS_RE = /^\d+\.\d+$/;
  * destination stays dispatcher-controlled. channelId/threadTs come off the
  * Slack event and are shape-validated before interpolation.
  */
-export function respondMessage(params: Record<string, unknown>, deps: ActionDeps): string {
+export function respondMessage(params: Record<string, unknown>, deps: ActionDeps, row?: PendingAction): string {
   const member = typeof params.member === 'string' ? params.member.trim() : '';
   const channelId = String(params.channelId ?? '').trim();
   if (!member) {
@@ -83,7 +90,36 @@ export function respondMessage(params: Record<string, unknown>, deps: ActionDeps
     throw new Error(`respond_message: invalid threadTs ${JSON.stringify(threadTs)}`);
   }
   if (!text) throw new Error('respond_message missing text');
-  const id = `NYX-RESPOND-${Date.now().toString(36).slice(-6).toUpperCase()}`;
+
+  // Per-member rate guard (issue #2). Count responds already accepted for this
+  // member inside the trailing window. The current row is marked applied AFTER
+  // executeAction returns, so it is not yet in the count — `>=` cap means "already
+  // at the cap, drop this one". A coarse cap is intentional: it bounds the paid
+  // fan-out from a flooding/hostile member without trying to be precise. Dropping
+  // returns a normal result (the row still marks applied) + a loud audit event;
+  // it never throws (a throw would route to control.action.failed and retry-churn).
+  if (row && config.respondCapPerMember > 0) {
+    const since = row.created_at - config.respondCapWindowMs;
+    const recent = countRecentRespondsForMember(member, since);
+    if (recent >= config.respondCapPerMember) {
+      audit('slack.ratelimited', 'control', {
+        member,
+        channelId,
+        recent,
+        cap: config.respondCapPerMember,
+        windowMs: config.respondCapWindowMs,
+      });
+      return `rate-limited — ${recent} responds for "${member}" in window (cap ${config.respondCapPerMember}); dropped`;
+    }
+  }
+
+  // Unique task id (issue #3). Date.now().toString(36) alone collides when two
+  // actions drain in the same millisecond; the pending_actions row id is a
+  // monotonic AUTOINCREMENT primary key, so suffixing it guarantees uniqueness
+  // per drained action. Fall back to a random suffix only for the row-less call
+  // shape (direct unit calls) so the id is still collision-free there.
+  const unique = row ? row.id.toString(36) : Math.random().toString(36).slice(-4);
+  const id = `NYX-RESPOND-${Date.now().toString(36).slice(-6).toUpperCase()}-${unique.toUpperCase()}`;
   const quoted = JSON.stringify(text.slice(0, 4000)).replace(/\[/g, '⟦').replace(/\]/g, '⟧');
   const raw =
     `- [ ] ${id} — Respond to Slack federation member "${member}". ` +
@@ -107,7 +143,7 @@ export function executeAction(a: PendingAction, deps: ActionDeps): string {
     case 'pipeline_decision':
       return deps.pipelineDecision(a.params);
     case 'respond_message':
-      return respondMessage(a.params, deps);
+      return respondMessage(a.params, deps, a);
     case 'force_tick':
       return 'tick requested';
     default:

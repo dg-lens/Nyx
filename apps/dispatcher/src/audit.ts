@@ -226,6 +226,11 @@ export type AuditEvent =
   // queued task. Written by the tick drain's respond_message executor, NOT the
   // host process (the hash chain stays single-writer in the tick dispatcher).
   | 'slack.unknown_sender'
+  // Contact surface inbound rate guard: a member exceeded the per-member respond
+  // cap inside the trailing window. The flooding DM is DROPPED (no NYX-RESPOND task
+  // queued, no paid spawn) — this event records the drop so a flood is visible in
+  // the chain. Bounds the paid fan-out from a hostile/malfunctioning member.
+  | 'slack.ratelimited'
   // Contact surface delivery: finalizeAssistant posted (or failed to post) a
   // composed member reply in-thread via the notifier's bot-token client. A
   // failed post also fails the task — delivery failures are never silent.
