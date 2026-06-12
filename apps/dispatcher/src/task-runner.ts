@@ -408,7 +408,7 @@ const RESPONDER_COMPOSE_ONLY = ['Read', 'Glob', 'Grep', 'Write'];
  * executor, never written by hand — so it is the precise signal that this assistant
  * task is processing untrusted inbound member text and must run compose-only.
  */
-function isResponderTask(task: ParsedTask): boolean {
+export function isResponderTask(task: ParsedTask): boolean {
   return task.type === 'assistant' && task.slackReply != null;
 }
 

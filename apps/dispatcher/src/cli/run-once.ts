@@ -1,6 +1,7 @@
 import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   AMBIGUITY_FILE,
@@ -69,7 +70,7 @@ import { redactCredentialPatterns } from '../redaction.js';
 import { listMcpServers } from '../mcp-discovery.js';
 import { authFailedServers, recordSpawnOutcome } from '../mcp-resilience.js';
 import { healAuth, recordAuthFailure } from '../mcp-auth-healer.js';
-import { buildPrompt, invokeClaude, invokeContentJudge, invokeWisdomCapture } from '../task-runner.js';
+import { buildPrompt, invokeClaude, invokeContentJudge, invokeWisdomCapture, isResponderTask } from '../task-runner.js';
 import { WISDOM_FILE, parseWisdomFile, routeWisdomCapture } from '../wisdom-capture.js';
 import { countTestsPassed, runGate } from '../test-gate.js';
 import { changedFilesWorkingTree } from '../deploy-detector.js';
@@ -343,6 +344,20 @@ async function dispatchOne(task: ParsedTask): Promise<RunOutcome> {
       });
     }
     // result.status === 'failed-recoverable' — try to audit + auto-fix.
+    //
+    // SECURITY INTERCEPT (contact surface): a NYX-RESPOND responder task carries
+    // an UNTRUSTED federation member's DM text in its prompt and runs the primary
+    // spawn sandboxed to compose-only tools. The audit pipeline below
+    // (runAudit → runDiagnosticAgent) would re-spawn it with bypassPermissions
+    // and the FULL tool set — escaping the sandbox and re-running untrusted input
+    // with Bash + every MCP. A finalize failure is benign-triggerable (a Slack
+    // hiccup makes postSlackThreadReply return false), so this is reachable
+    // without any malice. A responder must NEVER reach the privileged re-spawn:
+    // terminate it here, BEFORE both the audit-cap halt and runAudit. It has no
+    // downstream [depends:], so ending it does not block the chain.
+    if (isResponderTask(task)) {
+      return terminateResponder(task, workingDir, startedAt, result.failureLog);
+    }
     if (attempt >= MAX_AUDIT_PASSES) {
       return haltTask(task, workingDir, startedAt, {
         operatorReport: `Audit cap reached without recovery (${MAX_AUDIT_PASSES} passes). Last failure log:\n\n${result.failureLog.slice(0, 1500)}`,
@@ -1047,6 +1062,62 @@ async function attemptTask(
   }
 
   return { status: 'completed', outcome };
+}
+
+/**
+ * Recover the federation member's display name from a NYX-RESPOND task's
+ * description for the `slack.respond.failed` audit payload. respondMessage emits
+ * a fixed, dispatcher-controlled prefix — `Respond to Slack federation member
+ * "<member>"` — and the member string comes from members.json, never from the
+ * untrusted DM text, so matching this prose is safe. Best-effort only: the
+ * security property (no privileged re-spawn) never depends on the name, so a
+ * miss degrades to 'unknown' rather than failing.
+ */
+export function responderMember(task: ParsedTask): string {
+  const haystack = task.description || task.rawLines.join(' ');
+  const m = haystack.match(/federation member "([^"]+)"/);
+  return m?.[1]?.trim() || 'unknown';
+}
+
+/**
+ * Terminate a contact-surface responder (NYX-RESPOND, slackReply != null) whose
+ * attempt hit a recoverable failure, WITHOUT entering the audit pipeline.
+ *
+ * SECURITY BOUNDARY. A responder's prompt embeds an UNTRUSTED federation
+ * member's DM text and the primary spawn is sandboxed to compose-only tools
+ * (Read/Glob/Grep/Write — no MCP/Edit/Bash, keyed on slackReply). runAudit's
+ * fall-through (`runDiagnosticAgent`) re-spawns with `--permission-mode
+ * bypassPermissions` and NO `--allowed-tools` — the FULL tool set (Bash + every
+ * MCP) — embedding that untrusted prompt verbatim and telling Opus to "complete
+ * the original task". That second spawn fully escapes the compose-only sandbox,
+ * and a finalize failure is triggerable by a BENIGN cause (notifications
+ * disabled, or any transient chat.postMessage throw makes postSlackThreadReply
+ * return false). So a responder MUST NEVER reach runAudit. We intercept here:
+ * record `slack.respond.failed`, clean up the working dir, and return a terminal
+ * `failed` outcome. A respond task has no downstream `[depends:]`, so ending it
+ * never blocks the queue.
+ */
+export function terminateResponder(
+  task: ParsedTask,
+  workingDir: git.WorkingDir,
+  startedAt: number,
+  reason: string,
+): RunOutcome {
+  const member = responderMember(task);
+  audit('slack.respond.failed', 'dispatcher', {
+    taskId: task.id,
+    member,
+    reason: reason.slice(0, 1000),
+  });
+  // No operator halt, no chain block, no privileged re-spawn. The member simply
+  // does not get a reply this round; the failure is recorded in the chain.
+  workingDir.cleanup();
+  return {
+    taskId: task.id,
+    status: 'failed',
+    durationMs: Date.now() - startedAt,
+    failureLog: `responder task terminated without audit re-spawn (untrusted-input boundary): ${reason}`,
+  };
 }
 
 /**
@@ -1835,9 +1906,26 @@ async function main(): Promise<void> {
   lock.release();
 }
 
-main().catch((err: unknown) => {
-  const e = err as Error;
-  console.error('[nyx] fatal:', e.stack ?? e.message);
-  audit('task.failed', 'dispatcher', { stage: 'top-level', failure_log: e.stack ?? e.message });
-  process.exit(1);
-});
+/**
+ * Auto-run a tick ONLY when this module is the process entrypoint
+ * (`node dist/cli/run-once.js` or `tsx src/cli/run-once.ts`). Importing the
+ * module — e.g. a test importing the exported helpers (terminateResponder,
+ * responderMember, …) — must NOT fire a live dispatch tick. Both the compiled
+ * `.js` and the source `.ts` entrypoints share the `run-once` basename stem, so
+ * comparing stems is robust across the dev (tsx) and prod (node) runs.
+ */
+function isEntrypoint(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  const stem = (p: string): string => basename(p).replace(/\.(ts|js|mjs|cjs)$/, '');
+  return stem(invoked) === stem(fileURLToPath(import.meta.url));
+}
+
+if (isEntrypoint()) {
+  main().catch((err: unknown) => {
+    const e = err as Error;
+    console.error('[nyx] fatal:', e.stack ?? e.message);
+    audit('task.failed', 'dispatcher', { stage: 'top-level', failure_log: e.stack ?? e.message });
+    process.exit(1);
+  });
+}

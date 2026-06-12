@@ -2,6 +2,15 @@
 
 **Nyx** — a drop-in autonomous agent-management framework.
 
+## v1.7.3 — 2026-06-11
+
+### Contact-surface hardening — responder never reaches the full-privilege audit diagnostic
+- **Closed a compose-only sandbox escape on the inbound responder path.** A `NYX-RESPOND-*` responder task embeds an untrusted federation member's DM text in its prompt and runs its primary spawn sandboxed to compose-only tools (`Read Glob Grep Write`, keyed on `task.slackReply`). But on a `finalize` (or any recoverable) failure, `dispatchOne` routed it through `runAudit` → `runDiagnosticAgent`, which re-spawned with `--permission-mode bypassPermissions` and NO `--allowed-tools` — the FULL tool set (Bash + every MCP) — re-running the untrusted prompt OUTSIDE the sandbox. A `finalize` failure is benign-triggerable (notifications disabled, or any transient `chat.postMessage` throw makes `postSlackThreadReply` return `false`), so the escape needed no malice to fire.
+- **Fix (two layers).** PRIMARY: `dispatchOne`'s attempt loop now intercepts a responder's recoverable failure BEFORE `runAudit` (and before the audit-cap halt) via `terminateResponder` — it records `slack.respond.failed`, cleans up, and returns a terminal `failed` outcome. A respond task has no downstream `[depends:]`, so the queue is never blocked. DEFENSE IN DEPTH: `runAudit` itself refuses a responder at entry — before classification, autofix, or the privileged diagnostic spawn — so the boundary holds even if the call site is ever refactored.
+- New audit event: `slack.respond.failed` — payload `{ taskId, member, reason }`. `member` is recovered best-effort from the dispatcher-controlled task prose (`federation member "<name>"`, sourced from `members.json`, never the untrusted DM), defaulting to `unknown`; the security property never depends on it.
+- `isResponderTask` is now exported from `task-runner.ts` (single source of truth shared by the compose-only sandbox AND the audit intercept). `runDiagnosticAgent`'s privileged spawn is now invoked through a mutable `spawnDiagnostic` binding with a `_setDiagnosticSpawnForTest` seam, so tests can assert the `bypassPermissions` spawn is never reached for a responder. `cli/run-once.ts` only auto-runs `main()` when it is the process entrypoint (so importing its exported helpers in a test no longer fires a live tick).
+- Touched: `apps/dispatcher/src/cli/run-once.ts`, `apps/dispatcher/src/audit-runner.ts`, `apps/dispatcher/src/audit.ts`, `apps/dispatcher/src/task-runner.ts`, `apps/dispatcher/__tests__/slack-responder-no-audit.test.ts` (new).
+
 ## v1.7.2 — 2026-06-11
 
 ### Contact-surface hardening (hostile-input inbound path)
