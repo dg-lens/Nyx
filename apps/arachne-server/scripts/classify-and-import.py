@@ -116,6 +116,7 @@ def main():
     for nid, _, why in sorted(mesh): lines.append(f"- `{nid}` — {why}")
     lines += ["", "## LOCAL (held — security map / fail-closed)", ""]
     for nid, _, why in sorted(local): lines.append(f"- `{nid}` — {why}")
+    Path(a.manifest).parent.mkdir(parents=True, exist_ok=True)
     Path(a.manifest).write_text("\n".join(lines), encoding="utf-8")
     print(f"{len(rows)} nodes: {len(mesh)} mesh, {len(local)} local → manifest {a.manifest}")
 
